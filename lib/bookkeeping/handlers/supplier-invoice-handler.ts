@@ -19,13 +19,27 @@ async function handleSupplierInvoiceConfirmed(
 ): Promise<void> {
   const { supplierInvoice, userId, companyId } = payload
 
+  // Guard: the inbox convert flow (and app/api/supplier-invoices) creates the
+  // registration entry inline before emitting. Without this short-circuit we
+  // double-post to 2440/2641/expense and overwrite registration_journal_entry_id.
+  if (supplierInvoice.registration_journal_entry_id) return
+
   const supabase = await createClient()
 
-  // Check accounting method
+  // Re-fetch to catch callers whose in-memory payload is stale (invoice-inbox
+  // updates the row after insert but emits the pre-update object).
+  const { data: current } = await supabase
+    .from('supplier_invoices')
+    .select('registration_journal_entry_id')
+    .eq('id', supplierInvoice.id)
+    .single()
+
+  if (current?.registration_journal_entry_id) return
+
   const { data: settings } = await supabase
     .from('company_settings')
     .select('accounting_method')
-    .eq('company_id', userId)
+    .eq('company_id', companyId)
     .single()
 
   const accountingMethod = settings?.accounting_method || 'accrual'

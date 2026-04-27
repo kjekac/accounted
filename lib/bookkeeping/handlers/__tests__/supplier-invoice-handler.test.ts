@@ -36,13 +36,15 @@ describe('Supplier Invoice Core Handler', () => {
   it('creates registration journal entry for accrual method', async () => {
     const { supabase, enqueueMany } = createQueuedMockSupabase()
     enqueueMany([
-      // 1. company_settings
+      // 1. supplier_invoices (re-fetch guard)
+      { data: { registration_journal_entry_id: null }, error: null },
+      // 2. company_settings
       { data: { accounting_method: 'accrual' }, error: null },
-      // 2. supplier_invoice_items
+      // 3. supplier_invoice_items
       { data: [{ id: 'item-1', account_number: '6200', line_total: 1000, sort_order: 0 }], error: null },
-      // 3. supplier (type)
+      // 4. supplier (type)
       { data: { supplier_type: 'swedish_business' }, error: null },
-      // 4. Update invoice with journal entry id
+      // 5. Update invoice with journal entry id
       { data: null, error: null },
     ])
     mockCreateClient.mockResolvedValue(supabase as never)
@@ -73,6 +75,8 @@ describe('Supplier Invoice Core Handler', () => {
   it('skips journal entry for cash method', async () => {
     const { supabase, enqueueMany } = createQueuedMockSupabase()
     enqueueMany([
+      // supplier_invoices (re-fetch guard)
+      { data: { registration_journal_entry_id: null }, error: null },
       // company_settings with cash method
       { data: { accounting_method: 'cash' }, error: null },
     ])
@@ -96,6 +100,7 @@ describe('Supplier Invoice Core Handler', () => {
   it('handles journal entry creation failure gracefully', async () => {
     const { supabase, enqueueMany } = createQueuedMockSupabase()
     enqueueMany([
+      { data: { registration_journal_entry_id: null }, error: null },
       { data: { accounting_method: 'accrual' }, error: null },
       { data: [{ id: 'item-1', account_number: '6200', line_total: 500, sort_order: 0 }], error: null },
       { data: { supplier_type: 'swedish_business' }, error: null },
@@ -125,5 +130,52 @@ describe('Supplier Invoice Core Handler', () => {
     )
 
     consoleSpy.mockRestore()
+  })
+
+  it('skips creation when payload.supplierInvoice.registration_journal_entry_id is already set', async () => {
+    const { supabase } = createQueuedMockSupabase()
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    const invoice = makeSupplierInvoice({
+      id: 'si-4',
+      registration_journal_entry_id: 'je-existing',
+    })
+
+    await eventBus.emit({
+      type: 'supplier_invoice.confirmed',
+      payload: {
+        inboxItem: { id: 'inbox-4' } as never,
+        supplierInvoice: invoice,
+        userId: 'user-1',
+        companyId: 'company-1',
+      },
+    })
+
+    expect(mockCreateEntry).not.toHaveBeenCalled()
+    // No DB calls should have been made either (payload guard is pre-DB)
+    expect(mockCreateClient).not.toHaveBeenCalled()
+  })
+
+  it('skips creation when db row already has registration_journal_entry_id (stale payload)', async () => {
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    enqueueMany([
+      // supplier_invoices re-fetch returns an already-linked entry
+      { data: { registration_journal_entry_id: 'je-db' }, error: null },
+    ])
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    const invoice = makeSupplierInvoice({ id: 'si-5', registration_journal_entry_id: null })
+
+    await eventBus.emit({
+      type: 'supplier_invoice.confirmed',
+      payload: {
+        inboxItem: { id: 'inbox-5' } as never,
+        supplierInvoice: invoice,
+        userId: 'user-1',
+        companyId: 'company-1',
+      },
+    })
+
+    expect(mockCreateEntry).not.toHaveBeenCalled()
   })
 })

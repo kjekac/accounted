@@ -1349,6 +1349,7 @@ export const invoiceInboxExtension: Extension = {
             )
             if (journalEntry) {
               registrationJournalEntryId = journalEntry.id
+              ;(invoice as SupplierInvoice).registration_journal_entry_id = journalEntry.id
               await ctx.supabase
                 .from('supplier_invoices')
                 .update({ registration_journal_entry_id: journalEntry.id })

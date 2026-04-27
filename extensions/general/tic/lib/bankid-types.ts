@@ -153,7 +153,7 @@ export interface BankIdCompleteResponse {
 }
 
 export interface BankIdCompleteErrorResponse {
-  error: 'no_account' | 'already_linked' | 'session_invalid' | 'session_expired'
+  error: 'no_account' | 'already_linked' | 'account_exists' | 'session_invalid' | 'session_expired'
   givenName?: string
   surname?: string
 }

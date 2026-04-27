@@ -41,6 +41,7 @@ describe('event-log-handler', () => {
     expect(mockInsert).toHaveBeenCalledWith(
       expect.objectContaining({
         user_id: 'user-1',
+        company_id: 'company-1',
         event_type: 'invoice.created',
         entity_id: 'inv-123',
       })
@@ -64,6 +65,7 @@ describe('event-log-handler', () => {
     expect(mockInsert).toHaveBeenCalledWith(
       expect.objectContaining({
         user_id: 'user-1',
+        company_id: 'company-1',
         event_type: 'customer.created',
         entity_id: 'cust-456',
       })
@@ -83,9 +85,9 @@ describe('event-log-handler', () => {
     expect(mockInsert).toHaveBeenCalledTimes(1)
     const rows = mockInsert.mock.calls[0][0]
     expect(rows).toHaveLength(3)
-    expect(rows[0]).toMatchObject({ event_type: 'transaction.synced', entity_id: 'tx-1' })
-    expect(rows[1]).toMatchObject({ event_type: 'transaction.synced', entity_id: 'tx-2' })
-    expect(rows[2]).toMatchObject({ event_type: 'transaction.synced', entity_id: 'tx-3' })
+    expect(rows[0]).toMatchObject({ event_type: 'transaction.synced', entity_id: 'tx-1', company_id: 'company-1' })
+    expect(rows[1]).toMatchObject({ event_type: 'transaction.synced', entity_id: 'tx-2', company_id: 'company-1' })
+    expect(rows[2]).toMatchObject({ event_type: 'transaction.synced', entity_id: 'tx-3', company_id: 'company-1' })
   })
 
   it('does NOT persist journal_entry.drafted (excluded noise event)', async () => {
@@ -148,7 +150,27 @@ describe('event-log-handler', () => {
       expect.objectContaining({
         event_type: 'period.locked',
         entity_id: 'period-1',
+        company_id: 'company-1',
       })
     )
+  })
+
+  it('skips insert when companyId is missing from payload', async () => {
+    await eventBus.emit({
+      type: 'customer.created',
+      // deliberate bypass of TS types to simulate a future caller forgetting companyId
+      payload: { customer: makeCustomer(), userId: 'user-1' } as never,
+    })
+
+    expect(mockInsert).not.toHaveBeenCalled()
+  })
+
+  it('skips batch insert when companyId is missing from payload', async () => {
+    await eventBus.emit({
+      type: 'transaction.synced',
+      payload: { transactions: [makeTransaction({ id: 'tx-1' })], userId: 'user-1' } as never,
+    })
+
+    expect(mockInsert).not.toHaveBeenCalled()
   })
 })

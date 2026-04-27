@@ -690,50 +690,52 @@ export const ticExtension: Extension = {
             )
           }
 
-          // Check if email is already taken by a non-BankID user
+          // If the email is already registered, refuse signup. Linking BankID to an
+          // existing account must go through the authenticated /bankid/link route so
+          // email ownership is proven by password login first. (CWE-287)
           const { data: existingByEmail } = await supabase
             .from('profiles')
             .select('id')
             .eq('email', trimmedEmail!)
             .single()
 
-          let userId: string
-          let isNewUser = true
-
           if (existingByEmail) {
-            // Email already exists — link BankID to existing account
-            userId = existingByEmail.id
-            isNewUser = false
-
-            await supabase.auth.admin.updateUserById(userId, {
-              app_metadata: { bankid_linked: true },
-              user_metadata: { full_name: name },
+            log.warn('bankid signup rejected — email already registered', {
+              sessionId,
+              pnrHashPrefix: pnrHash.slice(0, 8),
             })
-          } else {
-            // Create new Supabase user
-            const randomPassword = crypto.randomBytes(32).toString('base64url')
-            const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
-              email: trimmedEmail!,
-              email_confirm: true,
-              password: randomPassword,
-              user_metadata: { full_name: name },
-            })
-
-            if (createError || !newUser?.user) {
-              log.error('createUser failed', { email: trimmedEmail, status: createError?.status, code: createError?.code, message: createError?.message })
-              return NextResponse.json(
-                { error: 'Failed to create account', message: createError?.message },
-                { status: 500 }
-              )
-            }
-
-            userId = newUser.user.id
-
-            // Mark user as BankID-linked (skips TOTP MFA)
-            await supabase.auth.admin.updateUserById(userId, {
-              app_metadata: { bankid_linked: true },
-            })
+            return NextResponse.json(
+              {
+                error: 'account_exists',
+                message: 'An account with this email already exists. Log in and link BankID from settings.',
+              },
+              { status: 409 }
+            )
           }
+
+          // Create new Supabase user
+          const randomPassword = crypto.randomBytes(32).toString('base64url')
+          const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
+            email: trimmedEmail!,
+            email_confirm: true,
+            password: randomPassword,
+            user_metadata: { full_name: name },
+          })
+
+          if (createError || !newUser?.user) {
+            log.error('createUser failed', { email: trimmedEmail, status: createError?.status, code: createError?.code, message: createError?.message })
+            return NextResponse.json(
+              { error: 'Failed to create account', message: createError?.message },
+              { status: 500 }
+            )
+          }
+
+          const userId = newUser.user.id
+
+          // Mark user as BankID-linked (skips TOTP MFA)
+          await supabase.auth.admin.updateUserById(userId, {
+            app_metadata: { bankid_linked: true },
+          })
 
           // Store BankID identity
           const { error: insertError } = await supabase
@@ -775,7 +777,7 @@ export const ticExtension: Extension = {
             data: {
               tokenHash: link.properties.hashed_token,
               type: 'magiclink',
-              isNewUser,
+              isNewUser: true,
             },
           })
         } catch (error) {

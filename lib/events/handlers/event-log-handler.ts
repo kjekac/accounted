@@ -81,10 +81,11 @@ function extractEntityId(payload: Record<string, unknown>): string | null {
 }
 
 /**
- * Strip userId from payload (stored in its own column) and return clean data.
+ * Strip userId and companyId from payload (each stored in its own column) and
+ * return clean data for the JSONB blob.
  */
-function stripUserId(payload: Record<string, unknown>): Record<string, unknown> {
-  const { userId: _userId, ...data } = payload
+function stripMetaFields(payload: Record<string, unknown>): Record<string, unknown> {
+  const { userId: _userId, companyId: _companyId, ...data } = payload
   return data
 }
 
@@ -94,6 +95,7 @@ function stripUserId(payload: Record<string, unknown>): Record<string, unknown> 
 async function persistEvent(
   eventType: string,
   userId: string,
+  companyId: string,
   entityId: string | null,
   data: Record<string, unknown>
 ): Promise<void> {
@@ -103,6 +105,7 @@ async function persistEvent(
     .from('event_log')
     .insert({
       user_id: userId,
+      company_id: companyId,
       event_type: eventType,
       entity_id: entityId,
       data,
@@ -124,6 +127,15 @@ export function registerEventLogHandler(): (() => void)[] {
       try {
         const rawPayload = payload as Record<string, unknown>
         const userId = rawPayload.userId as string
+        const companyId = rawPayload.companyId
+
+        // All persisted event payloads mandate companyId in TypeScript; this guard
+        // protects against any caller that bypasses the type system. Writing NULL
+        // would make the row invisible to the company_id-scoped SELECT RLS policy.
+        if (typeof companyId !== 'string' || companyId.length === 0) {
+          log.error(`Event ${eventType} missing companyId; skipping persistence`)
+          return
+        }
 
         // transaction.synced carries an array — batch insert
         if (eventType === 'transaction.synced' && Array.isArray(rawPayload.transactions)) {
@@ -132,6 +144,7 @@ export function registerEventLogHandler(): (() => void)[] {
 
           const rows = transactions.map(tx => ({
             user_id: userId,
+            company_id: companyId,
             event_type: eventType,
             entity_id: typeof tx.id === 'string' ? tx.id : null,
             data: { transaction: tx },
@@ -146,8 +159,8 @@ export function registerEventLogHandler(): (() => void)[] {
         }
 
         const entityId = extractEntityId(rawPayload)
-        const data = stripUserId(rawPayload)
-        await persistEvent(eventType, userId, entityId, data)
+        const data = stripMetaFields(rawPayload)
+        await persistEvent(eventType, userId, companyId, entityId, data)
       } catch (err) {
         log.error(`Event log handler error for ${eventType}:`, err)
       }

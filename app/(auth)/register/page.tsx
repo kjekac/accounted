@@ -108,6 +108,13 @@ function RegisterPageContent() {
             description: 'Detta BankID ar redan kopplat till ett konto. Forsok logga in istallet.',
             variant: 'destructive',
           })
+        } else if (json.error === 'account_exists') {
+          toast({
+            title: 'Kontot finns redan',
+            description: 'Ett konto med den har e-postadressen finns redan. Logga in och koppla BankID i installningarna.',
+            variant: 'destructive',
+          })
+          router.push('/login')
         } else {
           toast({
             title: 'Registrering misslyckades',

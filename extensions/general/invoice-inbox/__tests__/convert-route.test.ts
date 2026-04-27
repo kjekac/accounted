@@ -213,6 +213,14 @@ describe('POST /items/:id/convert', () => {
     expect(status).toBe(200)
     expect(body.data.registration_journal_entry_id).toBe('je-1')
     expect(createSupplierInvoiceRegistrationEntry).toHaveBeenCalled()
+
+    // The emitted supplier_invoice.confirmed payload must reflect the just-written
+    // registration_journal_entry_id so the core handler's payload-level guard
+    // short-circuits instead of double-posting.
+    const emitCalls = (ctx.emit as ReturnType<typeof vi.fn>).mock.calls
+    const confirmed = emitCalls.find((c) => c[0].type === 'supplier_invoice.confirmed')
+    expect(confirmed).toBeDefined()
+    expect(confirmed![0].payload.supplierInvoice.registration_journal_entry_id).toBe('je-1')
   })
 })
 
