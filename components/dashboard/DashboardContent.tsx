@@ -163,7 +163,7 @@ export default function DashboardContent({ firstName, companyId, settings, summa
     )
   }
 
-  if (summary.receiptQueue && (summary.receiptQueue.pending_review_count > 0 || summary.receiptQueue.unmatched_receipts_count > 0)) {
+  if (process.env.NODE_ENV === 'development' && summary.receiptQueue && (summary.receiptQueue.pending_review_count > 0 || summary.receiptQueue.unmatched_receipts_count > 0)) {
     alertItems.push(
       <Link key="receipts" href="/receipts" className="group">
         <Card className="h-full border-primary/30 hover:bg-primary/[0.03] transition-colors">

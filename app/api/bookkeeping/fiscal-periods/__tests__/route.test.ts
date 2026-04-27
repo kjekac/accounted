@@ -65,10 +65,12 @@ function buildMockSupabase(options: {
 
       chainable.select = vi.fn().mockImplementation((_sel: string, opts?: { count?: string }) => {
         if (opts?.count === 'exact') {
-          // openCount query
+          // openCount query: .eq(company_id).eq(is_closed=false).is(locked_at, null)
           return {
             eq: vi.fn().mockReturnValue({
-              eq: vi.fn().mockResolvedValue({ count: openCount }),
+              eq: vi.fn().mockReturnValue({
+                is: vi.fn().mockResolvedValue({ count: openCount }),
+              }),
             }),
           }
         }
@@ -160,7 +162,7 @@ describe('POST /api/bookkeeping/fiscal-periods', () => {
     expect(body.error).toMatch(/must start on 2026-01-01/)
   })
 
-  it('rejects forward period when unclosed period exists', async () => {
+  it('rejects forward period when an unlocked open period exists', async () => {
     buildMockSupabase({
       allPeriods: [{ id: 'p1', period_start: '2025-01-01', period_end: '2025-12-31', is_closed: false }],
       openCount: 1,
@@ -169,7 +171,26 @@ describe('POST /api/bookkeeping/fiscal-periods', () => {
     const res = await POST(req)
     expect(res.status).toBe(409)
     const body = await res.json()
-    expect(body.error).toMatch(/unclosed period/)
+    expect(body.error).toMatch(/unlocked period/)
+  })
+
+  // Regression: BFL 6 kap allows löpande bokföring of the new year in parallel
+  // with bokslut work on the prior year (6-month deadline for årsbokslut, 7
+  // months for AB årsredovisning). A locked-but-not-yet-closed prior period is
+  // the normal state during that window and must not block creation of the
+  // next räkenskapsår. The .is('locked_at', null) filter excludes locked
+  // periods from the openCount, so the mock returns 0 here.
+  it('allows forward period creation when prior period is locked-but-not-closed', async () => {
+    buildMockSupabase({
+      allPeriods: [{ id: 'p1', period_start: '2024-01-01', period_end: '2024-12-31', is_closed: false }],
+      openCount: 0,
+      overlapping: [],
+    })
+    const req = createMockRequest({ name: 'FY 2025', period_start: '2025-01-01', period_end: '2025-12-31' })
+    const res = await POST(req)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data).toBeDefined()
   })
 
   it('allows backward period creation', async () => {
@@ -256,7 +277,13 @@ describe('POST /api/bookkeeping/fiscal-periods', () => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           select: vi.fn().mockImplementation((_sel: string, opts?: any) => {
             if (opts?.count === 'exact') {
-              return { eq: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ count: 0 }) }) }
+              return {
+                eq: vi.fn().mockReturnValue({
+                  eq: vi.fn().mockReturnValue({
+                    is: vi.fn().mockResolvedValue({ count: 0 }),
+                  }),
+                }),
+              }
             }
             if (callNum === 1) {
               return {
@@ -313,7 +340,13 @@ describe('POST /api/bookkeeping/fiscal-periods', () => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           select: vi.fn().mockImplementation((_sel: string, opts?: any) => {
             if (opts?.count === 'exact') {
-              return { eq: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ count: 0 }) }) }
+              return {
+                eq: vi.fn().mockReturnValue({
+                  eq: vi.fn().mockReturnValue({
+                    is: vi.fn().mockResolvedValue({ count: 0 }),
+                  }),
+                }),
+              }
             }
             if (callNum === 1) {
               return {

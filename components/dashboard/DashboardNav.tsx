@@ -78,7 +78,7 @@ const navItems: NavItem[] = [
   { href: '/supplier-invoices', label: 'Leverantörsfakturor', icon: FileInput, group: 'inköp', hidden: true },
   // General accounting
   { href: '/pending', label: 'Granskning', icon: ClipboardCheck, group: 'redovisning' },
-  { href: '/receipts', label: 'Kvitton', icon: Receipt, group: 'redovisning', hidden: !ENABLED_EXTENSION_IDS.has('invoice-inbox'), devBadge: true },
+  { href: '/receipts', label: 'Kvitton', icon: Receipt, group: 'redovisning', hidden: !ENABLED_EXTENSION_IDS.has('invoice-inbox') || process.env.NODE_ENV !== 'development', devBadge: true },
   { href: '/agent-inbox', label: 'Agent-inkorg', icon: Sparkles, group: 'redovisning', hidden: !ENABLED_EXTENSION_IDS.has('ai-agent') || !isAgentInboxEnabled(), devBadge: true },
   { href: '/transactions', label: 'Transaktioner', icon: ArrowLeftRight, group: 'redovisning' },
   { href: '/bookkeeping', label: 'Bokföring', icon: BookOpen, group: 'redovisning' },

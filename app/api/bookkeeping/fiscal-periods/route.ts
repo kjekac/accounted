@@ -100,16 +100,20 @@ export async function POST(request: Request) {
         )
       }
 
-      // Enforce: max one unclosed period (no skipping ahead) — forward only
+      // Enforce: max one editable prior period (no skipping ahead) — forward only.
+      // Locked periods are write-blocked by enforce_period_lock and so don't
+      // represent skipping ahead; they're the normal state during bokslut work,
+      // which BFL 6 kap allows in parallel with löpande bokföring of the new year.
       const { count: openCount } = await supabase
         .from('fiscal_periods')
         .select('id', { count: 'exact', head: true })
         .eq('company_id', companyId)
         .eq('is_closed', false)
+        .is('locked_at', null)
 
       if (openCount && openCount > 0) {
         return NextResponse.json(
-          { error: 'Cannot create a new period while an unclosed period exists' },
+          { error: 'Cannot create a new period while an unlocked period exists' },
           { status: 409 }
         )
       }
