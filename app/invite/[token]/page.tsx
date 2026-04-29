@@ -9,6 +9,9 @@ import { Card } from '@/components/ui/card'
 import { Loader2, Building2, AlertCircle } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useToast } from '@/components/ui/use-toast'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 
 interface InviteInfo {
   type: 'company'
@@ -164,13 +167,13 @@ export default function InvitePage() {
         <div className="relative z-10 max-w-2xl mx-auto w-full px-6 md:px-10 pt-5 pb-6 md:pt-6 md:pb-8">
           <div className="flex items-center gap-2.5 mb-5 md:mb-6">
             <Image
-              src="/gnubokiceon-removebg-preview.png"
-              alt="Gnubok"
+              src={branding.logoPath}
+              alt={branding.appName}
               width={30}
               height={30}
               className="invert opacity-90"
             />
-            <span className="font-display text-base tracking-tight">gnubok</span>
+            <span className="font-display text-base tracking-tight">{branding.appName.toLowerCase()}</span>
           </div>
           <div className="animate-fade-in">
             <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight leading-[1.1]">
@@ -291,7 +294,7 @@ export default function InvitePage() {
                         Du har bjudits in som medlem till detta företag.
                       </p>
                       <p className="text-sm text-muted-foreground mt-1">
-                        <strong>{invite.email}</strong> har redan ett konto på gnubok.
+                        <strong>{invite.email}</strong> har redan ett konto på {branding.appName.toLowerCase()}.
                         Logga in för att gå med.
                       </p>
                     </div>

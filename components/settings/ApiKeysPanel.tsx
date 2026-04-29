@@ -18,6 +18,10 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
 import { useToast } from '@/components/ui/use-toast'
 import { Loader2, Plus, Copy, Check, Trash2, Key, ChevronDown } from 'lucide-react'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
+const connectorName = branding.appName.toLowerCase()
 
 const SCOPE_GROUPS = [
   {
@@ -335,7 +339,7 @@ export function ApiKeysPanel() {
             </div>
             <p className="text-xs text-muted-foreground mb-2">
               Gå till <strong>Settings &rarr; Integrations &rarr; Add Integration</strong> och klistra in MCP-serverns URL.
-              Du loggas in via ditt gnubok-konto — ingen API-nyckel behövs.
+              Du loggas in via ditt {connectorName}-konto — ingen API-nyckel behövs.
             </p>
             <CopyBlock text={mcpUrl} />
           </div>
@@ -345,7 +349,7 @@ export function ApiKeysPanel() {
             <p className="text-xs text-muted-foreground mb-2">
               Kör i terminalen — loggar in via webbläsaren:
             </p>
-            <CopyBlock text={`claude mcp add gnubok --transport http ${mcpUrl}`} />
+            <CopyBlock text={`claude mcp add ${connectorName} --transport http ${mcpUrl}`} />
           </div>
 
           <div className="border-t pt-4">
@@ -366,7 +370,7 @@ export function ApiKeysPanel() {
                   </p>
                   <CopyBlock text={`{
   "mcpServers": {
-    "gnubok": {
+    "${connectorName}": {
       "command": "npx",
       "args": ["gnubok-mcp"],
       "env": {
@@ -382,7 +386,7 @@ export function ApiKeysPanel() {
                   <p className="text-xs text-muted-foreground mb-2">
                     Kör i terminalen med en API-nyckel:
                   </p>
-                  <CopyBlock text={`claude mcp add gnubok --transport http \\
+                  <CopyBlock text={`claude mcp add ${connectorName} --transport http \\
   --url ${mcpUrl} \\
   --header "Authorization: Bearer gnubok_sk_..."`} />
                 </div>

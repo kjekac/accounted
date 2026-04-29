@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
 import { requireCompanyId } from '@/lib/company/context'
 import { generatePain001 } from '@/lib/salary/payment/pain001-generator'
+import { getBranding } from '@/lib/branding/service'
 import type { Pain001CompanyData, Pain001Employee } from '@/lib/salary/payment/pain001-generator'
 
 ensureInitialized()
@@ -105,7 +106,7 @@ export async function GET(
     })
 
   const periodLabel = `${run.period_year}-${String(run.period_month).padStart(2, '0')}`
-  const messageId = `GNUBOK-${company.org_number?.replace('-', '')}-${periodLabel}`
+  const messageId = `${getBranding().appName.toUpperCase()}-${company.org_number?.replace('-', '')}-${periodLabel}`
 
   const xml = generatePain001(companyData, employees, {
     messageId,

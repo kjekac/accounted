@@ -9,6 +9,9 @@ import { useToast } from '@/components/ui/use-toast'
 import { switchCompany, createCompanyFromTicRole } from '@/lib/company/actions'
 import { mapEntityType } from '@/lib/company-lookup/entity-type-map'
 import type { CompanyLookupResult, EnrichmentCompanyRole } from '@/lib/company-lookup/types'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 
 export interface MemberCompany {
   id: string
@@ -280,7 +283,7 @@ export default function BankIdCompanyPicker({
         {memberCompanies.length > 0 && (
           <section>
             <h2 className="text-xs uppercase tracking-[0.08em] text-muted-foreground mb-3">
-              Dina företag i gnubok
+              Dina företag i {branding.appName.toLowerCase()}
             </h2>
             <ul className="space-y-2">
               {memberCompanies.map((c) => {
@@ -348,7 +351,7 @@ export default function BankIdCompanyPicker({
                             </p>
                           </div>
                           <span className="text-[10px] uppercase tracking-wide text-muted-foreground flex-shrink-0">
-                            Finns redan i gnubok
+                            Finns redan i {branding.appName.toLowerCase()}
                           </span>
                         </div>
                         <p className="text-xs text-muted-foreground/70 mt-2">

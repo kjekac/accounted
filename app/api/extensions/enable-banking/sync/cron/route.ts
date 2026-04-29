@@ -11,6 +11,7 @@ import {
 } from '@/lib/email/consent-notification-templates'
 import { ensureInitialized } from '@/lib/init'
 import { verifyCronSecret } from '@/lib/auth/cron'
+import { getBranding } from '@/lib/branding/service'
 import type { StoredAccount } from '@/extensions/general/enable-banking/types'
 
 ensureInitialized()
@@ -298,7 +299,7 @@ async function sendConsentExpiryNotification(
       bankName: connection.bank_name as string,
       daysUntilExpiry: daysLeft,
       renewalUrl: `${baseUrl}/settings/banking`,
-      companyName: companySettings?.company_name || 'gnubok',
+      companyName: companySettings?.company_name || getBranding().appName.toLowerCase(),
       isExpired,
     }
 

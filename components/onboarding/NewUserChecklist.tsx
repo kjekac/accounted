@@ -10,6 +10,9 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 
 interface NewUserChecklistProps {
   onFreshStart: () => void
@@ -29,7 +32,7 @@ export default function NewUserChecklist({
         {/* Header */}
         <div className="text-center mb-8 md:mb-12">
           <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight">
-            Välkommen till gnubok
+            Välkommen till {branding.appName.toLowerCase()}
           </h1>
           <p className="text-muted-foreground text-sm md:text-base leading-relaxed max-w-md mx-auto mt-3">
             Börja med att hämta din bokföring, sedan kopplar du banken.

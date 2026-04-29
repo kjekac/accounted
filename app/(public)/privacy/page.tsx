@@ -1,11 +1,15 @@
 import type { Metadata } from 'next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { getBranding } from '@/lib/branding/service'
 
-export const metadata: Metadata = {
-  title: 'Integritetspolicy - Gnubok',
+export function generateMetadata(): Metadata {
+  return {
+    title: `Integritetspolicy - ${getBranding().appName}`,
+  }
 }
 
 export default function PrivacyPolicyPage() {
+  const { appName, legalEntity, privacyEmail } = getBranding()
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white py-12 px-4">
       <div className="max-w-3xl mx-auto space-y-6">
@@ -24,8 +28,8 @@ export default function PrivacyPolicyPage() {
           </CardHeader>
           <CardContent className="prose prose-sm max-w-none">
             <p>
-              Arcim (&quot;vi&quot;, &quot;oss&quot;) är personuppgiftsansvarig för behandlingen av dina
-              personuppgifter i samband med användningen av Gnubok. Vi behandlar dina uppgifter i
+              {legalEntity} (&quot;vi&quot;, &quot;oss&quot;) är personuppgiftsansvarig för behandlingen av dina
+              personuppgifter i samband med användningen av {appName}. Vi behandlar dina uppgifter i
               enlighet med EU:s dataskyddsförordning (GDPR) och svensk dataskyddslagstiftning.
             </p>
           </CardContent>
@@ -205,8 +209,8 @@ export default function PrivacyPolicyPage() {
               För frågor om behandlingen av dina personuppgifter, kontakta oss:
             </p>
             <ul>
-              <li><strong>Företag:</strong> Arcim</li>
-              <li><strong>E-post:</strong> privacy@gnubok.se</li>
+              <li><strong>Företag:</strong> {legalEntity}</li>
+              <li><strong>E-post:</strong> {privacyEmail}</li>
             </ul>
             <p>
               Du har även rätt att lämna klagomål till Integritetsskyddsmyndigheten (IMY),

@@ -1,9 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { getEmailService } from '@/lib/email/service'
-import { SUPPORT_RECIPIENT_EMAIL } from '@/lib/support'
+import { getSupportRecipientEmail } from '@/lib/support'
 import { requireCompanyId } from '@/lib/company/context'
 import { ensureInitialized } from '@/lib/init'
+import { getBranding } from '@/lib/branding/service'
 
 ensureInitialized()
 
@@ -47,8 +48,8 @@ export async function POST(request: Request) {
   const safeMessage = escapeHtml(message).replace(/\n/g, '<br />')
 
   const result = await emailService.sendEmail({
-    to: SUPPORT_RECIPIENT_EMAIL,
-    subject: `[gnubok support] ${subject}`,
+    to: getSupportRecipientEmail(),
+    subject: `[${getBranding().appName.toLowerCase()} support] ${subject}`,
     replyTo: user.email,
     html: `
       <p><strong>Från:</strong> ${escapeHtml(user.email || '')}</p>

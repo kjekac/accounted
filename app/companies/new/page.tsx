@@ -13,6 +13,9 @@ import { cn } from '@/lib/utils'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import type { CompanyLookupResult } from '@/lib/company-lookup/types'
 import type { CompanySettings, EntityType, MomsPeriod } from '@/types'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 
 import Step1EntityType from '@/components/onboarding/Step1EntityType'
 import Step2CompanyDetails from '@/components/onboarding/Step2CompanyDetails'
@@ -229,13 +232,13 @@ function NewCompanyContent() {
                 <ArrowLeft className="h-4 w-4" />
               </Link>
               <Image
-                src="/gnubokiceon-removebg-preview.png"
-                alt="Gnubok"
+                src={branding.logoPath}
+                alt={branding.appName}
                 width={30}
                 height={30}
                 className="invert opacity-90"
               />
-              <span className="font-display text-base tracking-tight">gnubok</span>
+              <span className="font-display text-base tracking-tight">{branding.appName.toLowerCase()}</span>
             </div>
             <div className="flex items-center gap-1.5">
               {STEP_INFO.map((_, i) => {

@@ -1,4 +1,5 @@
 import { decryptPersonnummer } from '../personnummer'
+import { getBranding } from '@/lib/branding/service'
 
 /**
  * KU10 (Kontrolluppgift) — Annual employee income statement.
@@ -56,7 +57,7 @@ export function generateKU10Xml(
 
   // Avsändare
   lines.push('  <Avsandare>')
-  lines.push('    <Programnamn>gnubok</Programnamn>')
+  lines.push(`    <Programnamn>${escapeXml(getBranding().appName.toLowerCase())}</Programnamn>`)
   lines.push(`    <Organisationsnummer>${orgNr}</Organisationsnummer>`)
   lines.push('    <TekniskKontaktperson>')
   lines.push(`      <Namn>${escapeXml(company.contactName)}</Namn>`)

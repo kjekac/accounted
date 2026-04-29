@@ -1,3 +1,5 @@
+import { getBranding } from '@/lib/branding/service'
+
 export interface ConsentExpiryEmailData {
   bankName: string
   daysUntilExpiry: number
@@ -11,6 +13,7 @@ export interface ConsentExpiryEmailData {
  */
 export function generateConsentExpiryEmailHtml(data: ConsentExpiryEmailData): string {
   const { bankName, daysUntilExpiry, renewalUrl, companyName, isExpired } = data
+  const { appName } = getBranding()
   const headerColor = isExpired ? '#dc2626' : '#ea580c'
   const title = isExpired
     ? 'Banksynkronisering har stoppats'
@@ -64,7 +67,7 @@ export function generateConsentExpiryEmailHtml(data: ConsentExpiryEmailData): st
       <div style="padding-top: 20px; border-top: 1px solid #e5e7eb;">
         <p style="margin: 0; color: #666; font-size: 14px;">
           Med vänliga hälsningar,<br>
-          <strong>${companyName || 'gnubok'}</strong>
+          <strong>${companyName || appName.toLowerCase()}</strong>
         </p>
       </div>
     </div>
@@ -79,6 +82,7 @@ export function generateConsentExpiryEmailHtml(data: ConsentExpiryEmailData): st
  */
 export function generateConsentExpiryEmailText(data: ConsentExpiryEmailData): string {
   const { bankName, daysUntilExpiry, renewalUrl, companyName, isExpired } = data
+  const { appName } = getBranding()
 
   let text = ''
 
@@ -97,7 +101,7 @@ export function generateConsentExpiryEmailText(data: ConsentExpiryEmailData): st
 
   text += `Hantera bankanslutningar: ${renewalUrl}\n\n`
   text += `Med vänliga hälsningar,\n`
-  text += `${companyName || 'gnubok'}\n`
+  text += `${companyName || appName.toLowerCase()}\n`
 
   return text
 }

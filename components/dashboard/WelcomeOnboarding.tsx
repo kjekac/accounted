@@ -8,6 +8,9 @@ import { useToast } from '@/components/ui/use-toast'
 import { Building2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 import type { CompanyLookupResult } from '@/lib/company-lookup/types'
 import type { CompanySettings, EntityType, MomsPeriod } from '@/types'
 
@@ -143,7 +146,7 @@ export default function WelcomeOnboarding({
         let backToStep2 = false
         if (result.error === 'org_number_exists') {
           title = 'Företaget finns redan'
-          description = 'Det här företaget finns redan i gnubok. Be en befintlig administratör att bjuda in dig.'
+          description = `Det här företaget finns redan i ${branding.appName.toLowerCase()}. Be en befintlig administratör att bjuda in dig.`
           backToStep2 = true
         } else if (result.error === 'org_number_invalid') {
           title = 'Ogiltigt organisationsnummer'
@@ -191,7 +194,7 @@ export default function WelcomeOnboarding({
       <div className="flex flex-col items-start justify-center min-h-[60vh] animate-fade-in">
         <p className="text-muted-foreground/50 text-sm mb-2">{greeting}</p>
         <h1 className="font-display text-4xl md:text-5xl font-medium tracking-tight leading-[1.05] mb-10">
-          Välkommen till Gnubok
+          Välkommen till {branding.appName}
         </h1>
         <button
           onClick={() => setStarted(true)}

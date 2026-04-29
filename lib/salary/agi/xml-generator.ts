@@ -1,4 +1,5 @@
 import { decryptPersonnummer } from '../personnummer'
+import { getBranding } from '@/lib/branding/service'
 
 /**
  * AGI XML generator — Arbetsgivardeklaration på individnivå.
@@ -186,7 +187,7 @@ export function generateAGIXml(
 
   // ── Avsandare (komponent namespace) ──────────────────────────
   lines.push('  <gem:Avsandare>')
-  lines.push('    <gem:Programnamn>gnubok</gem:Programnamn>')
+  lines.push(`    <gem:Programnamn>${escapeXml(getBranding().appName.toLowerCase())}</gem:Programnamn>`)
   lines.push(`    <gem:Organisationsnummer>${orgIdentitet}</gem:Organisationsnummer>`)
   lines.push('    <gem:TekniskKontaktperson>')
   lines.push(`      <gem:Namn>${escapeXml(company.contactName)}</gem:Namn>`)

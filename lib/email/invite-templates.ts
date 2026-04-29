@@ -1,3 +1,5 @@
+import { getBranding } from '@/lib/branding/service'
+
 export interface InviteEmailData {
   companyName: string
   inviterEmail: string
@@ -5,11 +7,13 @@ export interface InviteEmailData {
 }
 
 export function generateInviteEmailSubject(data: InviteEmailData): string {
-  return `Du har bjudits in till ${data.companyName} på gnubok`
+  const { appName } = getBranding()
+  return `Du har bjudits in till ${data.companyName} på ${appName.toLowerCase()}`
 }
 
 export function generateInviteEmailHtml(data: InviteEmailData): string {
   const { companyName, inviterEmail, inviteUrl } = data
+  const { appName } = getBranding()
 
   return `
 <!DOCTYPE html>
@@ -24,12 +28,12 @@ export function generateInviteEmailHtml(data: InviteEmailData): string {
     <div style="background: #ffffff; border-radius: 12px; padding: 40px 32px; border: 1px solid #e5e5e5;">
       <!-- Header -->
       <div style="margin-bottom: 28px;">
-        <p style="margin: 0 0 4px 0; font-size: 13px; color: #888; letter-spacing: 0.05em;">GNUBOK</p>
+        <p style="margin: 0 0 4px 0; font-size: 13px; color: #888; letter-spacing: 0.05em;">${appName.toUpperCase()}</p>
         <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600; color: #111;">
           Du har blivit inbjuden
         </h1>
         <p style="margin: 0; color: #666; font-size: 15px;">
-          <strong>${inviterEmail}</strong> har bjudit in dig till <strong>${companyName}</strong> på gnubok.
+          <strong>${inviterEmail}</strong> har bjudit in dig till <strong>${companyName}</strong> på ${appName.toLowerCase()}.
         </p>
       </div>
 
@@ -51,7 +55,8 @@ export function generateInviteEmailHtml(data: InviteEmailData): string {
 }
 
 export function generateInviteEmailText(data: InviteEmailData): string {
-  return `Du har bjudits in till ${data.companyName} på gnubok av ${data.inviterEmail}.
+  const { appName } = getBranding()
+  return `Du har bjudits in till ${data.companyName} på ${appName.toLowerCase()} av ${data.inviterEmail}.
 
 Acceptera inbjudan: ${data.inviteUrl}
 
@@ -68,11 +73,13 @@ export interface TeamInviteEmailData {
 }
 
 export function generateTeamInviteEmailSubject(): string {
-  return 'Du har bjudits in till ett team på gnubok'
+  const { appName } = getBranding()
+  return `Du har bjudits in till ett team på ${appName.toLowerCase()}`
 }
 
 export function generateTeamInviteEmailHtml(data: TeamInviteEmailData): string {
   const { inviterEmail, inviteUrl } = data
+  const { appName } = getBranding()
 
   return `
 <!DOCTYPE html>
@@ -87,7 +94,7 @@ export function generateTeamInviteEmailHtml(data: TeamInviteEmailData): string {
     <div style="background: #ffffff; border-radius: 12px; padding: 40px 32px; border: 1px solid #e5e5e5;">
       <!-- Header -->
       <div style="margin-bottom: 28px;">
-        <p style="margin: 0 0 4px 0; font-size: 13px; color: #888; letter-spacing: 0.05em;">GNUBOK</p>
+        <p style="margin: 0 0 4px 0; font-size: 13px; color: #888; letter-spacing: 0.05em;">${appName.toUpperCase()}</p>
         <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600; color: #111;">
           Du har blivit inbjuden till ett team
         </h1>
@@ -114,7 +121,8 @@ export function generateTeamInviteEmailHtml(data: TeamInviteEmailData): string {
 }
 
 export function generateTeamInviteEmailText(data: TeamInviteEmailData): string {
-  return `Du har bjudits in som konsult till ett team på gnubok av ${data.inviterEmail}. Du får tillgång till alla företag i teamet.
+  const { appName } = getBranding()
+  return `Du har bjudits in som konsult till ett team på ${appName.toLowerCase()} av ${data.inviterEmail}. Du får tillgång till alla företag i teamet.
 
 Acceptera inbjudan: ${data.inviteUrl}
 

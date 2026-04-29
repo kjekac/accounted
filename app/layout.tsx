@@ -4,7 +4,14 @@ import { Fraunces } from "next/font/google";
 import Script from "next/script";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "@/components/theme-provider";
+import { ensureInitialized } from "@/lib/init";
+import { getBranding } from "@/lib/branding/service";
 import "./globals.css";
+
+// Load extensions before metadata/viewport functions read the branding service.
+// Without this, an extension that calls registerBrandingService() at its module
+// load time would not have run yet when the first request hits this layout.
+ensureInitialized();
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,34 +29,40 @@ const fraunces = Fraunces({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  title: "Gnubok",
-  description: "Ekonomihantering",
-  manifest: "/manifest.json",
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: "default",
-    title: "Gnubok",
-  },
-};
+export function generateMetadata(): Metadata {
+  const b = getBranding();
+  return {
+    title: b.appName,
+    description: b.appDescription,
+    manifest: "/manifest.webmanifest",
+    appleWebApp: {
+      capable: true,
+      statusBarStyle: "default",
+      title: b.appName,
+    },
+  };
+}
 
-export const viewport: Viewport = {
-  themeColor: "#304D83",
-  width: "device-width",
-  initialScale: 1,
-  viewportFit: "cover",
-};
+export function generateViewport(): Viewport {
+  return {
+    themeColor: getBranding().themeColor,
+    width: "device-width",
+    initialScale: 1,
+    viewportFit: "cover",
+  };
+}
 
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const branding = getBranding();
   return (
     <html lang="sv" translate="no" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable}`}>
       <head>
         <meta name="google" content="notranslate" />
-        <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+        <link rel="apple-touch-icon" href={branding.appleTouchIconPath} />
         <script
           src="https://cdn.recapt.app/browser/glimt.js"
           async

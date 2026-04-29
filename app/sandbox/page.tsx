@@ -8,6 +8,9 @@ import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { Loader2, Receipt, ArrowLeftRight, BookOpen, BarChart3 } from 'lucide-react'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 
 export default function SandboxPage() {
   const [isLoading, setIsLoading] = useState(false)
@@ -79,8 +82,8 @@ export default function SandboxPage() {
         <div className="w-full max-w-sm animate-slide-up">
           <div className="text-center mb-10">
             <Image
-              src="/gnubokiceon-removebg-preview.png"
-              alt="Gnubok"
+              src={branding.logoPath}
+              alt={branding.appName}
               width={240}
               height={240}
               className="mx-auto mb-2"
@@ -114,15 +117,15 @@ export default function SandboxPage() {
       <div className="w-full max-w-sm animate-slide-up">
         <div className="text-center mb-10">
           <Image
-            src="/gnubokiceon-removebg-preview.png"
-            alt="Gnubok"
+            src={branding.logoPath}
+            alt={branding.appName}
             width={240}
             height={240}
             className="mx-auto mb-2"
             priority
           />
           <h1 className="text-xl font-medium tracking-tight mt-3">
-            Testa gnubok utan att registrera dig
+            Testa {branding.appName.toLowerCase()} utan att registrera dig
           </h1>
           <p className="text-muted-foreground text-sm mt-2 leading-relaxed">
             Utforska ett fullt demoföretag med riktig data — helt gratis.

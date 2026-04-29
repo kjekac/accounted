@@ -13,6 +13,7 @@ import { upsertCounterpartyTemplate, findCounterpartyTemplatesBatch, formatCount
 import { eventBus } from '@/lib/events/bus'
 import { getVatRules, getAvailableVatRates } from '@/lib/invoices/vat-rules'
 import { fetchExchangeRate, convertToSEK } from '@/lib/currency/riksbanken'
+import { getBranding } from '@/lib/branding/service'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
 import {
   calculateGrossMargin,
@@ -128,7 +129,7 @@ async function stagePendingOperation(
   return {
     staged: true,
     operation_id: data.id,
-    message: 'Operation staged for review. Open the gnubok web app to approve or reject it.',
+    message: `Operation staged for review. Open the ${getBranding().appName.toLowerCase()} web app to approve or reject it.`,
     preview: previewData,
   }
 }

@@ -11,6 +11,9 @@ import { Label } from '@/components/ui/label'
 import { Loader2, ArrowRight, ArrowLeft, CheckCircle2, AlertTriangle } from 'lucide-react'
 import type { EntityType } from '@/types'
 import type { CompanyLookupResult } from '@/lib/company-lookup/types'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 
 const schema = z.object({
   company_name: z.string().min(1, 'Företagsnamn krävs'),
@@ -238,7 +241,7 @@ export default function Step2CompanyDetails({
                 <div className="flex items-start gap-2 text-sm text-destructive">
                   <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
                   <span>
-                    Det här företaget finns redan i gnubok. Be en befintlig administratör att bjuda in dig.
+                    Det här företaget finns redan i {branding.appName.toLowerCase()}. Be en befintlig administratör att bjuda in dig.
                   </span>
                 </div>
               )}

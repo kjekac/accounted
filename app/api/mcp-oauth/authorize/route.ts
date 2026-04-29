@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { createAuthCode } from '@/lib/auth/oauth-codes'
 import { requireCompanyId } from '@/lib/company/context'
+import { getBranding } from '@/lib/branding/service'
 
 /**
  * OAuth 2.0 Authorization Endpoint.
@@ -100,6 +101,8 @@ export async function GET(request: Request) {
 
   const companyName = settings?.trade_name || settings?.company_name || user.email
 
+  const appNameLower = escapeHtml(getBranding().appName.toLowerCase())
+
   // Render consent page
   const html = `<!DOCTYPE html>
 <html lang="sv">
@@ -107,7 +110,7 @@ export async function GET(request: Request) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="translate" content="no">
-  <title>Anslut MCP-klient — gnubok</title>
+  <title>Anslut MCP-klient — ${appNameLower}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: system-ui, -apple-system, sans-serif; background: #fafafa; color: #111; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
@@ -128,7 +131,7 @@ export async function GET(request: Request) {
 <body>
   <div class="card">
     <h1>Anslut MCP-klient</h1>
-    <p>En extern applikation vill ansluta till ditt gnubok-konto.</p>
+    <p>En extern applikation vill ansluta till ditt ${appNameLower}-konto.</p>
     <div class="account">${escapeHtml(companyName)}</div>
     <ul class="permissions">
       <li>Visa och kategorisera transaktioner</li>

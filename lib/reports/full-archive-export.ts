@@ -9,6 +9,7 @@ import { generateJournalRegister } from './journal-register'
 import { calculateVatDeclaration } from './vat-declaration'
 import { getAuditLog } from '@/lib/core/audit/audit-service'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { getBranding } from '@/lib/branding/service'
 import type { AuditLogEntry } from '@/types'
 
 export type FullArchiveOptions =
@@ -689,11 +690,12 @@ async function buildSystemDoc(
     voucherSeriesQuery,
   ])
 
+  const branding = getBranding()
   return {
     system: {
-      name: 'gnubok',
+      name: branding.appName.toLowerCase(),
       description: 'Bokforingssystem for enskild firma och aktiebolag',
-      url: process.env.NEXT_PUBLIC_APP_URL || '',
+      url: branding.appUrl,
     },
     kontoplan: {
       standard: 'BAS 2026',

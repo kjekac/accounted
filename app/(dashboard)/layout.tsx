@@ -8,6 +8,7 @@ import { SandboxBanner } from '@/components/dashboard/SandboxBanner'
 import { getExtensionNavItems } from '@/lib/extensions/sectors'
 import { CompanyProvider } from '@/contexts/CompanyContext'
 import { getActiveCompanyId } from '@/lib/company/context'
+import { getBranding } from '@/lib/branding/service'
 import type { EntityType, CompanyRole, Team } from '@/types'
 
 /**
@@ -85,7 +86,7 @@ export default async function DashboardLayout({
         <CompanyTabSync />
         <div className="min-h-screen bg-background">
           <DashboardNav
-            companyName="gnubok"
+            companyName={getBranding().appName.toLowerCase()}
             entityType="enskild_firma"
             uncategorizedTransactionCount={0}
             pendingOperationsCount={0}
@@ -136,7 +137,7 @@ export default async function DashboardLayout({
         <CompanyTabSync />
         <div className="min-h-screen bg-background">
           <DashboardNav
-            companyName="gnubok"
+            companyName={getBranding().appName.toLowerCase()}
             entityType="enskild_firma"
             uncategorizedTransactionCount={0}
             pendingOperationsCount={0}

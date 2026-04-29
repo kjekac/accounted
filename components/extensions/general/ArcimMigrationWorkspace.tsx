@@ -11,6 +11,9 @@ import { cn } from '@/lib/utils'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import Link from 'next/link'
 import { FallbackPrompt } from '@/components/ui/fallback-prompt'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 import {
   ArrowLeft,
   ArrowRight,
@@ -415,8 +418,8 @@ function ConnectStep({
   const needsCompanyId = provider === 'bokio' || provider === 'bjornlunden'
 
   const tokenDescription = isClientCredentials
-    ? `Ange ditt företags-ID (GUID) från Björn Lundén. gnubok ansluter automatiskt via sin integrationspartner-åtkomst.`
-    : `Ange din API-nyckel från ${providerName} för att ge gnubok tillgång att läsa din bokföringsdata.`
+    ? `Ange ditt företags-ID (GUID) från Björn Lundén. ${branding.appName.toLowerCase()} ansluter automatiskt via sin integrationspartner-åtkomst.`
+    : `Ange din API-nyckel från ${providerName} för att ge ${branding.appName.toLowerCase()} tillgång att läsa din bokföringsdata.`
 
   const tokenHelpText = isClientCredentials
     ? `Hittas i Björn Lundén under Inställningar \u2192 Företagsinformation (GUID-format).`
@@ -436,7 +439,7 @@ function ConnectStep({
           <CardDescription>
             {authType === 'token'
               ? tokenDescription
-              : `Logga in i ${providerName} för att ge gnubok tillgång att läsa din bokföringsdata.`
+              : `Logga in i ${providerName} för att ge ${branding.appName.toLowerCase()} tillgång att läsa din bokföringsdata.`
             }
           </CardDescription>
         </CardHeader>
@@ -638,7 +641,7 @@ function PreviewStep({
               <div>
                 <p className="text-sm font-medium text-destructive">SIE-import krävs</p>
                 <p className="text-xs text-muted-foreground">
-                  Bokföringsdata (kontoplan, verifikationer och balanser) måste importeras via SIE-fil innan kunder, leverantörer och fakturor kan hämtas. Exportera en SIE-fil från {ARCIM_PROVIDERS.find(p => p.id === preview.consent.provider)?.name ?? 'ditt bokföringssystem'} och ladda upp den i gnubok.
+                  Bokföringsdata (kontoplan, verifikationer och balanser) måste importeras via SIE-fil innan kunder, leverantörer och fakturor kan hämtas. Exportera en SIE-fil från {ARCIM_PROVIDERS.find(p => p.id === preview.consent.provider)?.name ?? 'ditt bokföringssystem'} och ladda upp den i {branding.appName.toLowerCase()}.
                 </p>
                 <Link
                   href="/import?mode=sie"
@@ -912,7 +915,7 @@ function OptionsStep({
         }}
         isSubmitting={false}
         title="Starta migrering"
-        warningText="Bokföringsdata, kunder, leverantörer och fakturor importeras till gnubok. Se till att ingen annan import pågår."
+        warningText={`Bokföringsdata, kunder, leverantörer och fakturor importeras till ${branding.appName.toLowerCase()}. Se till att ingen annan import pågår.`}
         confirmLabel="Starta migrering"
       >
         <div className="space-y-2">

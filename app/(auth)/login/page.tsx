@@ -13,6 +13,9 @@ import Image from 'next/image'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { isBankIdEnabled } from '@/lib/auth/bankid'
 import { BankIdAuth } from '@/components/auth/BankIdAuth'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 import type { BankIdResult } from '@/components/auth/BankIdAuth'
 
 export default function LoginPage() {
@@ -335,8 +338,8 @@ export default function LoginPage() {
       <div className="w-full max-w-sm animate-slide-up">
         <div className="text-center mb-10">
           <Image
-            src="/gnubokiceon-removebg-preview.png"
-            alt="Gnubok"
+            src={branding.logoPath}
+            alt={branding.appName}
             width={240}
             height={240}
             className="mx-auto mb-2"

@@ -1,3 +1,4 @@
+import { getBranding } from '@/lib/branding/service'
 import type {
   INK2Declaration,
   INK2RSRUCode,
@@ -24,7 +25,6 @@ import {
  */
 
 const CRLF = '\r\n'
-const PROGRAM_NAME = 'gnubok'
 const PROGRAM_VERSION = '1.0'
 
 /**
@@ -104,7 +104,7 @@ function generateInfoSru(declaration: INK2Declaration, now: Date): string {
   lines.push('#DATABESKRIVNING_START')
   lines.push('#PRODUKT SRU')
   lines.push(`#SKAPAD ${formatDate(now)} ${formatTime(now)}`)
-  lines.push(`#PROGRAM ${PROGRAM_NAME} ${PROGRAM_VERSION}`)
+  lines.push(`#PROGRAM ${sanitizeString(getBranding().appName.toLowerCase())} ${PROGRAM_VERSION}`)
   lines.push('#FILNAMN BLANKETTER.SRU')
   lines.push('#DATABESKRIVNING_SLUT')
 

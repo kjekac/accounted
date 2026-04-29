@@ -6,6 +6,7 @@ import { requireWritePermission } from '@/lib/auth/require-write'
 import { getEmailService } from '@/lib/email/service'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { gateAgentInbox } from '@/lib/ai/feature-flag'
+import { getBranding } from '@/lib/branding/service'
 import type { InvoiceInboxItem } from '@/types'
 
 ensureInitialized()
@@ -105,7 +106,7 @@ export async function POST(
   const currency = extracted?.receipt?.currency ?? 'SEK'
   const date = extracted?.receipt?.date ?? null
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://gnubok.se'
+  const appUrl = getBranding().appUrl
   const deepLink = `${appUrl.replace(/\/$/, '')}/agent-inbox`
 
   const subject = `[${companyName}] Kvittobild behövs för bokföring`

@@ -1,12 +1,16 @@
 import type { Metadata } from 'next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import Link from 'next/link'
+import { getBranding } from '@/lib/branding/service'
 
-export const metadata: Metadata = {
-  title: 'Personuppgiftsbitradesavtal - Gnubok',
+export function generateMetadata(): Metadata {
+  return {
+    title: `Personuppgiftsbitradesavtal - ${getBranding().appName}`,
+  }
 }
 
 export default function DPAPage() {
+  const { appName, legalEntity, privacyEmail } = getBranding()
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white py-12 px-4">
       <div className="max-w-3xl mx-auto space-y-6">
@@ -28,11 +32,11 @@ export default function DPAPage() {
               Detta personuppgiftsbitradesavtal (&quot;DPA&quot;) ingår mellan:
             </p>
             <ul>
-              <li><strong>Personuppgiftsansvarig (&quot;den Ansvarige&quot;):</strong> Du som användare av Gnubok,
+              <li><strong>Personuppgiftsansvarig (&quot;den Ansvarige&quot;):</strong> Du som användare av {appName},
                 i egenskap av ansvarig för de personuppgifter du registrerar i tjänsten
                 (kunder, leverantörer, anställda m.fl.).</li>
-              <li><strong>Personuppgiftsbiträde (&quot;Biträdet&quot;):</strong> Arcim, som tillhandahåller
-                Gnubok-tjänsten och behandlar personuppgifter på dina vägnar.</li>
+              <li><strong>Personuppgiftsbiträde (&quot;Biträdet&quot;):</strong> {legalEntity}, som tillhandahåller
+                {' '}{appName}-tjänsten och behandlar personuppgifter på dina vägnar.</li>
             </ul>
           </CardContent>
         </Card>
@@ -174,8 +178,8 @@ export default function DPAPage() {
           <CardContent className="pt-6">
             <p className="text-sm text-muted-foreground text-center">
               Detta personuppgiftsbitradesavtal träder i kraft när du skapar ett konto på
-              Gnubok och gäller så länge du använder tjänsten. För frågor, kontakta oss
-              på privacy@gnubok.se.
+              {' '}{appName} och gäller så länge du använder tjänsten. För frågor, kontakta oss
+              på {privacyEmail}.
             </p>
           </CardContent>
         </Card>

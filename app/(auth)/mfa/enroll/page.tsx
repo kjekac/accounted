@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useToast } from '@/components/ui/use-toast'
 import { Loader2, ShieldCheck, Copy, Check, ArrowLeft } from 'lucide-react'
+import { getBranding } from '@/lib/branding/service'
 
 export default function MfaEnrollPage() {
   return (
@@ -50,7 +51,7 @@ function MfaEnrollContent() {
 
       const { data, error } = await supabase.auth.mfa.enroll({
         factorType: 'totp',
-        friendlyName: 'gnubok',
+        friendlyName: getBranding().appName.toLowerCase(),
       })
 
       if (error) {

@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer'
+import { getBranding } from '@/lib/branding/service'
 
 /**
  * Pay slip PDF template (Lönespecifikation).
@@ -388,7 +389,7 @@ export function PayslipPDF({ data }: { data: PayslipData }) {
 
         {/* Footer */}
         <Text style={styles.footer}>
-          {data.companyName} · Org.nr {data.companyOrgNumber} · Lönespecifikation {periodLabel} · Genererad av gnubok
+          {data.companyName} · Org.nr {data.companyOrgNumber} · Lönespecifikation {periodLabel} · Genererad av {getBranding().appName.toLowerCase()}
         </Text>
       </Page>
     </Document>

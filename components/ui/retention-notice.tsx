@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getBranding } from '@/lib/branding/service'
 
 interface RetentionNoticeProps {
   variant: 'company' | 'account'
@@ -20,6 +21,7 @@ interface RetentionNoticeProps {
  * hides it from the UI and anonymizes PII where applicable.
  */
 export function RetentionNotice({ variant, className }: RetentionNoticeProps) {
+  const { appName } = getBranding()
   const copy =
     variant === 'company'
       ? {
@@ -27,7 +29,7 @@ export function RetentionNotice({ variant, className }: RetentionNoticeProps) {
           body: (
             <>
               Enligt bokföringslagen (BFL 7 kap. 2§) sparas räkenskapsinformation i 7 år.
-              När du raderar företaget döljs det i gnubok, men verifikationer, dokument och
+              När du raderar företaget döljs det i {appName.toLowerCase()}, men verifikationer, dokument och
               bokföring behålls säkert tills lagkravet löpt ut. Du kan{' '}
               <Link
                 href="/settings/backup"

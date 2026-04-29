@@ -17,6 +17,9 @@ import {
 import { RetentionNotice } from '@/components/ui/retention-notice'
 import { Loader2 } from 'lucide-react'
 import { useToast } from '@/components/ui/use-toast'
+import { getBranding } from '@/lib/branding/service'
+
+const branding = getBranding()
 
 /**
  * Danger zone for the currently-active company. Only visible to owners.
@@ -106,7 +109,7 @@ export function CompanyDangerZone() {
           <DialogHeader>
             <DialogTitle>Radera {company.name}</DialogTitle>
             <DialogDescription>
-              Företaget döljs från gnubok. Bokföringen behålls säkert i 7 år enligt BFL.
+              Företaget döljs från {branding.appName.toLowerCase()}. Bokföringen behålls säkert i 7 år enligt BFL.
               Skriv företagets namn exakt för att bekräfta.
             </DialogDescription>
           </DialogHeader>

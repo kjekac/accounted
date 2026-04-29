@@ -6,11 +6,16 @@
 
 import { Resend } from 'resend'
 import { createLogger } from '@/lib/logger'
+import { getBranding } from '@/lib/branding/service'
 import type { EmailService, SendEmailOptions, SendEmailResult } from '@/lib/email/service'
 
 const log = createLogger('email')
 
 const DEFAULT_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'noreply@localhost'
+
+function sanitizeHeaderPart(s: string): string {
+  return s.replace(/[\r\n<>]/g, '').trim()
+}
 
 let resendClient: Resend | null = null
 
@@ -36,9 +41,15 @@ export class ResendEmailService implements EmailService {
       return { success: false, error: 'Email service is not configured' }
     }
 
-    const from = fromName
-      ? `${fromName} via Gnubok <${DEFAULT_FROM_EMAIL}>`
-      : `Gnubok <${DEFAULT_FROM_EMAIL}>`
+    // Strip CRLF and angle brackets from name parts to prevent header injection.
+    // Resend's API does its own validation, but defense in depth — both fromName
+    // (user-controlled, from company settings) and appName (admin-controlled,
+    // from branding) flow into the From header.
+    const safeAppName = sanitizeHeaderPart(getBranding().appName)
+    const safeFromName = fromName ? sanitizeHeaderPart(fromName) : null
+    const from = safeFromName
+      ? `${safeFromName} via ${safeAppName} <${DEFAULT_FROM_EMAIL}>`
+      : `${safeAppName} <${DEFAULT_FROM_EMAIL}>`
 
     try {
       const resend = getResendClient()
