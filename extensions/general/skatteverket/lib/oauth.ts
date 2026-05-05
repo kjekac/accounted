@@ -17,7 +17,12 @@ import {
  */
 
 const DEFAULT_OAUTH_BASE_URL = 'https://peroauth2.test.skatteverket.se/oauth2/v1/per'
-const DEFAULT_SCOPES = 'momsdeklaration inkforetag ska skahmst skattekonto'
+// `agd` is the AGI (arbetsgivardeklaration) scope. Source: SKV's service
+// description PDF, Tjänstebeskrivning Arbetsgivardeklaration inlämning v1.7,
+// section 4.1.2.2 — the 403 "Felaktigt access scope" example shows
+// `"description": "The required scope agd has been requested for that access token."`
+// The other tokens match the path segments of their respective APIs.
+const DEFAULT_SCOPES = 'momsdeklaration inkforetag ska skahmst skattekonto agd'
 
 function getOAuthBaseUrl(): string {
   return process.env.SKATTEVERKET_OAUTH_BASE_URL || DEFAULT_OAUTH_BASE_URL

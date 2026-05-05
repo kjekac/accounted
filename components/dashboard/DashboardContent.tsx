@@ -83,6 +83,7 @@ export default function DashboardContent({ firstName, companyId, settings, summa
   if (setupGateActive) {
     return (
       <NewUserChecklist
+        hasSkatteverketConnected={!!onboardingProgress?.hasSkatteverketConnected}
         onFreshStart={() => {
           localStorage.setItem(setupFreshStartKey(companyId), 'true')
           setSetupGateActive(false)

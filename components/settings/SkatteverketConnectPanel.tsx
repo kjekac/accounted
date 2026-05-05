@@ -23,6 +23,7 @@ const SCOPE_LABELS: Record<string, string> = {
   ska: 'Skatteinformation',
   skahmst: 'Hemortskommun',
   skattekonto: 'Skattekonto',
+  agd: 'Arbetsgivardeklaration',
 }
 
 export function SkatteverketConnectPanel() {
@@ -168,10 +169,17 @@ export function SkatteverketConnectPanel() {
               för att aktivera saldo- och transaktionsvyn.
             </p>
           )}
+          {!scopes.includes('agd') && (
+            <p className="mt-3 text-sm text-foreground">
+              Behörigheten för Arbetsgivardeklaration (AGI) saknas — koppla
+              från och anslut igen för att kunna skicka AGI direkt från {`gnubok`}.
+              Tokens utfärdade innan AGI-stödet aktiverades saknar denna scope.
+            </p>
+          )}
         </div>
 
         <div className="flex gap-2 pt-2">
-          {(status.expired || !status.canRefresh || !scopes.includes('skattekonto')) && (
+          {(status.expired || !status.canRefresh || !scopes.includes('skattekonto') || !scopes.includes('agd')) && (
             <Button onClick={startConnect}>
               <ExternalLink className="mr-2 h-4 w-4" />
               Anslut igen

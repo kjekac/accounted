@@ -186,11 +186,13 @@ describe('POST /api/salary/runs/[id]/agi/submit', () => {
     expect(body.data.salaryRunId).toBe('run-1')
     expect(body.data.periodYear).toBe(2026)
     expect(body.data.periodMonth).toBe(3)
-    expect(body.data.message).toContain('utkast')
+    expect(body.data.message).toContain('underlag')
 
-    // Verify the extension endpoint was called correctly
+    // Verify the extension endpoint was called correctly. The orchestrator
+    // forwards to /agi/submit (XML POST /underlag flow), not the old
+    // /agi/draft endpoint that mapped to a non-existent SKV URL.
     expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('/api/extensions/ext/skatteverket/agi/draft'),
+      expect.stringContaining('/api/extensions/ext/skatteverket/agi/submit'),
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ salaryRunId: 'run-1' }),

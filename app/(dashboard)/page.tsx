@@ -75,6 +75,7 @@ export default async function DashboardPage() {
     { count: sieImportCount },
     { count: staleUncategorizedCount },
     { count: uncategorizedCount },
+    { count: skatteverketTokenCount },
   ] = await Promise.all([
     supabase.from('profiles').select('full_name').eq('id', user.id).single(),
     supabase.from('company_settings').select('*').eq('company_id', companyId).single(),
@@ -101,6 +102,10 @@ export default async function DashboardPage() {
     supabase.from('sie_imports').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'completed'),
     supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('company_id', companyId).is('journal_entry_id', null).not('is_business', 'eq', false).lt('date', new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]),
     supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('company_id', companyId).is('is_business', null),
+    // Skatteverket tokens are user-scoped (one BankID identity per user) but
+    // carry the active company_id; either filter would work — we use user_id
+    // because that's what the token-store reads/writes against.
+    supabase.from('skatteverket_tokens').select('*', { count: 'exact', head: true }).eq('user_id', user.id),
   ])
 
   const firstName = profile?.full_name?.split(' ')[0] || null
@@ -115,6 +120,7 @@ export default async function DashboardPage() {
     hasInvoices: (invoiceCount || 0) > 0,
     hasBankConnected: (transactionCount || 0) > 0,
     hasSIEImport: (sieImportCount || 0) > 0,
+    hasSkatteverketConnected: (skatteverketTokenCount || 0) > 0,
   }
 
   // Calculate totals from journal entry lines using account classes

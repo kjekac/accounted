@@ -144,7 +144,7 @@ export async function skvRequest(
   method: string,
   path: string,
   body?: unknown,
-  options?: { baseUrl?: string }
+  options?: { baseUrl?: string; contentType?: string }
 ): Promise<Response> {
   const accessToken = await getValidToken(supabase, userId)
 
@@ -158,14 +158,20 @@ export async function skvRequest(
     'skv_client_correlation_id': crypto.randomUUID(),
   }
 
+  // contentType defaults to application/json, which is right for moms +
+  // skattekonto. AGI's POST /underlag takes application/xml — callers pass
+  // the XML as a string body and override contentType.
+  let serializedBody: string | undefined
   if (body !== undefined) {
-    headers['Content-Type'] = 'application/json'
+    const contentType = options?.contentType ?? 'application/json'
+    headers['Content-Type'] = contentType
+    serializedBody = typeof body === 'string' ? body : JSON.stringify(body)
   }
 
   const response = await fetch(url, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: serializedBody,
   })
 
   // Handle Skatteverket-specific auth/throttle errors uniformly so callers
@@ -179,6 +185,22 @@ export async function skvRequest(
 
   if (response.status === 403) {
     const text = await response.text()
+    // Missing scope on the access token — fires when an existing connection
+    // pre-dates an extension that needed a new scope (the AGI/`agd` rollout
+    // is the canonical example). The user has to disconnect + reconnect to
+    // re-issue a token with the broader scope set; we want to say so
+    // explicitly instead of letting it surface as a generic 403.
+    // Body shape per SKV's AGI service description (Tjänstebeskrivning v1.7
+    // §4.1.2.2): { "error": "invalid_scope", "description": "The required
+    // scope agd has been requested for that access token." }
+    if (text.includes('invalid_scope') || text.includes('required scope')) {
+      throw new SkatteverketAuthError(
+        'Anslutningen mot Skatteverket saknar nödvändig behörighet för denna ' +
+        'tjänst. Koppla bort och anslut igen via Inställningar → Skatteverket ' +
+        'för att förnya tokenen med rätt scope.',
+        'MISSING_SCOPE'
+      )
+    }
     // Behörighet saknas — user is authenticated but not authorized for this company
     if (text.includes('Behörighet') || text.includes('behörighet')) {
       throw new SkatteverketAuthError(
@@ -218,6 +240,9 @@ export async function skvRequest(
  *   REFRESH_EXHAUSTED  — refresh count hit cap (10) before user re-auth
  *   BEHORIGHET_SAKNAS  — 403 with "Behörighet" body; user not authorized
  *                        for this company at SKV (firmatecknare / ombud)
+ *   MISSING_SCOPE      — 403 with "invalid_scope" body; the stored token
+ *                        was issued before the required scope existed.
+ *                        User must disconnect + reconnect.
  *   ACCESS_DENIED      — generic 403
  *   RATE_LIMITED       — 429 from SKV API gateway
  *   TOKEN_CORRUPTED    — stored tokens cannot be decrypted (key rotated
@@ -231,6 +256,7 @@ export class SkatteverketAuthError extends Error {
       | 'SESSION_EXPIRED'
       | 'REFRESH_EXHAUSTED'
       | 'BEHORIGHET_SAKNAS'
+      | 'MISSING_SCOPE'
       | 'ACCESS_DENIED'
       | 'RATE_LIMITED'
       | 'TOKEN_CORRUPTED'

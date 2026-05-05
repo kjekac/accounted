@@ -3,6 +3,8 @@
 import Link from 'next/link'
 import {
   ArrowRight,
+  CheckCircle2,
+  FileCheck,
   FileText,
   Landmark,
   ArrowRightLeft,
@@ -17,14 +19,21 @@ const branding = getBranding()
 interface NewUserChecklistProps {
   onFreshStart: () => void
   className?: string
+  /**
+   * Whether the active user already has a Skatteverket OAuth connection.
+   * When true the Skatteverket step renders as completed instead of as a CTA.
+   */
+  hasSkatteverketConnected?: boolean
 }
 
 export default function NewUserChecklist({
   onFreshStart,
   className,
+  hasSkatteverketConnected,
 }: NewUserChecklistProps) {
   const hasMigration = ENABLED_EXTENSION_IDS.has('arcim-migration')
   const hasBanking = ENABLED_EXTENSION_IDS.has('enable-banking')
+  const hasSkatteverket = ENABLED_EXTENSION_IDS.has('skatteverket')
 
   return (
     <div className={cn('min-h-[75vh] flex flex-col items-center justify-center px-4 sm:px-0 stagger-enter', className)}>
@@ -111,7 +120,7 @@ export default function NewUserChecklist({
         </div>
 
         {/* Step 2: Connect bank */}
-        <div className="mb-8 md:mb-12">
+        <div className="mb-6 md:mb-8">
           <div className="flex items-center gap-3 mb-4">
             <span className="h-7 w-7 rounded-full bg-foreground text-background flex items-center justify-center text-xs font-semibold flex-shrink-0 tabular-nums">
               2
@@ -145,6 +154,77 @@ export default function NewUserChecklist({
             </Link>
           </div>
         </div>
+
+        {/* Step 3: Connect Skatteverket — only when the extension is enabled.
+            Optional: connecting here lets gnubok submit moms + AGI and read
+            skattekonto saldo, but the user can skip and do it later from
+            /settings/skatteverket. The OAuth flow returns to the dashboard
+            via return_to=/, which clears the gate via the same path the
+            user would take naturally. */}
+        {hasSkatteverket && (
+          <div className="mb-8 md:mb-12">
+            <div className="flex items-center gap-3 mb-4">
+              <span className={cn(
+                'h-7 w-7 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0 tabular-nums',
+                hasSkatteverketConnected
+                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                  : 'bg-foreground text-background',
+              )}>
+                {hasSkatteverketConnected
+                  ? <CheckCircle2 className="h-4 w-4" />
+                  : '3'}
+              </span>
+              <h2 className="font-display text-base font-medium tracking-tight">
+                Anslut Skatteverket
+              </h2>
+              <span className="text-xs text-muted-foreground">— valfritt</span>
+            </div>
+
+            <div className="ml-0 sm:ml-10">
+              {hasSkatteverketConnected ? (
+                <div className="block p-4 sm:p-5 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.04]">
+                  <div className="flex items-start gap-3 sm:gap-4">
+                    <div className="p-2 sm:p-2.5 rounded-lg bg-emerald-500/[0.10] flex-shrink-0">
+                      <FileCheck className="h-4 w-4 sm:h-5 sm:w-5 text-emerald-700 dark:text-emerald-400" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm sm:text-base text-emerald-900 dark:text-emerald-200">
+                        Skatteverket anslutet
+                      </p>
+                      <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed">
+                        Du kan nu skicka momsdeklaration och AGI direkt, samt se saldot på skattekontot.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                // eslint-disable-next-line @next/next/no-html-link-for-pages -- /api route, not a Next page
+                <a
+                  // Plain anchor — the authorize endpoint 302-redirects to
+                  // skatteverket.se; <Link> would route via Next's client
+                  // router which doesn't follow cross-origin redirects.
+                  href="/api/extensions/ext/skatteverket/authorize?return_to=/"
+                  className="group block p-4 sm:p-5 rounded-xl border border-border/60 hover:border-primary/40 hover:bg-primary/[0.02] transition-all duration-150 active:scale-[0.99]"
+                >
+                  <div className="flex items-start gap-3 sm:gap-4">
+                    <div className="p-2 sm:p-2.5 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
+                      <FileCheck className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground group-hover:text-primary transition-colors" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium group-hover:text-primary transition-colors text-sm sm:text-base">
+                        Anslut till Skatteverket med BankID
+                      </p>
+                      <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed">
+                        Skicka momsdeklaration och arbetsgivardeklaration direkt, och hämta saldot på skattekontot — utan att lämna {branding.appName.toLowerCase()}.
+                      </p>
+                    </div>
+                    <ArrowRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-primary/60 mt-1 flex-shrink-0 transition-colors" />
+                  </div>
+                </a>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Escape hatch */}
         <div className="space-y-5">

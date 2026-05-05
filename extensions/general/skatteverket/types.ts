@@ -91,69 +91,126 @@ export type DeclarationStatus =
   | 'decided'
 
 // ── AGI (Arbetsgivardeklaration) types ──────────────────────────
+//
+// Field shapes mirror the Skatteverket RAMLs in dev_docs/:
+//   • arbetsgivardeklaration-inlamning(1.7.7)             (XML ingest + JSON status)
+//   • arbetsgivardeklaration-hantera-redovisningsperiod(1.2.8) (period management)
+//
+// AGI submission is XML, not JSON. The XML body posted to /underlag is built
+// by lib/salary/agi/xml-generator.ts and stored in agi_declarations.xml_content.
+// The types below describe only the JSON responses the extension reads back.
 
 /**
- * AGI submission payload — sent to Skatteverket inlämning API.
- *
- * JSON property names follow the same camelCase convention as the
- * Momsdeklaration API. Derived from Skatteverket's XML element names
- * and FK field codes. Verify against the RAML spec on Utvecklarportalen.
+ * Response from POST /underlag — Skatteverket assigns an inlämningsId we
+ * then use to poll kontrollresultat and to spara/avbryta.
  */
-export interface SkatteverketAGIInlamning {
-  rattelse: boolean
-  huvuduppgift: SkatteverketHuvuduppgift
-  individuppgifter: SkatteverketIndividuppgift[]
+export interface SkatteverketAGIUnderlagResponse {
+  inlamningId: number
 }
 
-/** Employer-level totals (Huvuduppgift) */
-export interface SkatteverketHuvuduppgift {
-  /** Ruta 001: Total avdragen skatt */
-  avdragenSkatt?: number
-  /** Ruta 020: Total underlag arbetsgivaravgifter */
-  summaArbetsgivaravgifterUnderlag?: number
-  /** Ruta 060: Avgifter — standard rate (31.42%) */
-  avgifterUnderlagStandard?: number
-  /** Ruta 061: Avgifter — ålderspension only (10.21%, 67+ from 2026) */
-  avgifterUnderlagAlderspension?: number
-  /** Ruta 062: Avgifter — youth rate (20.81%, ages 19-23, Apr 2026–Sep 2027) */
-  avgifterUnderlagUngdom?: number
-}
-
-/** Per-employee data (Individuppgift) */
-export interface SkatteverketIndividuppgift {
-  /** FK215: Personnummer/samordningsnummer (12 digits, plaintext) */
-  personnummer: string
-  /** FK570: Specifikationsnummer — MUST stay consistent per employee */
-  specifikationsnummer: number
-  /** Ruta 011: Kontant bruttolön */
-  kontantBruttoloen?: number
-  /** Ruta 001: Avdragen skatt */
-  avdragenSkatt?: number
-  /** Ruta 012: Förmån bil */
-  formanBil?: number
-  /** Ruta 013: Förmån drivmedel */
-  formanDrivmedel?: number
-  /** Ruta 014: Förmån bostad */
-  formanBostad?: number
-  /** Ruta 015: Förmån kost */
-  formanKost?: number
-  /** Ruta 019: Förmån övrigt */
-  formanOvrigt?: number
-  /** Ruta 020: Underlag arbetsgivaravgifter */
-  underlagArbetsgivaravgifter?: number
-  /** Ruta 131: Ersättning till F-skatt holder */
-  ersattningFSkatt?: number
-  /** FK821: Sjukfrånvaro dagar */
-  sjukfranvaroDagar?: number
-  /** FK822: VAB dagar */
-  vabDagar?: number
-  /** FK823: Föräldraledighet dagar */
-  foraldraledigDagar?: number
-}
-
-/** AGI validation result from Skatteverket /kontrollera */
+/**
+ * Response from GET /underlag/{inlamningId}/kontrollresultat.
+ * Status flow: PROCESSING → DONE_SUCCESS | DONE_FAILED | DONE_REJECTED.
+ *
+ * DONE_SUCCESS  — XML accepted, no stop-errors. Caller may proceed to spara.
+ * DONE_REJECTED — stoppande fel; caller can spara to keep it in Eget utrymme
+ *                 for the user to fix in Mina Sidor, or DELETE /underlag/{id}.
+ * DONE_FAILED   — system failure; nothing was saved.
+ */
 export interface SkatteverketAGIKontrollresultat {
-  kontroller?: SkatteverketKontroll[]
+  status: 'PROCESSING' | 'DONE_SUCCESS' | 'DONE_FAILED' | 'DONE_REJECTED'
+  inlamnad: string                  // ISO timestamp
+  antalUppgifter: number
+  kontrolleradeUppgifter: number
+  kontrollrapport?: SkatteverketAGIKontrollrapport
+}
+
+export interface SkatteverketAGIKontrollrapport {
+  filstorlek: number
+  filnamn: string
+  inkanal: 'MASK' | 'eFIL' | 'eMAN'
+  status: 'OK' | 'AKTUALITET_OK' | 'WARNING' | 'FAILED'
+  totaltAntalHU?: number
+  totaltAntalIU?: number
+  antalFel?: number
+  antalVarningar?: number
+  bearbetningsfel: SkatteverketAGIFel[]
+  valideringsfel: SkatteverketAGIFel[]
+  redovisningsperioder: SkatteverketAGIPeriodFel[]
+}
+
+export interface SkatteverketAGIFel {
+  felmeddelande: string
+  mid?: string
+  arbetsgivare?: string
+}
+
+export interface SkatteverketAGIPeriodFel {
+  arbetsgivare: string
+  perioder: Array<{
+    period: string                  // YYYYMM
+    antalIU: number
+    antalHU: number
+    antalFel: number
+    antalVarningar: number
+    kontrollfel: SkatteverketAGIKontrollfel[]
+  }>
+}
+
+export interface SkatteverketAGIKontrollfel {
+  felkategori: string
+  uppgiftsTyp: string               // 'HU' | 'IU' | 'FU'
+  textNyckel: string
+  textTyp: string
+  identifierare?: string            // pnr/orgnr the rule fired on
+  specifikationsnummer?: number
+  felmeddelande: string
+  felstatus: 'STOPP' | 'ARENDE'
+}
+
+/**
+ * Response from POST /arbetsgivare/{x}/redovisningsperioder/{y}/skapaGranskningsunderlag.
+ * `link` is a Mina Sidor deep-link the user opens to sign with BankID.
+ */
+export interface SkatteverketAGIGranskningsunderlagResponse {
+  link: string
+  tillstand: 'LOCKED_FOR_SIGNING' | 'UNLOCKED' | 'INCORRECT_DATA' | 'RECEIVING' | 'CALCULATING'
+  meddelande: string
+}
+
+/**
+ * Response from GET /arbetsgivare/{x}/redovisningsperioder/{y}/kvittenser.
+ * Empty array until the user has signed in Mina Sidor.
+ */
+export interface SkatteverketAGIKvittenserResponse {
+  kvittenser: SkatteverketAGIKvittens[]
+}
+
+export interface SkatteverketAGIKvittens {
+  arbetsgivare: string              // SSÅÅMMDDNNNK
+  period: string                    // YYYYMM
+  uuidKvittens?: string
+  signeradAv?: string
+  signeradTid?: string              // ISO timestamp
+  underlag: {
+    arbetsgivarregistrerad: string
+    redovisningsperiod: string
+    antalIu: number
+    antalIuTillagda: number
+    antalIuBorttagna: number
+    omprovningSanktSkatteavdrIU?: string
+    errorMessage?: string
+  }
+}
+
+/**
+ * Standard error envelope for both AGI APIs (HTTP 400/404/409/etc).
+ * Distinct from the moms felkod envelope.
+ */
+export interface SkatteverketAGIErrorBody {
+  kod: number
+  meddelandeTillAnvandare: string
+  meddelandeTillUtvecklare?: string
 }
 
 export interface SkatteverketSubmission {

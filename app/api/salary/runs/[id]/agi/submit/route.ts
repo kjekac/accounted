@@ -16,8 +16,8 @@ ensureInitialized()
  * 3. Calls the Skatteverket extension to save draft + lock for signing
  * 4. Returns the signeringslänk for BankID signing
  *
- * The user then signs on Skatteverket's site. The frontend polls
- * GET /api/extensions/ext/skatteverket/agi/submitted to detect completion.
+ * The user then signs on Skatteverket's site (Mina Sidor). The frontend
+ * polls /api/extensions/ext/skatteverket/agi/kvittenser to detect completion.
  */
 export async function POST(
   request: Request,
@@ -74,22 +74,26 @@ export async function POST(
     )
   }
 
-  // The actual submission is done via the Skatteverket extension routes.
-  // This route provides the salary_run_id for the extension to load data from.
-  // The frontend should call:
-  //   1. POST /api/extensions/ext/skatteverket/agi/draft   { salaryRunId }
-  //   2. PUT  /api/extensions/ext/skatteverket/agi/lock    ?arbetsgivare=...&period=...
-  //   3. User signs with BankID via signeringslänk
-  //   4. GET  /api/extensions/ext/skatteverket/agi/submitted ?arbetsgivare=...&period=...
+  // The actual SKV interaction lives in the Skatteverket extension. This
+  // route is a thin orchestrator: it forwards the salary_run_id to the
+  // extension's /agi/submit endpoint (which posts the stored XML underlag),
+  // then records that the AGI submission process has started.
   //
-  // This endpoint kicks off step 1 and returns the info needed for step 2+.
+  // The frontend (AGIPanel) handles the rest of the flow:
+  //   1. POST /api/extensions/ext/skatteverket/agi/submit         { salaryRunId }
+  //      → returns { inlamningId }
+  //   2. GET  /api/extensions/ext/skatteverket/agi/kontrollresultat?inlamningId=...
+  //      → poll until status != PROCESSING
+  //   3. POST /api/extensions/ext/skatteverket/agi/spara           { inlamningId }
+  //   4. POST /api/extensions/ext/skatteverket/agi/granskningsunderlag?arbetsgivare&period
+  //      → returns { link } (Mina Sidor BankID signing)
+  //   5. GET  /api/extensions/ext/skatteverket/agi/kvittenser?arbetsgivare&period
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
 
   try {
-    // Call the extension's draft endpoint internally
-    const draftResponse = await fetch(
-      `${appUrl}/api/extensions/ext/skatteverket/agi/draft`,
+    const submitResponse = await fetch(
+      `${appUrl}/api/extensions/ext/skatteverket/agi/submit`,
       {
         method: 'POST',
         headers: {
@@ -100,21 +104,25 @@ export async function POST(
       }
     )
 
-    if (!draftResponse.ok) {
-      const errorData = await draftResponse.json().catch(() => ({ error: 'Okänt fel' }))
+    if (!submitResponse.ok) {
+      const errorData = await submitResponse.json().catch(() => ({ error: 'Okänt fel' }))
       return NextResponse.json(
-        { error: errorData.error || `Kunde inte spara AGI-utkast (${draftResponse.status})` },
-        { status: draftResponse.status }
+        { error: errorData.error || `Kunde inte skicka AGI-underlag (${submitResponse.status})` },
+        { status: submitResponse.status }
       )
     }
 
-    const draftData = await draftResponse.json()
+    const submitData = await submitResponse.json()
 
-    // Update submission timestamp on salary run
-    await supabase
-      .from('salary_runs')
-      .update({ agi_submitted_at: new Date().toISOString() })
-      .eq('id', id)
+    // Don't stamp salary_runs.agi_submitted_at here. The underlag has only
+    // been ingested; the user still has to pass kontrollresultat, save,
+    // produce a granskningsunderlag, and sign with BankID before the AGI is
+    // actually filed. Recording the submission time at ingest would make the
+    // audit trail lie about when filing completed.
+    //
+    // The real timestamp is set by the kvittenser handler in the extension
+    // (extensions/general/skatteverket/index.ts /agi/kvittenser route) when
+    // it observes a uuidKvittens for the period, mirroring SKV's signeradTid.
 
     await eventBus.emit({
       type: 'agi.submitted',
@@ -129,11 +137,11 @@ export async function POST(
 
     return NextResponse.json({
       data: {
-        ...draftData.data,
+        ...submitData.data,
         salaryRunId: id,
         periodYear: run.period_year,
         periodMonth: run.period_month,
-        message: 'AGI sparad som utkast hos Skatteverket. Lås och signera med BankID för att slutföra.',
+        message: 'AGI-underlag inläst hos Skatteverket. Skapa granskningsunderlag och signera med BankID i Mina Sidor.',
       },
     })
   } catch (err) {

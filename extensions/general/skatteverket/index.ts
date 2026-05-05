@@ -7,12 +7,20 @@ import { storeTokens, getTokens, deleteTokens } from './lib/token-store'
 import { skvRequest, SkatteverketAuthError } from './lib/api-client'
 import { rutorToMomsuppgift, formatRedovisare, formatRedovisningsperiod } from './lib/mappers'
 import { calculateVatDeclaration } from '@/lib/reports/vat-declaration'
-import { agiSaveDraft, agiValidate, agiGetSubmission, agiDeleteDraft, agiLockPeriod, agiUnlockPeriod, agiGetSubmitted } from './lib/agi-client'
-import { buildAGIPayload } from './lib/agi-mappers'
+import {
+  agiPostUnderlag,
+  agiGetKontrollresultat,
+  agiSparaUnderlag,
+  agiAvbrytUnderlag,
+  agiTaBortSparadInlamning,
+  agiSkapaGranskningsunderlag,
+  agiGetKvittenser,
+  agiLasPeriod,
+  agiLasUppPeriod,
+} from './lib/agi-client'
 import { syncSkattekonto, SKATTEKONTO_BALANCE_SNAPSHOT_KEY, SKATTEKONTO_LAST_SYNCED_AT_KEY } from './lib/skattekonto-sync'
 import { bokforSkattekontoTransaction, SkattekontoBookingError } from './lib/skattekonto-booking'
 import type { SkattekontoBalanceSnapshot } from './types'
-import type { AGIEmployeeData, AGITotals } from '@/lib/salary/agi/xml-generator'
 import type { VatPeriodType } from '@/types'
 
 /**
@@ -601,86 +609,61 @@ export const skatteverketExtension: Extension = {
     },
     // ══════════════════════════════════════════════════════════════
     // AGI (Arbetsgivardeklaration) routes
+    //
+    // AGI submission is XML, not JSON. We feed agi_declarations.xml_content
+    // (built by lib/salary/agi/xml-generator.ts) to POST /underlag, then poll
+    // kontrollresultat, save into Eget utrymme, and return a Mina Sidor
+    // signing link via skapaGranskningsunderlag. After the user signs we
+    // observe the kvittenser endpoint to record kvittensnummer/signeradTid.
+    //
+    // The route surface mirrors the conceptual flow rather than the literal
+    // SKV endpoints so the frontend stays simple. Two SKV APIs are involved:
+    // inlamning (XML ingest + JSON status) and hanteraredovisningsperiod
+    // (kvittenser + las/lasUpp). The agi-client encapsulates both.
     // ══════════════════════════════════════════════════════════════
 
-    // ── AGI: Validate (dry run) ────────────────────────────────────
+    // ── AGI: Submit (POST /underlag with stored XML) ────────────────
+    // Body: { salaryRunId }. Reads agi_declarations.xml_content for the run,
+    // posts it to Skatteverket, returns { inlamningId } so the caller can
+    // poll kontrollresultat. Also persists inlamningId locally for recovery.
     {
       method: 'POST',
-      path: '/agi/validate',
+      path: '/agi/submit',
       handler: async (request: Request, ctx?: ExtensionContext) => {
         if (!ctx) {
           return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
         }
-
         try {
-          const { arbetsgivare, period, payload } = await parseAGIRequest(request, ctx)
+          const { arbetsgivare, period, salaryRunId, xml } = await loadAGIXml(request, ctx)
 
-          console.log('[skatteverket] AGI validating:', { arbetsgivare, period })
+          console.log('[skatteverket] AGI submitting underlag:', { arbetsgivare, period })
 
-          const result = await agiValidate(ctx.supabase, ctx.companyId, arbetsgivare, period, payload)
-
+          const result = await agiPostUnderlag(ctx.supabase, ctx.userId, xml)
           if (!result.ok) {
-            console.error('[skatteverket] AGI validate error:', result.status, result.error)
+            console.error('[skatteverket] AGI underlag error:', result.status, result.error)
             return NextResponse.json(
-              { error: `Skatteverket svarade med ${result.status}: ${result.error}` },
-              { status: result.status }
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
             )
           }
 
-          return NextResponse.json({ data: result.data })
-        } catch (err) {
-          return handleSkvError(err)
-        }
-      },
-    },
-
-    // ── AGI: Save draft ────────────────────────────────────────────
-    {
-      method: 'POST',
-      path: '/agi/draft',
-      handler: async (request: Request, ctx?: ExtensionContext) => {
-        if (!ctx) {
-          return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
-        }
-
-        try {
-          const { arbetsgivare, period, payload, salaryRunId } = await parseAGIRequest(request, ctx)
-
-          console.log('[skatteverket] AGI saving draft:', { arbetsgivare, period })
-
-          const result = await agiSaveDraft(ctx.supabase, ctx.companyId, arbetsgivare, period, payload)
-
-          if (!result.ok) {
-            console.error('[skatteverket] AGI draft error:', result.status, result.error)
-            return NextResponse.json(
-              { error: `Skatteverket svarade med ${result.status}: ${result.error}` },
-              { status: result.status }
-            )
-          }
-
-          // Track submission status and inlämningsId
-          const inlamningId = result.data?.inlamningId
           await ctx.settings.set(
             `agi_submission_${period}`,
             JSON.stringify({
-              status: 'draft_saved',
+              status: 'underlag_submitted',
               arbetsgivare,
               period,
-              inlamningId,
               salaryRunId,
-              kontrollresultat: result.data?.kontrollresultat,
+              inlamningId: result.data.inlamningId,
               updatedAt: new Date().toISOString(),
-            })
+            }),
           )
 
-          // Update agi_declarations table with submission status
-          if (salaryRunId) {
-            await ctx.supabase
-              .from('agi_declarations')
-              .update({ status: 'exported' })
-              .eq('salary_run_id', salaryRunId)
-              .eq('company_id', ctx.companyId)
-          }
+          // Don't flip agi_declarations.status to 'exported' here. SKV's
+          // kontrollresultat may still come back DONE_REJECTED, in which case
+          // nothing landed in Eget utrymme. The transition belongs in
+          // /agi/spara below, after the user (or auto-spara on success) has
+          // committed the underlag.
 
           return NextResponse.json({ data: result.data })
         } catch (err) {
@@ -689,35 +672,64 @@ export const skatteverketExtension: Extension = {
       },
     },
 
-    // ── AGI: Get submission ────────────────────────────────────────
+    // ── AGI: Poll kontrollresultat ──────────────────────────────────
+    // Query: ?inlamningId=...
+    // Returns { status: PROCESSING | DONE_SUCCESS | DONE_FAILED | DONE_REJECTED, ... }
+    //
+    // Side effect: when SKV reports a terminal failure (DONE_REJECTED or
+    // DONE_FAILED), promote the matching agi_declarations row to 'rejected'.
+    // Without this the row would sit at 'generated' indefinitely while SKV's
+    // own state shows the underlag as failed — misrepresenting the filing
+    // outcome (BFNAR 2013:2 kap 8 / BFL 5 kap 5§).
     {
       method: 'GET',
-      path: '/agi/submission',
+      path: '/agi/kontrollresultat',
       handler: async (request: Request, ctx?: ExtensionContext) => {
         if (!ctx) {
           return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
         }
-
         try {
           const url = new URL(request.url)
-          const arbetsgivare = url.searchParams.get('arbetsgivare')
-          const period = url.searchParams.get('period')
-          const inlamningId = url.searchParams.get('inlamningId')
+          const inlamningId = Number(url.searchParams.get('inlamningId'))
+          if (!Number.isFinite(inlamningId) || inlamningId <= 0) {
+            return NextResponse.json({ error: 'Saknar parameter: inlamningId' }, { status: 400 })
+          }
 
-          if (!arbetsgivare || !period || !inlamningId) {
+          const result = await agiGetKontrollresultat(ctx.supabase, ctx.userId, inlamningId)
+          if (!result.ok) {
             return NextResponse.json(
-              { error: 'Saknar parametrar: arbetsgivare, period, inlamningId' },
-              { status: 400 }
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
             )
           }
 
-          const result = await agiGetSubmission(ctx.supabase, ctx.companyId, arbetsgivare, period, inlamningId)
-
-          if (!result.ok) {
-            return NextResponse.json(
-              { error: `Skatteverket svarade med ${result.status}: ${result.error}` },
-              { status: result.status }
-            )
+          if (result.data.status === 'DONE_REJECTED' || result.data.status === 'DONE_FAILED') {
+            // Recover the salaryRunId from cached submission state — same
+            // fallback mechanism /agi/spara uses. We only update when we can
+            // identify the row; a missing local cache means we silently skip
+            // (the alternative would be guessing which declaration to mark).
+            const { data: rows } = await ctx.supabase
+              .from('extension_data')
+              .select('value')
+              .eq('company_id', ctx.companyId)
+              .eq('extension_id', 'skatteverket')
+              .like('key', 'agi_submission_%')
+            for (const row of rows ?? []) {
+              try {
+                const v = JSON.parse(row.value as string) as { inlamningId?: number; salaryRunId?: string }
+                if (v.inlamningId === inlamningId && v.salaryRunId) {
+                  // Same monotonicity rule as /agi/spara — never regress
+                  // from a successful filing back to 'rejected'.
+                  await ctx.supabase
+                    .from('agi_declarations')
+                    .update({ status: 'rejected' })
+                    .eq('salary_run_id', v.salaryRunId)
+                    .eq('company_id', ctx.companyId)
+                    .in('status', ['generated', 'pending_signature', 'exported'])
+                  break
+                }
+              } catch { /* skip malformed */ }
+            }
           }
 
           return NextResponse.json({ data: result.data })
@@ -727,37 +739,193 @@ export const skatteverketExtension: Extension = {
       },
     },
 
-    // ── AGI: Delete draft ──────────────────────────────────────────
+    // ── AGI: Save underlag into Eget utrymme ────────────────────────
+    // Body: { inlamningId, salaryRunId? }. Only meaningful between
+    // POST /underlag and skapaGranskningsunderlag.
+    //
+    // Flips agi_declarations.status to 'pending_signature' on success —
+    // the underlag is durable in SKV's Eget utrymme but is not yet a
+    // filed declaration. /agi/kvittenser later promotes it to 'submitted'
+    // when a uuidKvittens (signature receipt) is observed for the period.
+    // /agi/submit deliberately does NOT update status, because a
+    // DONE_REJECTED kontrollresultat would leave it falsely pending.
     {
-      method: 'DELETE',
-      path: '/agi/draft',
+      method: 'POST',
+      path: '/agi/spara',
       handler: async (request: Request, ctx?: ExtensionContext) => {
         if (!ctx) {
           return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
         }
+        try {
+          const body = (await request.json()) as { inlamningId?: number; salaryRunId?: string }
+          const inlamningId = Number(body.inlamningId)
+          if (!Number.isFinite(inlamningId) || inlamningId <= 0) {
+            return NextResponse.json({ error: 'Saknar inlamningId' }, { status: 400 })
+          }
 
+          const result = await agiSparaUnderlag(ctx.supabase, ctx.userId, inlamningId)
+          if (!result.ok) {
+            return NextResponse.json(
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
+            )
+          }
+
+          // Promote the matching declaration to 'exported'. salaryRunId is
+          // accepted in the body for the happy path; if missing we can still
+          // fall back to the locally-cached submission state, which always
+          // carries it (we wrote it in /agi/submit).
+          let runId = body.salaryRunId
+          if (!runId) {
+            // Last-resort lookup: scan recent agi_submission_* keys for a
+            // matching inlamningId. Cheap because there's at most one active
+            // submission per period and the operator typically has very few.
+            const { data: rows } = await ctx.supabase
+              .from('extension_data')
+              .select('value')
+              .eq('company_id', ctx.companyId)
+              .eq('extension_id', 'skatteverket')
+              .like('key', 'agi_submission_%')
+            for (const row of rows ?? []) {
+              try {
+                const v = JSON.parse(row.value as string) as { inlamningId?: number; salaryRunId?: string }
+                if (v.inlamningId === inlamningId && v.salaryRunId) {
+                  runId = v.salaryRunId
+                  break
+                }
+              } catch { /* skip malformed */ }
+            }
+          }
+          if (runId) {
+            // Monotonicity guard: only flip from a pre-filing state. If the
+            // kvittens cron or the interactive /agi/kvittenser handler has
+            // already promoted this row to 'submitted'/'accepted', don't
+            // regress it — behandlingshistorik must move forward through
+            // the filing milestones (BFNAR 2013:2 kap 8).
+            //
+            // 'rejected' IS allowed as an originating state: a previous
+            // submission failed kontrollresultat, the user fixed the XML
+            // and re-submitted. The same agi_declarations row is reused
+            // (xml-route updates xml_content in place), so this update
+            // promotes the recovered submission back to pending_signature.
+            //
+            // 'exported' is NOT in the allowed-from list. The status value
+            // is preserved in the schema for the legacy manual-download
+            // path (see migration), but no code currently writes it; an
+            // 'exported' row encountered here would represent a parallel
+            // filing attempt that should land in its own row, not reuse
+            // this one (preserves chain of custody per BFL 5 kap 6§).
+            await ctx.supabase
+              .from('agi_declarations')
+              .update({ status: 'pending_signature' })
+              .eq('salary_run_id', runId)
+              .eq('company_id', ctx.companyId)
+              .in('status', ['generated', 'rejected'])
+          }
+
+          return NextResponse.json({ data: result.data })
+        } catch (err) {
+          return handleSkvError(err)
+        }
+      },
+    },
+
+    // ── AGI: Avbryt underlag (before spara) ─────────────────────────
+    // Query: ?inlamningId=...&period=YYYYMM (period optional but recommended)
+    //
+    // The `period` param lets the handler clear the locally-cached
+    // `agi_submission_{period}` record so the UI doesn't sit on a stale
+    // `underlag_submitted` state. If the caller doesn't pass it we fall
+    // back to scanning recent submission keys for the matching inlamningId.
+    {
+      method: 'DELETE',
+      path: '/agi/underlag',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) {
+          return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
+        }
+        try {
+          const url = new URL(request.url)
+          const inlamningId = Number(url.searchParams.get('inlamningId'))
+          const period = url.searchParams.get('period')
+          if (!Number.isFinite(inlamningId) || inlamningId <= 0) {
+            return NextResponse.json({ error: 'Saknar parameter: inlamningId' }, { status: 400 })
+          }
+          const result = await agiAvbrytUnderlag(ctx.supabase, ctx.userId, inlamningId)
+          if (!result.ok) {
+            return NextResponse.json(
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
+            )
+          }
+
+          // Clear locally-cached submission state so the UI doesn't keep
+          // showing `underlag_submitted` for an inlamning that no longer
+          // exists at SKV. Direct path: caller passed period.
+          if (period) {
+            await ctx.settings.set(`agi_submission_${period}`, null)
+          } else {
+            // Fallback: find the period by matching inlamningId across
+            // recent submission keys. Cheap because there's at most one
+            // active submission per period.
+            const { data: rows } = await ctx.supabase
+              .from('extension_data')
+              .select('key, value')
+              .eq('company_id', ctx.companyId)
+              .eq('extension_id', 'skatteverket')
+              .like('key', 'agi_submission_%')
+            for (const row of rows ?? []) {
+              try {
+                const v = JSON.parse(row.value as string) as { inlamningId?: number }
+                if (v.inlamningId === inlamningId) {
+                  await ctx.supabase
+                    .from('extension_data')
+                    .delete()
+                    .eq('company_id', ctx.companyId)
+                    .eq('extension_id', 'skatteverket')
+                    .eq('key', row.key as string)
+                  break
+                }
+              } catch { /* skip malformed */ }
+            }
+          }
+
+          return NextResponse.json({ success: true })
+        } catch (err) {
+          return handleSkvError(err)
+        }
+      },
+    },
+
+    // ── AGI: Ta bort sparad inlämning (after spara) ─────────────────
+    // Query: ?arbetsgivare=...&period=YYYYMM&inlamningId=...
+    {
+      method: 'DELETE',
+      path: '/agi/sparad',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) {
+          return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
+        }
         try {
           const url = new URL(request.url)
           const arbetsgivare = url.searchParams.get('arbetsgivare')
           const period = url.searchParams.get('period')
-          const inlamningId = url.searchParams.get('inlamningId')
-
-          if (!arbetsgivare || !period || !inlamningId) {
+          const inlamningId = Number(url.searchParams.get('inlamningId'))
+          if (!arbetsgivare || !period || !Number.isFinite(inlamningId) || inlamningId <= 0) {
             return NextResponse.json(
               { error: 'Saknar parametrar: arbetsgivare, period, inlamningId' },
-              { status: 400 }
+              { status: 400 },
             )
           }
-
-          const result = await agiDeleteDraft(ctx.supabase, ctx.companyId, arbetsgivare, period, inlamningId)
-
+          const result = await agiTaBortSparadInlamning(
+            ctx.supabase, ctx.userId, arbetsgivare, period, inlamningId,
+          )
           if (!result.ok) {
             return NextResponse.json(
-              { error: `Skatteverket svarade med ${result.status}: ${result.error}` },
-              { status: result.status }
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
             )
           }
-
           await ctx.settings.set(`agi_submission_${period}`, null)
           return NextResponse.json({ success: true })
         } catch (err) {
@@ -766,45 +934,64 @@ export const skatteverketExtension: Extension = {
       },
     },
 
-    // ── AGI: Lock period for signing ───────────────────────────────
+    // ── AGI: Skapa granskningsunderlag (BankID signing link) ────────
+    // Query: ?arbetsgivare=...&period=YYYYMM&lasPeriod=true|false
+    // Returns { link, tillstand, meddelande }. The user opens `link` in a
+    // new tab and signs with BankID on Skatteverket's site.
     {
-      method: 'PUT',
-      path: '/agi/lock',
+      method: 'POST',
+      path: '/agi/granskningsunderlag',
       handler: async (request: Request, ctx?: ExtensionContext) => {
         if (!ctx) {
           return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
         }
-
         try {
           const url = new URL(request.url)
           const arbetsgivare = url.searchParams.get('arbetsgivare')
           const period = url.searchParams.get('period')
+          const lasPeriod = url.searchParams.get('lasPeriod') !== 'false'  // default true
 
           if (!arbetsgivare || !period) {
             return NextResponse.json(
               { error: 'Saknar parametrar: arbetsgivare, period' },
-              { status: 400 }
+              { status: 400 },
             )
           }
 
-          const result = await agiLockPeriod(ctx.supabase, ctx.companyId, arbetsgivare, period)
-
+          const result = await agiSkapaGranskningsunderlag(
+            ctx.supabase, ctx.userId, arbetsgivare, period, { lasPeriod },
+          )
           if (!result.ok) {
             return NextResponse.json(
-              { error: `Skatteverket svarade med ${result.status}: ${result.error}` },
-              { status: result.status }
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
             )
           }
 
+          // Persist the link so the user can return to it after a refresh.
+          // SKV's tillstand enum (per skapagranskningsunderlagsvar.json):
+          //   LOCKED_FOR_SIGNING / UNLOCKED → granskning ready, user can sign
+          //   INCORRECT_DATA               → felrapport link, can't sign yet
+          //   RECEIVING / CALCULATING      → server still processing
+          //   SIGNING                      → another signing flow already running
+          // We key on tillstand alone — keying on HTTP status (e.g. 409) and
+          // the body string would miss future SKV additions like RECEIVING
+          // returned with HTTP 200, leaving us in an awaiting_signing state
+          // when the underlag isn't actually ready.
+          const canSign =
+            result.data.tillstand === 'LOCKED_FOR_SIGNING' ||
+            result.data.tillstand === 'UNLOCKED'
           await ctx.settings.set(
             `agi_submission_${period}`,
             JSON.stringify({
-              status: 'draft_locked',
+              status: canSign ? 'awaiting_signing' : 'underlag_rejected',
               arbetsgivare,
               period,
-              signeringslank: result.data?.signeringslank,
+              signeringslank: result.data.link,
+              tillstand: result.data.tillstand,
+              meddelande: result.data.meddelande,
               updatedAt: new Date().toISOString(),
-            })
+            }),
           )
 
           return NextResponse.json({ data: result.data })
@@ -814,112 +1001,117 @@ export const skatteverketExtension: Extension = {
       },
     },
 
-    // ── AGI: Unlock period ─────────────────────────────────────────
-    {
-      method: 'DELETE',
-      path: '/agi/lock',
-      handler: async (request: Request, ctx?: ExtensionContext) => {
-        if (!ctx) {
-          return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
-        }
-
-        try {
-          const url = new URL(request.url)
-          const arbetsgivare = url.searchParams.get('arbetsgivare')
-          const period = url.searchParams.get('period')
-
-          if (!arbetsgivare || !period) {
-            return NextResponse.json(
-              { error: 'Saknar parametrar: arbetsgivare, period' },
-              { status: 400 }
-            )
-          }
-
-          const result = await agiUnlockPeriod(ctx.supabase, ctx.companyId, arbetsgivare, period)
-
-          if (!result.ok) {
-            return NextResponse.json(
-              { error: `Skatteverket svarade med ${result.status}: ${result.error}` },
-              { status: result.status }
-            )
-          }
-
-          await ctx.settings.set(
-            `agi_submission_${period}`,
-            JSON.stringify({
-              status: 'draft_saved',
-              arbetsgivare,
-              period,
-              updatedAt: new Date().toISOString(),
-            })
-          )
-
-          return NextResponse.json({ success: true })
-        } catch (err) {
-          return handleSkvError(err)
-        }
-      },
-    },
-
-    // ── AGI: Fetch submitted (after BankID signing) ────────────────
+    // ── AGI: Hämta kvittenser (after user signs) ────────────────────
+    // Query: ?arbetsgivare=...&period=YYYYMM
+    // Returns the kvittenser array. While the user has not yet signed the
+    // array is empty; after signing it carries uuidKvittens/signeradAv/-Tid.
     {
       method: 'GET',
-      path: '/agi/submitted',
+      path: '/agi/kvittenser',
       handler: async (request: Request, ctx?: ExtensionContext) => {
         if (!ctx) {
           return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
         }
-
         try {
           const url = new URL(request.url)
           const arbetsgivare = url.searchParams.get('arbetsgivare')
           const period = url.searchParams.get('period')
-
           if (!arbetsgivare || !period) {
             return NextResponse.json(
               { error: 'Saknar parametrar: arbetsgivare, period' },
-              { status: 400 }
+              { status: 400 },
             )
           }
 
-          const result = await agiGetSubmitted(ctx.supabase, ctx.companyId, arbetsgivare, period)
-
+          const result = await agiGetKvittenser(ctx.supabase, ctx.userId, arbetsgivare, period)
           if (!result.ok) {
             return NextResponse.json(
-              { error: `Skatteverket svarade med ${result.status}: ${result.error}` },
-              { status: result.status }
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
             )
           }
 
-          // If we got a kvittensnummer, the AGI has been signed and submitted
-          if (result.data?.kvittensnummer) {
+          // Newest kvittens for the period drives the local state.
+          const kvittens = result.data.kvittenser?.[0]
+          if (kvittens?.uuidKvittens) {
+            const periodYear = parseInt(period.slice(0, 4))
+            const periodMonth = parseInt(period.slice(4, 6))
             await ctx.settings.set(
               `agi_submission_${period}`,
               JSON.stringify({
                 status: 'signed',
                 arbetsgivare,
                 period,
-                kvittensnummer: result.data.kvittensnummer,
-                tidpunkt: result.data.tidpunkt,
-                signerare: result.data.signerare,
+                kvittensnummer: kvittens.uuidKvittens,
+                signeradAv: kvittens.signeradAv,
+                signeradTid: kvittens.signeradTid,
                 updatedAt: new Date().toISOString(),
-              })
+              }),
             )
 
-            // Update agi_declarations with submission receipt
-            const periodYear = parseInt(period.slice(0, 4))
-            const periodMonth = parseInt(period.slice(4, 6))
-            await ctx.supabase
-              .from('agi_declarations')
-              .update({
-                status: 'submitted',
-                kvittensnummer: result.data.kvittensnummer,
-                submitted_at: result.data.tidpunkt || new Date().toISOString(),
-                submitted_by: ctx.userId,
+            // Pin the receipt to the most recent declaration for this period
+            // (id desc) so a correction chain doesn't get its kvittens written
+            // onto a superseded row. Also stamp salary_runs.agi_submitted_at
+            // here, mirroring SKV's signeradTid — this is the only place we
+            // know the AGI was actually filed (the orchestrator deliberately
+            // doesn't stamp on underlag-ingest, see route.ts comment).
+            //
+            // The presence of `uuidKvittens` confirms SKV signed and accepted
+            // the AGI. signeradTid is the precise signing moment; if SKV
+            // omits it we fall back to reconciliation time + warn so the
+            // discrepancy is investigable. Leaving NULL would hide that the
+            // filing occurred at all, which itself misstates the behandlings-
+            // historik (BFNAR 2013:2 kap 8 / BFL 5 kap 6§). The fallback
+            // applies only on this code path because we're inside the
+            // `if (kvittens?.uuidKvittens)` branch — if no kvittens, no stamp.
+            const submittedAt = kvittens.signeradTid || new Date().toISOString()
+            if (!kvittens.signeradTid) {
+              console.warn('[skatteverket] kvittens missing signeradTid; using reconciliation time', {
+                companyId: ctx.companyId, period, uuidKvittens: kvittens.uuidKvittens,
               })
+            }
+            const { data: latest } = await ctx.supabase
+              .from('agi_declarations')
+              .select('id, salary_run_id')
               .eq('company_id', ctx.companyId)
               .eq('period_year', periodYear)
               .eq('period_month', periodMonth)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+            if (latest?.id) {
+              // submitted_by is the auth.users UUID we have on hand (the
+              // operator who polled the kvittens endpoint). The actual
+              // BankID signer is identified by kvittens.signeradAv (a
+              // personnummer string), which we preserve in response_data
+              // alongside the rest of the receipt — that's the legally
+              // load-bearing audit record per BFL 5 kap 6§.
+              await ctx.supabase
+                .from('agi_declarations')
+                .update({
+                  status: 'submitted',
+                  kvittensnummer: kvittens.uuidKvittens,
+                  submitted_at: submittedAt,
+                  submitted_by: ctx.userId,
+                  response_data: {
+                    signeradAv: kvittens.signeradAv ?? null,
+                    signeradTid: kvittens.signeradTid ?? null,
+                    uuidKvittens: kvittens.uuidKvittens,
+                    arbetsgivare: kvittens.arbetsgivare ?? null,
+                    period: kvittens.period ?? null,
+                    underlag: kvittens.underlag ?? null,
+                  },
+                })
+                .eq('id', latest.id)
+
+              if (latest.salary_run_id) {
+                await ctx.supabase
+                  .from('salary_runs')
+                  .update({ agi_submitted_at: submittedAt })
+                  .eq('id', latest.salary_run_id)
+                  .eq('company_id', ctx.companyId)
+              }
+            }
           }
 
           return NextResponse.json({ data: result.data })
@@ -929,27 +1121,82 @@ export const skatteverketExtension: Extension = {
       },
     },
 
-    // ── AGI: Get submission status (local tracking) ────────────────
+    // ── AGI: Lås period ─────────────────────────────────────────────
+    // Hantera-API; typically not needed (skapaGranskningsunderlag already
+    // accepts lasPeriod=true). Exposed for recovery / manual control.
+    {
+      method: 'POST',
+      path: '/agi/las',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
+        try {
+          const url = new URL(request.url)
+          const arbetsgivare = url.searchParams.get('arbetsgivare')
+          const period = url.searchParams.get('period')
+          if (!arbetsgivare || !period) {
+            return NextResponse.json(
+              { error: 'Saknar parametrar: arbetsgivare, period' },
+              { status: 400 },
+            )
+          }
+          const result = await agiLasPeriod(ctx.supabase, ctx.userId, arbetsgivare, period)
+          if (!result.ok) {
+            return NextResponse.json(
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
+            )
+          }
+          return NextResponse.json({ data: result.data })
+        } catch (err) {
+          return handleSkvError(err)
+        }
+      },
+    },
+
+    // ── AGI: Lås upp period ─────────────────────────────────────────
+    {
+      method: 'POST',
+      path: '/agi/lasUpp',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
+        try {
+          const url = new URL(request.url)
+          const arbetsgivare = url.searchParams.get('arbetsgivare')
+          const period = url.searchParams.get('period')
+          if (!arbetsgivare || !period) {
+            return NextResponse.json(
+              { error: 'Saknar parametrar: arbetsgivare, period' },
+              { status: 400 },
+            )
+          }
+          const result = await agiLasUppPeriod(ctx.supabase, ctx.userId, arbetsgivare, period)
+          if (!result.ok) {
+            return NextResponse.json(
+              { error: result.error, code: result.body?.kod },
+              { status: result.status },
+            )
+          }
+          return NextResponse.json({ data: result.data })
+        } catch (err) {
+          return handleSkvError(err)
+        }
+      },
+    },
+
+    // ── AGI: Local submission tracking (UI helper) ──────────────────
+    // Returns the locally-cached submission state (inlamningId, signing link,
+    // kvittensnummer if seen). Pure read; never calls Skatteverket.
     {
       method: 'GET',
       path: '/agi/status',
       handler: async (request: Request, ctx?: ExtensionContext) => {
-        if (!ctx) {
-          return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
-        }
-
+        if (!ctx) return NextResponse.json({ error: 'Extension context required' }, { status: 500 })
         const url = new URL(request.url)
         const period = url.searchParams.get('period')
-
-        if (!period) {
-          return NextResponse.json({ error: 'Saknar parameter: period' }, { status: 400 })
-        }
+        if (!period) return NextResponse.json({ error: 'Saknar parameter: period' }, { status: 400 })
 
         const statusJson = await ctx.settings.get<string>(`agi_submission_${period}`)
-        if (!statusJson) {
-          return NextResponse.json({ data: null })
-        }
-
+        if (!statusJson) return NextResponse.json({ data: null })
         try {
           return NextResponse.json({ data: JSON.parse(statusJson) })
         } catch {
@@ -1160,26 +1407,51 @@ function parseQueryParams(
 }
 
 /**
- * Parse and validate AGI submission request body.
- * Loads salary run data and builds the Skatteverket AGI JSON payload.
+ * Load the AGI XML for a salary run from agi_declarations.xml_content
+ * (built by app/api/salary/runs/[id]/agi/xml/route.ts via generateAGIXml).
+ *
+ * Returns the XML alongside the formatted arbetsgivare/period strings used
+ * downstream by the granskningsunderlag and kvittenser endpoints.
+ *
+ * Skatteverket's POST /underlag accepts XML directly; we don't transform it
+ * here, just plumb it through.
  */
-async function parseAGIRequest(
+async function loadAGIXml(
   request: Request,
-  ctx: ExtensionContext
+  ctx: ExtensionContext,
 ): Promise<{
   arbetsgivare: string
   period: string
-  payload: ReturnType<typeof buildAGIPayload>
   salaryRunId: string
+  xml: string
 }> {
-  const body = await request.json()
-  const { salaryRunId } = body as { salaryRunId: string }
-
+  const body = (await request.json()) as { salaryRunId?: string }
+  const salaryRunId = body.salaryRunId
   if (!salaryRunId) {
     throw new Error('Saknar obligatoriskt fält: salaryRunId')
   }
 
-  // Get company settings for arbetsgivare formatting
+  // Status guard — must mirror the orchestrator at
+  // app/api/salary/runs/[id]/agi/submit/route.ts. The extension endpoint
+  // is also reachable directly from AGIPanel, so the check has to live here
+  // too. Per BFL 5 kap and SFL 26 kap, AGI must reflect finalised payroll
+  // data; submitting from a draft/cancelled run would emit incorrect figures
+  // and require a costly rättelse.
+  const { data: run, error: runError } = await ctx.supabase
+    .from('salary_runs')
+    .select('status')
+    .eq('id', salaryRunId)
+    .eq('company_id', ctx.companyId)
+    .single()
+
+  if (runError || !run) {
+    throw new Error('Lönekörning hittades inte')
+  }
+
+  if (!['review', 'approved', 'paid', 'booked'].includes(run.status)) {
+    throw new Error('AGI kan bara skickas till Skatteverket efter granskning')
+  }
+
   const { data: settings } = await ctx.supabase
     .from('company_settings')
     .select('org_number, entity_type')
@@ -1190,113 +1462,28 @@ async function parseAGIRequest(
     throw new Error('Organisationsnummer saknas i företagsinställningar')
   }
 
-  // Load salary run
-  const { data: run, error: runError } = await ctx.supabase
-    .from('salary_runs')
-    .select('*')
-    .eq('id', salaryRunId)
-    .eq('company_id', ctx.companyId)
-    .single()
-
-  if (runError || !run) {
-    throw new Error('Lönekörning hittades inte')
-  }
-
-  if (!['review', 'approved', 'paid', 'booked'].includes(run.status)) {
-    throw new Error('AGI kan bara skickas efter granskning')
-  }
-
-  // Load employees with their data
-  const { data: runEmployees } = await ctx.supabase
-    .from('salary_run_employees')
-    .select('*, employee:employees(personnummer, specification_number, f_skatt_status), line_items:salary_line_items(*)')
-    .eq('salary_run_id', salaryRunId)
-
-  if (!runEmployees || runEmployees.length === 0) {
-    throw new Error('Inga anställda i lönekörningen')
-  }
-
-  // Build employee data
-  const employeeData: AGIEmployeeData[] = runEmployees.map(sre => {
-    const emp = sre.employee as { personnummer: string; specification_number: number; f_skatt_status: string } | null
-    const lineItems = (sre.line_items || []) as Array<Record<string, unknown>>
-
-    const sumByType = (types: string[]) =>
-      lineItems
-        .filter(li => types.includes(li.item_type as string))
-        .reduce((sum, li) => sum + ((li.amount as number) || 0), 0)
-
-    return {
-      personnummer: emp?.personnummer || '',
-      specificationNumber: emp?.specification_number || 0,
-      grossSalary: sre.gross_salary,
-      taxWithheld: sre.tax_withheld,
-      avgifterBasis: sre.avgifter_basis,
-      fSkattPayment: emp?.f_skatt_status === 'f_skatt' ? sre.gross_salary : undefined,
-      benefitCar: sumByType(['benefit_car']) || undefined,
-      benefitHousing: sumByType(['benefit_housing']) || undefined,
-      benefitMeals: sumByType(['benefit_meals']) || undefined,
-      benefitOther: sumByType(['benefit_wellness', 'benefit_other']) || undefined,
-      sickDays: sre.sick_days > 0 ? sre.sick_days : undefined,
-      vabDays: sre.vab_days > 0 ? sre.vab_days : undefined,
-      parentalDays: sre.parental_days > 0 ? sre.parental_days : undefined,
-    }
-  })
-
-  // Build totals with avgifter breakdown by category
-  const avgifterByCategory: AGITotals['avgifterByCategory'] = {}
-  for (const sre of runEmployees) {
-    const dbCategory = sre.avgifter_category as string | null
-    const category = dbCategory
-      ? (dbCategory === 'reduced_65plus' ? 'reduced65plus' : dbCategory === 'vaxa_stod' ? 'standard' : dbCategory)
-      : (sre.avgifter_rate <= 0.1022 ? 'reduced65plus' : sre.avgifter_rate <= 0.2082 ? 'youth' : 'standard')
-    const cat = avgifterByCategory[category as keyof typeof avgifterByCategory] || { basis: 0, amount: 0 }
-    cat.basis += sre.avgifter_basis
-    cat.amount += sre.avgifter_amount
-    ;(avgifterByCategory as Record<string, { basis: number; amount: number }>)[category] = cat
-  }
-
-  const totalAvgifterAmount = Object.values(avgifterByCategory).reduce(
-    (sum, cat) => sum + (cat?.amount ?? 0),
-    0
-  )
-
-  // FK499 — sjuklönekostnad summed from sick_day2_14 line items
-  let totalSjuklonekostnad = 0
-  for (const sre of runEmployees) {
-    const lineItems = (sre.line_items || []) as Array<Record<string, unknown>>
-    for (const li of lineItems) {
-      if (li.item_type === 'sick_day2_14') {
-        totalSjuklonekostnad += Math.abs((li.amount as number) || 0)
-      }
-    }
-  }
-
-  const totals: AGITotals = {
-    totalTax: run.total_tax,
-    totalAvgifterBasis: runEmployees.reduce((s: number, e: { avgifter_basis: number }) => s + e.avgifter_basis, 0),
-    totalAvgifterAmount: Math.round(totalAvgifterAmount * 100) / 100,
-    totalSjuklonekostnad: Math.round(totalSjuklonekostnad * 100) / 100,
-    avgifterByCategory,
-  }
-
-  // Check if this is a correction
-  const { data: existingAgi } = await ctx.supabase
+  // Use the most recent agi_declarations row for this salary run — covers
+  // both new declarations and corrections (which overwrite xml_content
+  // in place per the existing /api/salary/runs/[id]/agi/xml route).
+  const { data: declaration, error: declarationError } = await ctx.supabase
     .from('agi_declarations')
-    .select('id, status')
+    .select('xml_content, period_year, period_month')
     .eq('company_id', ctx.companyId)
-    .eq('period_year', run.period_year)
-    .eq('period_month', run.period_month)
-    .in('status', ['submitted', 'accepted'])
-    .single()
+    .eq('salary_run_id', salaryRunId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
 
-  const isCorrection = !!existingAgi
+  if (declarationError || !declaration?.xml_content) {
+    throw new Error(
+      'AGI-XML saknas. Generera AGI-filen från lönekörningen först (Lön → AGI → Generera).',
+    )
+  }
 
   const arbetsgivare = formatRedovisare(settings.org_number, settings.entity_type)
-  const period = formatRedovisningsperiod('monthly', run.period_year, run.period_month)
-  const payload = buildAGIPayload(employeeData, totals, isCorrection)
+  const period = formatRedovisningsperiod('monthly', declaration.period_year, declaration.period_month)
 
-  return { arbetsgivare, period, payload, salaryRunId }
+  return { arbetsgivare, period, salaryRunId, xml: declaration.xml_content }
 }
 
 /**
@@ -1304,9 +1491,15 @@ async function parseAGIRequest(
  */
 function handleSkvError(err: unknown): NextResponse {
   if (err instanceof SkatteverketAuthError) {
+    // MISSING_SCOPE returns 401 — the existing token works, but it doesn't
+    // grant access to this resource. Treating it as 401 (rather than 403)
+    // signals to the frontend that the right remediation is to reconnect,
+    // not to ask the user to gain new authorization at SKV.
     const status = err.code === 'NOT_CONNECTED' ? 401
       : err.code === 'BEHORIGHET_SAKNAS' ? 403
       : err.code === 'SESSION_EXPIRED' || err.code === 'REFRESH_EXHAUSTED' ? 401
+      : err.code === 'MISSING_SCOPE' ? 401
+      : err.code === 'TOKEN_CORRUPTED' ? 401
       : 403
 
     return NextResponse.json(

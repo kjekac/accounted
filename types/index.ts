@@ -1363,6 +1363,8 @@ export interface OnboardingProgress {
   hasInvoices: boolean
   hasBankConnected: boolean
   hasSIEImport: boolean
+  /** True when the active user has a stored Skatteverket OAuth token. */
+  hasSkatteverketConnected: boolean
 }
 
 // Onboarding step data
@@ -2470,7 +2472,13 @@ export type SalaryType = 'monthly' | 'hourly'
 export type FSkattStatus = 'a_skatt' | 'f_skatt' | 'fa_skatt' | 'not_verified'
 export type VacationRule = 'procentregeln' | 'sammaloneregeln'
 export type SalaryRunStatus = 'draft' | 'review' | 'approved' | 'paid' | 'booked' | 'corrected'
-export type AGIStatus = 'generated' | 'exported' | 'submitted' | 'accepted' | 'rejected'
+export type AGIStatus =
+  | 'generated'         // XML built from a salary run; nothing sent to SKV yet
+  | 'pending_signature' // underlag accepted into Eget utrymme; awaiting BankID
+  | 'exported'          // legacy: manual XML download path
+  | 'submitted'         // kvittens received; AGI is filed
+  | 'accepted'          // reserved (SKV does not currently expose this)
+  | 'rejected'          // reserved (kontrollresultat DONE_REJECTED could land here)
 
 export type SalaryLineItemType =
   | 'monthly_salary' | 'hourly_salary' | 'overtime' | 'bonus' | 'commission'
