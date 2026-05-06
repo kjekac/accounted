@@ -1481,6 +1481,83 @@ export const tools: McpTool[] = [
   },
 
   {
+    name: 'gnubok_list_transactions_without_documents',
+    description: 'List bank transactions that have a journal entry but no attached receipt/invoice document. Use to find verifikationer that need their kvitto attached for BFL compliance. Newest first, paginated.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max results to return, 1–100 (default 20)' },
+        offset: { type: 'number', description: 'Number of results to skip for pagination (default 0)' },
+        since: { type: 'string', description: 'Optional ISO date (YYYY-MM-DD). Only return transactions on or after this date.' },
+      },
+    },
+    outputSchema: paginatedSchema('transactions', {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        date: { type: 'string' },
+        description: { type: 'string' },
+        amount: { type: 'number' },
+        currency: { type: 'string' },
+        merchant_name: { type: 'string' },
+        reference: { type: 'string' },
+        is_business: { type: 'boolean' },
+        category: { type: 'string' },
+        journal_entry_id: { type: 'string' },
+      },
+    }),
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, userId, supabase) {
+      const limit = Math.min(Math.max(1, Number(args.limit) || 20), 100)
+      const offset = Math.max(0, Number(args.offset) || 0)
+      const since = typeof args.since === 'string' ? args.since : null
+
+      let countQuery = supabase
+        .from('transactions')
+        .select('id', { count: 'exact', head: true })
+        .eq('company_id', companyId)
+        .not('journal_entry_id', 'is', null)
+        .is('document_id', null)
+      if (since) countQuery = countQuery.gte('date', since)
+
+      const { count: totalCount, error: countError } = await countQuery
+      if (countError) throw new Error(`Database error: ${countError.message}`)
+
+      let dataQuery = supabase
+        .from('transactions')
+        .select(
+          'id, date, description, amount, currency, merchant_name, reference, is_business, category, journal_entry_id'
+        )
+        .eq('company_id', companyId)
+        .not('journal_entry_id', 'is', null)
+        .is('document_id', null)
+      if (since) dataQuery = dataQuery.gte('date', since)
+
+      const { data, error } = await dataQuery
+        .order('date', { ascending: false })
+        .range(offset, offset + limit - 1)
+
+      if (error) throw new Error(`Database error: ${error.message}`)
+
+      const total = totalCount ?? 0
+      const hasMore = total > offset + (data?.length ?? 0)
+
+      return {
+        transactions: data,
+        count: data?.length ?? 0,
+        total_count: total,
+        has_more: hasMore,
+        ...(hasMore ? { next_offset: offset + (data?.length ?? 0) } : {}),
+      }
+    },
+  },
+
+  {
     name: 'gnubok_categorize_transaction',
     description: 'Categorize a bank transaction. Stages the journal entry for the user to approve in the web app — no DB write until approval.',
     inputSchema: {

@@ -48,14 +48,15 @@ export const SCOPE_GROUPS = [
 /** Map MCP tool name → required scope. Tools omitted from this map are available to any authenticated key (e.g. discovery/search/skill loading). */
 export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   // Transactions
-  gnubok_list_uncategorized_transactions: 'transactions:read',
-  gnubok_create_transactions:             'transactions:write',
-  gnubok_categorize_transaction:          'transactions:write',
-  gnubok_receipt_matcher:                 'transactions:write',
-  gnubok_get_counterparty_templates:      'transactions:read',
-  gnubok_suggest_categories:              'transactions:read',
-  gnubok_match_transaction_to_invoice:    'transactions:write',
-  gnubok_auto_match_period:               'transactions:write',
+  gnubok_list_uncategorized_transactions:     'transactions:read',
+  gnubok_list_transactions_without_documents: 'transactions:read',
+  gnubok_create_transactions:                 'transactions:write',
+  gnubok_categorize_transaction:              'transactions:write',
+  gnubok_receipt_matcher:                     'transactions:write',
+  gnubok_get_counterparty_templates:          'transactions:read',
+  gnubok_suggest_categories:                  'transactions:read',
+  gnubok_match_transaction_to_invoice:        'transactions:write',
+  gnubok_auto_match_period:                   'transactions:write',
   // Customers
   gnubok_list_customers:                  'customers:read',
   gnubok_create_customer:                 'customers:write',
