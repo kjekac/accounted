@@ -12,6 +12,7 @@ import { Loader2, ArrowRight, ArrowLeft, CheckCircle2, AlertTriangle } from 'luc
 import type { EntityType } from '@/types'
 import type { CompanyLookupResult } from '@/lib/company-lookup/types'
 import { getBranding } from '@/lib/branding/service'
+import { normalizeOrgNumber } from '@/lib/company-lookup/normalize-org-number'
 
 const branding = getBranding()
 
@@ -19,15 +20,16 @@ const schema = z.object({
   company_name: z.string().min(1, 'Företagsnamn krävs'),
   org_number: z.string()
     .min(1, 'Organisationsnummer krävs')
-    .regex(/^\d{6,8}[-\s]?\d{4}$/, 'Ogiltigt format. Ange XXXXXX-XXXX'),
+    .refine(
+      (val) => normalizeOrgNumber(val) !== null,
+      'Ogiltigt organisationsnummer. Kontrollera att du angett ett giltigt 10- eller 12-siffrigt organisationsnummer.',
+    ),
   address_line1: z.string().optional(),
   postal_code: z.string().optional(),
   city: z.string().optional(),
 })
 
 type FormData = z.infer<typeof schema>
-
-const ORG_NUMBER_REGEX = /^\d{6,8}[-\s]?\d{4}$/
 
 interface Step2Props {
   initialData: Partial<FormData>
@@ -82,7 +84,7 @@ export default function Step2CompanyDetails({
   // button is disabled; the server action would also reject ('org_number_exists')
   // but blocking client-side avoids a wasted roundtrip.
   useEffect(() => {
-    if (!orgNumber || !ORG_NUMBER_REGEX.test(orgNumber)) {
+    if (!orgNumber || normalizeOrgNumber(orgNumber) === null) {
       setOrgNumberExists(false)
       return
     }
@@ -109,7 +111,7 @@ export default function Step2CompanyDetails({
   }, [orgNumber])
 
   useEffect(() => {
-    if (!ticEnabled || !orgNumber || !ORG_NUMBER_REGEX.test(orgNumber)) {
+    if (!ticEnabled || !orgNumber || normalizeOrgNumber(orgNumber) === null) {
       return
     }
 

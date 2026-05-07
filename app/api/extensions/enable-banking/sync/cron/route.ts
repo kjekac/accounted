@@ -181,7 +181,7 @@ export const GET = withCronContext('cron.bank_sync', async (_request, ctx) => {
       // Batch reconciliation sweep when SIE overlap detected
       if (sieOverlap && totalImported > 0) {
         try {
-          await runReconciliation(supabase, connection.company_id, {
+          await runReconciliation(supabase, connection.company_id, connection.user_id, {
             dateFrom: fromDate,
             dateTo: toDate,
           })

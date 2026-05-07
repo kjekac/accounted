@@ -131,7 +131,8 @@ export function tryReconcileTransaction(
 export async function runReconciliation(
   supabase: SupabaseClient,
   companyId: string,
-  options: ReconciliationOptions & { userId?: string } = {}
+  userId: string,
+  options: ReconciliationOptions = {}
 ): Promise<ReconciliationRunResult> {
   const { dateFrom, dateTo, dryRun = false } = options
 
@@ -189,7 +190,7 @@ export async function runReconciliation(
               transaction: match.transaction,
               journalEntryId: match.glLine.journal_entry_id,
               method: match.method,
-              userId: options.userId ?? companyId,
+              userId,
               companyId,
             },
           })
@@ -292,7 +293,7 @@ export async function manualLink(
   companyId: string,
   transactionId: string,
   journalEntryId: string,
-  userId?: string
+  userId: string
 ): Promise<{ success: boolean; error?: string }> {
   // Fetch transaction
   const { data: tx, error: txError } = await supabase
@@ -372,7 +373,7 @@ export async function manualLink(
         transaction: tx as Transaction,
         journalEntryId,
         method: 'manual' as ReconciliationMethod,
-        userId: userId ?? companyId,
+        userId,
         companyId,
       },
     })

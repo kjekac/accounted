@@ -318,7 +318,7 @@ export const enableBankingExtension: Extension = {
           // Skip for viewers — reconciliation updates transactions which viewers cannot do.
           if (sieOverlap && totalImported > 0 && !isViewer) {
             try {
-              const reconResult = await runReconciliation(supabase, ctx?.companyId ?? user.id, {
+              const reconResult = await runReconciliation(supabase, companyId, user.id, {
                 dateFrom: fromDate,
                 dateTo: toDate,
               })
@@ -346,7 +346,7 @@ export const enableBankingExtension: Extension = {
             const { data: syncedTransactions } = await supabase
               .from('transactions')
               .select('*')
-              .eq('company_id', ctx?.companyId ?? user.id)
+              .eq('company_id', companyId)
               .eq('bank_connection_id', connection.id)
               .gte('created_at', syncStartedAt)
               .order('created_at', { ascending: false })
@@ -356,7 +356,7 @@ export const enableBankingExtension: Extension = {
               const emit = ctx?.emit ?? (await import('@/lib/events/bus')).eventBus.emit.bind((await import('@/lib/events/bus')).eventBus)
               await emit({
                 type: 'transaction.synced',
-                payload: { transactions: syncedTransactions as Transaction[], userId: user.id, companyId: ctx?.companyId ?? user.id },
+                payload: { transactions: syncedTransactions as Transaction[], userId: user.id, companyId },
               })
             }
           }

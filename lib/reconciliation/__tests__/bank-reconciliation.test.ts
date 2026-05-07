@@ -319,7 +319,7 @@ describe('runReconciliation', () => {
     // from('transactions').select — unmatched
     enqueue({ data: [] })
 
-    const result = await runReconciliation(supabase as never, 'company-1')
+    const result = await runReconciliation(supabase as never, 'company-1', 'user-1')
 
     expect(result.matches).toEqual([])
     expect(result.applied).toBe(0)
@@ -341,7 +341,7 @@ describe('runReconciliation', () => {
     // from('transactions') returns unmatched transactions
     enqueue({ data: [tx] })
 
-    const result = await runReconciliation(supabase as never, 'company-1', { dryRun: true })
+    const result = await runReconciliation(supabase as never, 'company-1', 'user-1', { dryRun: true })
 
     expect(result.matches).toHaveLength(1)
     expect(result.matches[0].method).toBe('auto_exact')
@@ -366,7 +366,7 @@ describe('runReconciliation', () => {
     // Update transaction with link
     enqueue({ data: null, error: null })
 
-    const result = await runReconciliation(supabase as never, 'company-1', { dryRun: false })
+    const result = await runReconciliation(supabase as never, 'company-1', 'user-1', { dryRun: false })
 
     expect(result.matches).toHaveLength(1)
     expect(result.applied).toBe(1)
@@ -420,7 +420,7 @@ describe('manualLink', () => {
     // Transaction query returns null
     enqueue({ data: null, error: { message: 'Not found' } })
 
-    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1')
+    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1')
 
     expect(result.success).toBe(false)
     expect(result.error).toBe('Transaction not found')
@@ -433,7 +433,7 @@ describe('manualLink', () => {
     // Transaction found but already linked
     enqueue({ data: tx })
 
-    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1')
+    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1')
 
     expect(result.success).toBe(false)
     expect(result.error).toBe('Transaction is already linked to a journal entry')
@@ -450,7 +450,7 @@ describe('manualLink', () => {
     // No 1930 lines
     enqueue({ data: [] })
 
-    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1')
+    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1')
 
     expect(result.success).toBe(false)
     expect(result.error).toBe('Verifikationen saknar rad på bankkonto (19xx)')
@@ -471,7 +471,7 @@ describe('manualLink', () => {
     // Update succeeds
     enqueue({ data: null, error: null })
 
-    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1')
+    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1')
 
     expect(result.success).toBe(true)
   })

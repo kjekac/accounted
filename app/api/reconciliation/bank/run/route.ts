@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   if (!validation.success) return validation.response
   const { date_from, date_to, dry_run } = validation.data
 
-  const result = await runReconciliation(supabase, companyId, {
+  const result = await runReconciliation(supabase, companyId, user.id, {
     dateFrom: date_from,
     dateTo: date_to,
     dryRun: dry_run ?? false,

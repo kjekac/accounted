@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   if (!validation.success) return validation.response
   const { transaction_id, journal_entry_id } = validation.data
 
-  const result = await manualLink(supabase, companyId, transaction_id, journal_entry_id)
+  const result = await manualLink(supabase, companyId, transaction_id, journal_entry_id, user.id)
 
   if (!result.success) {
     return NextResponse.json({ error: result.error }, { status: 400 })
