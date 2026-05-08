@@ -288,7 +288,7 @@ function BlockedState({
       </div>
       <div className="text-sm text-muted-foreground space-y-1">
         <p>
-          Nuvarande period:{' '}
+          Första räkenskapsåret:{' '}
           <span className="font-medium text-foreground">
             {formatSwedishDate(period.period_start)} &ndash; {formatSwedishDate(period.period_end)}
           </span>
