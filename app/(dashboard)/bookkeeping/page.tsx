@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import JournalEntryList from '@/components/bookkeeping/JournalEntryList'
@@ -20,29 +21,42 @@ interface CopyPrefill {
   notes: string
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-function readCopyFromParam(): string | null {
-  if (typeof window === 'undefined') return null
-  const raw = new URLSearchParams(window.location.search).get('copy_from')
-  if (!raw) return null
-  // Guard against path-traversal or other malformed input in the fetch URL.
-  return UUID_RE.test(raw) ? raw : null
+interface NextVoucher {
+  next: number
+  series: string
 }
+
+type TabValue = 'journal' | 'new-entry' | 'accounts'
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export default function BookkeepingPage() {
   const { toast } = useToast()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const copyFromId = useMemo<string | null>(() => {
+    const raw = searchParams.get('copy_from')
+    return raw && UUID_RE.test(raw) ? raw : null
+  }, [searchParams])
+
   const [refreshKey, setRefreshKey] = useState(0)
-  const [copyFromId] = useState<string | null>(readCopyFromParam)
-  const [activeTab, setActiveTab] = useState(() =>
-    copyFromId ? 'new-entry' : 'journal',
-  )
+  const [activeTab, setActiveTab] = useState<TabValue>('journal')
   const [periodId, setPeriodId] = useState<string | null>(null)
   const [copyPrefill, setCopyPrefill] = useState<CopyPrefill | null>(null)
-  const [isLoadingCopy, setIsLoadingCopy] = useState<boolean>(() => copyFromId !== null)
+  const [isLoadingCopy, setIsLoadingCopy] = useState(false)
+  const [nextVoucher, setNextVoucher] = useState<NextVoucher | null>(null)
 
+  // React to copy_from in URL: switch tab, fetch source entry, then clean URL.
+  // useSearchParams keeps this reactive even when navigation happens within the
+  // same route (e.g. clicking the Kopiera button in the expanded list row),
+  // which a one-shot useState initializer wouldn't notice.
+  /* eslint-disable react-hooks/set-state-in-effect -- URL→state sync requires sync setState */
   useEffect(() => {
     if (!copyFromId) return
+
+    setActiveTab('new-entry')
+    setCopyPrefill(null)
+    setIsLoadingCopy(true)
 
     fetch(`/api/bookkeeping/journal-entries/${copyFromId}`)
       .then((res) => res.json())
@@ -85,10 +99,34 @@ export default function BookkeepingPage() {
       })
       .finally(() => {
         setIsLoadingCopy(false)
-        // Clean the URL so a page refresh doesn't re-trigger the copy prefill.
-        window.history.replaceState({}, '', '/bookkeeping')
+        // Clear copy_from so a refresh doesn't re-trigger and so clicking the
+        // same entry's Kopiera button again re-fires this effect.
+        router.replace('/bookkeeping')
       })
-  }, [copyFromId, toast])
+  }, [copyFromId, toast, router])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Fetch the next voucher number for today's fiscal period + default series.
+  // Re-runs after each commit (refreshKey++) so the tab label stays current.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/bookkeeping/voucher-sequences/next')
+      .then((r) => r.json())
+      .then(({ data }) => {
+        if (cancelled) return
+        if (data?.next != null) {
+          setNextVoucher({ next: data.next, series: data.series })
+        } else {
+          setNextVoucher(null)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setNextVoucher(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [refreshKey])
 
   return (
     <div className="space-y-6">
@@ -111,10 +149,17 @@ export default function BookkeepingPage() {
         <FiscalYearSelector value={periodId} onChange={setPeriodId} />
       )}
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabValue)}>
         <TabsList>
           <TabsTrigger value="journal">Verifikationer</TabsTrigger>
-          <TabsTrigger value="new-entry">Ny verifikation</TabsTrigger>
+          <TabsTrigger value="new-entry">
+            Ny verifikation
+            {nextVoucher && (
+              <span className="ml-1 text-muted-foreground tabular-nums">
+                ({nextVoucher.series}{nextVoucher.next})
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="accounts">Kontoplan</TabsTrigger>
         </TabsList>
 

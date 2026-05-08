@@ -2,21 +2,6 @@
 
 import { useEffect } from 'react'
 
-declare global {
-  interface Window {
-    Recapt?: {
-      session: {
-        setIdentity: (identity: {
-          uid: string
-          email?: string
-          nickname?: string
-          fullName?: string
-        }) => void
-      }
-    }
-  }
-}
-
 export function RecaptIdentify({
   userId,
   email,
@@ -27,16 +12,23 @@ export function RecaptIdentify({
   displayName?: string
 }) {
   useEffect(() => {
+    let attempts = 0
+    const maxAttempts = 50
     const interval = setInterval(() => {
-      if (typeof window.Recapt?.session?.setIdentity === 'function') {
-        window.Recapt.session.setIdentity({
+      if (typeof window.recapt === 'function') {
+        window.recapt('identify', {
           uid: userId,
-          email: email,
-          fullName: displayName,
+          email,
+          nickname: displayName,
         })
         clearInterval(interval)
+        return
       }
-    }, 500)
+      attempts++
+      if (attempts >= maxAttempts) {
+        clearInterval(interval)
+      }
+    }, 100)
 
     return () => clearInterval(interval)
   }, [userId, email, displayName])

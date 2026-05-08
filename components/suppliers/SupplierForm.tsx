@@ -98,7 +98,7 @@ export default function SupplierForm({
                 <SelectValue placeholder="Välj typ" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="swedish_business">Svenskt företag</SelectItem>
+                <SelectItem value="swedish_business">Svenskt företag eller organisation</SelectItem>
                 <SelectItem value="eu_business">EU-företag</SelectItem>
                 <SelectItem value="non_eu_business">Företag utanför EU</SelectItem>
               </SelectContent>

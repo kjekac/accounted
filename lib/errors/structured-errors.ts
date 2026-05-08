@@ -845,6 +845,44 @@ const OPENING_BALANCE_IMPORT: Record<string, StructuredErrorEntry> = {
   },
 }
 
+const REGISTER_IMPORT: Record<string, StructuredErrorEntry> = {
+  REG_IMPORT_NO_FILE: {
+    httpStatus: 400,
+    message_sv: 'Ingen fil bifogad.',
+    message_en: 'No file attached.',
+  },
+  REG_IMPORT_FILE_TOO_LARGE: {
+    httpStatus: 400,
+    message_sv: 'Filen är för stor. Maxstorlek är 10 MB.',
+    message_en: 'File exceeds the 10 MB size limit.',
+  },
+  REG_IMPORT_INVALID_FORMAT: {
+    httpStatus: 400,
+    message_sv: 'Filformatet stöds inte. Tillåtna format: .xlsx, .xls, .csv, .ods.',
+    message_en: 'Unsupported file format.',
+  },
+  REG_IMPORT_INVALID_COLUMN_OVERRIDES: {
+    httpStatus: 400,
+    message_sv: 'Ogiltig kolumnmappning.',
+    message_en: 'Invalid column overrides JSON.',
+  },
+  REG_IMPORT_PARSE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte tolka filen.',
+    message_en: 'Failed to parse the register file.',
+  },
+  REG_IMPORT_NO_ROWS: {
+    httpStatus: 400,
+    message_sv: 'Inga giltiga rader hittades i filen.',
+    message_en: 'No valid rows found in the file.',
+  },
+  REG_IMPORT_EXECUTE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Importen misslyckades.',
+    message_en: 'Register import failed.',
+  },
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Wave 3 tail: provider migration extension codes
 // ─────────────────────────────────────────────────────────────────
@@ -1238,6 +1276,7 @@ const REGISTRY: Record<string, StructuredErrorEntry> = {
   ...SIE_IMPORT,
   ...BANK_FILE,
   ...OPENING_BALANCE_IMPORT,
+  ...REGISTER_IMPORT,
   ...PROVIDER_MIGRATION,
   ...DOCUMENT,
   ...CUSTOMER,

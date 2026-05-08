@@ -12,6 +12,7 @@ import { CalendarFeedSettings } from '@/components/settings/CalendarFeedSettings
 import { AccountDangerZone } from '@/components/settings/AccountDangerZone'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import { useSettings } from '@/components/settings/useSettings'
+import { clearRecaptIdentity } from '@/lib/recapt'
 
 export default function AccountSettingsPage() {
   const router = useRouter()
@@ -24,6 +25,7 @@ export default function AccountSettingsPage() {
   useEffect(() => { setMounted(true) }, [])
 
   async function handleLogout() {
+    clearRecaptIdentity()
     await supabase.auth.signOut()
     router.push('/login')
   }

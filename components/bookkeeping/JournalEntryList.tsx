@@ -2,12 +2,13 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { ArrowDownNarrowWide, ArrowUpNarrowWide, ChevronDown, ChevronRight, Paperclip, AlertTriangle, Loader2, BookOpen, X } from 'lucide-react'
+import { ArrowDownNarrowWide, ArrowUpNarrowWide, ChevronDown, ChevronRight, Paperclip, AlertTriangle, Loader2, BookOpen, X, Copy } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { AccountNumber } from '@/components/ui/account-number'
 import { getAccountDescription } from '@/lib/bookkeeping/account-descriptions'
@@ -30,6 +31,7 @@ interface Props {
 }
 
 export default function JournalEntryList({ periodId }: Props) {
+  const router = useRouter()
   const [entries, setEntries] = useState<JournalEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -463,6 +465,15 @@ export default function JournalEntryList({ periodId }: Props) {
                         Skapa ändringsverifikation
                       </Button>
                     )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full sm:w-auto"
+                      onClick={() => router.push(`/bookkeeping?copy_from=${entry.id}`)}
+                    >
+                      <Copy className="mr-2 h-4 w-4" />
+                      Kopiera
+                    </Button>
                   </div>
                 </CardContent>
               )}

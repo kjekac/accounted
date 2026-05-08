@@ -1,7 +1,8 @@
 /**
- * Encoding detection and conversion for Swedish bank files.
+ * Encoding detection and conversion for Swedish import files.
  *
- * Swedish bank exports use either UTF-8 or Windows-1252 (ISO-8859-1).
+ * Used by bank file, supplier, customer, and opening-balance parsers.
+ * Swedish data exports use either UTF-8 or Windows-1252 (ISO-8859-1).
  * We detect encoding by checking for valid Swedish characters.
  */
 
@@ -12,37 +13,39 @@
  * (U+FFFD) or garbled Swedish chars, fall back to Windows-1252.
  */
 export function decodeFileContent(buffer: ArrayBuffer): string {
-  // Try UTF-8 first
   const utf8Decoder = new TextDecoder('utf-8', { fatal: false })
   const utf8Result = utf8Decoder.decode(buffer)
 
-  // Check if UTF-8 decode produced valid Swedish text
   if (!hasEncodingIssues(utf8Result)) {
     return utf8Result
   }
 
-  // Fall back to Windows-1252 (superset of ISO-8859-1)
   const latin1Decoder = new TextDecoder('windows-1252', { fatal: false })
   return latin1Decoder.decode(buffer)
 }
 
 /**
- * Decode a string that may have been incorrectly decoded as UTF-8
- * when the source was actually Windows-1252.
+ * Re-decode a string that suffered the canonical "UTF-8 bytes read as Latin-1"
+ * mojibake (e.g. "MalmÃ¶" → "Malmö", "GÃ–TEBORG" → "GÖTEBORG").
+ *
+ * Mechanism: each char in the input is a codepoint that was originally a UTF-8
+ * byte misinterpreted as a Latin-1/Windows-1252 character. We pack those chars
+ * back into a byte sequence and decode the bytes as UTF-8 to recover the
+ * original text.
+ *
+ * No-op when the string is already clean (no garbled patterns).
  */
 export function decodeStringContent(content: string): string {
-  // If the string already contains valid Swedish chars, return as-is
   if (!hasEncodingIssues(content)) {
     return content
   }
 
-  // Try re-encoding as Latin-1 and decoding as Windows-1252
   try {
     const bytes = new Uint8Array(content.length)
     for (let i = 0; i < content.length; i++) {
       bytes[i] = content.charCodeAt(i) & 0xff
     }
-    const decoder = new TextDecoder('windows-1252', { fatal: false })
+    const decoder = new TextDecoder('utf-8', { fatal: false })
     return decoder.decode(bytes)
   } catch {
     return content
@@ -52,8 +55,7 @@ export function decodeStringContent(content: string): string {
 /**
  * Check if a string has encoding issues (garbled Swedish characters).
  */
-function hasEncodingIssues(text: string): boolean {
-  // U+FFFD = replacement character (means invalid UTF-8 byte sequences)
+export function hasEncodingIssues(text: string): boolean {
   if (text.includes('\uFFFD')) return true
 
   // Common garbled patterns when Windows-1252 is read as UTF-8:

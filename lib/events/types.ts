@@ -3,6 +3,7 @@ import type {
   Invoice,
   Transaction,
   Customer,
+  Supplier,
   FiscalPeriod,
   DocumentAttachment,
   Receipt,
@@ -40,6 +41,8 @@ export type CoreEvent =
   | { type: 'period.year_closed'; payload: { period: FiscalPeriod; userId: string; companyId: string } }
   // Customers
   | { type: 'customer.created'; payload: { customer: Customer; userId: string; companyId: string } }
+  // Suppliers
+  | { type: 'supplier.created'; payload: { supplier: Supplier; userId: string; companyId: string } }
   // Receipts
   | { type: 'receipt.extracted'; payload: {
       receipt: Receipt;

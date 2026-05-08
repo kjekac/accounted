@@ -16,7 +16,7 @@ import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui
 import type { Supplier, SupplierType, CreateSupplierInput, SupplierInvoice } from '@/types'
 
 const supplierTypeLabels: Record<SupplierType, string> = {
-  swedish_business: 'Svenskt företag',
+  swedish_business: 'Svenskt företag eller organisation',
   eu_business: 'EU-företag',
   non_eu_business: 'Utanför EU',
 }

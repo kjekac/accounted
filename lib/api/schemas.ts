@@ -608,6 +608,60 @@ export const OpeningBalanceExecuteSchema = z.object({
 })
 
 // ============================================================
+// Register import schemas (customers, suppliers)
+// ============================================================
+
+const ImportedCustomerRowSchema = z.object({
+  row_index: z.number().int(),
+  name: z.string().min(1),
+  customer_type: CustomerTypeSchema,
+  org_number: z.string().nullable(),
+  email: z.string().nullable(),
+  phone: z.string().nullable(),
+  address_line1: z.string().nullable(),
+  address_line2: z.string().nullable(),
+  postal_code: z.string().nullable(),
+  city: z.string().nullable(),
+  country: z.string(),
+  vat_number: z.string().nullable(),
+  default_payment_terms: z.number().int().min(0).max(365),
+  notes: z.string().nullable(),
+})
+
+export const CustomerImportExecuteSchema = z.object({
+  rows: z.array(ImportedCustomerRowSchema).min(1, 'At least one row is required'),
+  update_duplicates: z.boolean(),
+})
+
+const ImportedSupplierRowSchema = z.object({
+  row_index: z.number().int(),
+  name: z.string().min(1),
+  supplier_type: SupplierTypeSchema,
+  org_number: z.string().nullable(),
+  email: z.string().nullable(),
+  phone: z.string().nullable(),
+  address_line1: z.string().nullable(),
+  address_line2: z.string().nullable(),
+  postal_code: z.string().nullable(),
+  city: z.string().nullable(),
+  country: z.string(),
+  vat_number: z.string().nullable(),
+  bankgiro: z.string().nullable(),
+  plusgiro: z.string().nullable(),
+  bank_account: z.string().nullable(),
+  iban: z.string().nullable(),
+  bic: z.string().nullable(),
+  default_payment_terms: z.number().int().min(0).max(365),
+  default_currency: z.string(),
+  notes: z.string().nullable(),
+})
+
+export const SupplierImportExecuteSchema = z.object({
+  rows: z.array(ImportedSupplierRowSchema).min(1, 'At least one row is required'),
+  update_duplicates: z.boolean(),
+})
+
+// ============================================================
 // Salary schemas
 // ============================================================
 

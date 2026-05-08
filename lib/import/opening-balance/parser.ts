@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx'
 import { detectColumns } from './column-detector'
 import { getBASReference } from '@/lib/bookkeeping/bas-reference'
+import { readWorkbookFromBuffer } from '../shared/workbook-reader'
 import type {
   DetectedColumns,
   ParsedOpeningBalanceRow,
@@ -43,7 +44,7 @@ export function parseOpeningBalanceFile(
   filename: string,
   columnOverrides?: DetectedColumns,
 ): OpeningBalanceParseResult {
-  const workbook = XLSX.read(buffer, { type: 'array' })
+  const workbook = readWorkbookFromBuffer(buffer, filename)
 
   // Pick the sheet with the most rows (heuristic for multi-sheet workbooks)
   let bestSheet = workbook.SheetNames[0]

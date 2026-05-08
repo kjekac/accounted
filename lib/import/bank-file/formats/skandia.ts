@@ -12,7 +12,7 @@
  */
 
 import type { BankFileFormat, BankFileParseResult, ParsedBankTransaction, BankFileParseIssue } from '../types'
-import { prepareContent } from '../encoding'
+import { prepareContent } from '../../shared/encoding'
 import { normalizeDate } from '../date-utils'
 
 function parseCommaDecimal(value: string): number {

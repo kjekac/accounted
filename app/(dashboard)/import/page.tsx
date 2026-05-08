@@ -7,7 +7,8 @@ import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
-import { ArrowLeftRight, ArrowRightLeft, FileText, ArrowLeft, Landmark, Loader2, Info, ChevronRight, Scale } from 'lucide-react'
+import { ArrowLeftRight, ArrowRightLeft, FileText, ArrowLeft, Landmark, Loader2, Info, ChevronRight, FileSpreadsheet } from 'lucide-react'
+import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useCompany } from '@/contexts/CompanyContext'
@@ -30,6 +31,23 @@ import OpeningBalanceEditStep from '@/components/import/OpeningBalanceEditStep'
 import OpeningBalancePeriodStep from '@/components/import/OpeningBalancePeriodStep'
 import OpeningBalanceResultStep from '@/components/import/OpeningBalanceResultStep'
 import type { OpeningBalanceParseResult, OpeningBalanceExecuteResult, DetectedColumns } from '@/lib/import/opening-balance/types'
+
+// Register import (customers/suppliers) components
+import RegisterUploadStep from '@/components/import/RegisterUploadStep'
+import RegisterColumnMappingStep, { type RegisterColumnSpec } from '@/components/import/RegisterColumnMappingStep'
+import CustomersEditStep from '@/components/import/CustomersEditStep'
+import SuppliersEditStep from '@/components/import/SuppliersEditStep'
+import RegisterResultStep, { type RegisterResult } from '@/components/import/RegisterResultStep'
+import type {
+  CustomerImportParseResult,
+  AnnotatedCustomerRow,
+  DetectedCustomerColumns,
+} from '@/lib/import/customers/types'
+import type {
+  SupplierImportParseResult,
+  AnnotatedSupplierRow,
+  DetectedSupplierColumns,
+} from '@/lib/import/suppliers/types'
 
 // SIE import components
 import SIEUploadStep from '@/components/import/SIEUploadStep'
@@ -667,7 +685,7 @@ function SIEImportWizard() {
 }
 
 // ============================================================
-// Opening Balance Import Wizard
+// Opening Balance Flow (entity = "opening_balance" inside CSVDataImportWizard)
 // ============================================================
 
 type OpeningBalanceStep = 'upload' | 'column_mapping' | 'edit' | 'period' | 'result'
@@ -680,7 +698,7 @@ const OB_STEP_LABELS: Record<OpeningBalanceStep, string> = {
   result: 'Resultat',
 }
 
-function OpeningBalanceImportWizard() {
+function OpeningBalanceFlow() {
   const { toast } = useToast()
 
   const [obStep, setObStep] = useState<OpeningBalanceStep>('upload')
@@ -921,6 +939,598 @@ function OpeningBalanceImportWizard() {
 }
 
 // ============================================================
+// Customers Flow (entity = "customers" inside CSVDataImportWizard)
+// ============================================================
+
+type RegisterStep = 'upload' | 'column_mapping' | 'edit' | 'result'
+
+const REGISTER_STEP_LABELS: Record<RegisterStep, string> = {
+  upload: 'Ladda upp',
+  column_mapping: 'Kolumnmappning',
+  edit: 'Granska',
+  result: 'Resultat',
+}
+
+const CUSTOMER_COLUMN_SPECS: RegisterColumnSpec<keyof DetectedCustomerColumns>[] = [
+  { key: 'name_col', label: 'Namn', required: true },
+  { key: 'org_number_col', label: 'Org-/personnummer', required: false },
+  { key: 'customer_type_col', label: 'Kundtyp', required: false },
+  { key: 'email_col', label: 'E-post', required: false },
+  { key: 'phone_col', label: 'Telefon', required: false },
+  { key: 'address_line1_col', label: 'Adress', required: false },
+  { key: 'address_line2_col', label: 'Adress rad 2', required: false },
+  { key: 'postal_code_col', label: 'Postnummer', required: false },
+  { key: 'city_col', label: 'Ort', required: false },
+  { key: 'country_col', label: 'Land', required: false },
+  { key: 'vat_number_col', label: 'VAT-nummer', required: false },
+  { key: 'payment_terms_col', label: 'Betalningsvillkor (dagar)', required: false },
+  { key: 'notes_col', label: 'Anteckning', required: false },
+]
+
+function columnsToMapping<K extends string>(
+  cols: { readonly [key: string]: unknown },
+  specs: RegisterColumnSpec<K>[],
+): Record<K, number | null> {
+  const out = {} as Record<K, number | null>
+  for (const spec of specs) {
+    const v = cols[spec.key as string]
+    out[spec.key] = typeof v === 'number' ? v : null
+  }
+  return out
+}
+
+function CustomersFlow() {
+  const { toast } = useToast()
+
+  const [step, setStep] = useState<RegisterStep>('upload')
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [parseResult, setParseResult] = useState<CustomerImportParseResult | null>(null)
+  const [executeResult, setExecuteResult] = useState<RegisterResult | null>(null)
+
+  const needsMapping = parseResult && parseResult.detected_columns.confidence < 0.8
+  const steps: RegisterStep[] = needsMapping
+    ? ['upload', 'column_mapping', 'edit', 'result']
+    : ['upload', 'edit', 'result']
+  const currentStepIndex = steps.indexOf(step)
+  const progress = ((currentStepIndex + 1) / steps.length) * 100
+
+  const handleFileSelect = useCallback(async (selectedFile: File) => {
+    setError(null)
+    setIsLoading(true)
+    setFile(selectedFile)
+
+    try {
+      const formData = new FormData()
+      formData.append('file', selectedFile)
+
+      const res = await fetch('/api/import/customers/parse', {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error?.message_sv || data.error?.message || data.error || 'Kunde inte läsa filen')
+        return
+      }
+
+      const result = data.data as CustomerImportParseResult
+      setParseResult(result)
+
+      if (result.rows.length === 0) {
+        setError('Inga giltiga kundrader hittades. Kontrollera att filen innehåller en namnkolumn.')
+        return
+      }
+
+      toast({
+        title: 'Fil analyserad',
+        description: `${result.rows.length} kunder hittades${result.duplicate_count > 0 ? ` (${result.duplicate_count} matchar befintliga)` : ''}`,
+      })
+
+      setStep(result.detected_columns.confidence < 0.8 ? 'column_mapping' : 'edit')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Kunde inte läsa filen')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [toast])
+
+  const handleColumnMappingConfirm = useCallback(async (
+    mapping: Record<keyof DetectedCustomerColumns, number | null>,
+  ) => {
+    if (!file) return
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const overrides: DetectedCustomerColumns = {
+        name_col: mapping.name_col ?? 0,
+        org_number_col: mapping.org_number_col,
+        customer_type_col: mapping.customer_type_col,
+        email_col: mapping.email_col,
+        phone_col: mapping.phone_col,
+        address_line1_col: mapping.address_line1_col,
+        address_line2_col: mapping.address_line2_col,
+        postal_code_col: mapping.postal_code_col,
+        city_col: mapping.city_col,
+        country_col: mapping.country_col,
+        vat_number_col: mapping.vat_number_col,
+        payment_terms_col: mapping.payment_terms_col,
+        notes_col: mapping.notes_col,
+        confidence: 1,
+      }
+
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('column_overrides', JSON.stringify(overrides))
+
+      const res = await fetch('/api/import/customers/parse', {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error?.message_sv || data.error?.message || 'Kunde inte tolka filen med de valda kolumnerna')
+        return
+      }
+
+      setParseResult(data.data)
+      setStep('edit')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Kunde inte läsa filen')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [file])
+
+  const handleExecute = useCallback(async (
+    rows: AnnotatedCustomerRow[],
+    updateDuplicates: boolean,
+  ) => {
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const res = await fetch('/api/import/customers/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rows: rows.map(({ duplicate_match: _dup, is_valid: _v, validation_errors: _ve, ...rest }) => rest),
+          update_duplicates: updateDuplicates,
+        }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error?.message_sv || data.error?.message || 'Importen misslyckades')
+        return
+      }
+
+      setExecuteResult(data.data as RegisterResult)
+      setStep('result')
+
+      const r = data.data as RegisterResult
+      toast({
+        title: r.success ? 'Kunder importerade' : 'Importen slutfördes med fel',
+        description: `${r.created} skapade, ${r.updated} uppdaterade, ${r.skipped} hoppade över${r.failed > 0 ? `, ${r.failed} misslyckades` : ''}`,
+        variant: r.success ? 'default' : 'destructive',
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Importen misslyckades')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [toast])
+
+  const handleNewImport = () => {
+    setStep('upload')
+    setFile(null)
+    setParseResult(null)
+    setExecuteResult(null)
+    setError(null)
+  }
+
+  const initialMapping = parseResult
+    ? columnsToMapping<keyof DetectedCustomerColumns>(parseResult.detected_columns as unknown as { [key: string]: unknown }, CUSTOMER_COLUMN_SPECS)
+    : null
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardContent className="pt-6">
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm">
+              <span className="sm:hidden text-primary font-medium">
+                Steg {currentStepIndex + 1}/{steps.length}: {REGISTER_STEP_LABELS[step]}
+              </span>
+              {steps.map((s, i) => (
+                <span
+                  key={s}
+                  className={cn(
+                    'hidden sm:inline',
+                    i <= currentStepIndex ? 'text-primary font-medium' : 'text-muted-foreground',
+                  )}
+                >
+                  {REGISTER_STEP_LABELS[s]}
+                </span>
+              ))}
+            </div>
+            <Progress value={progress} className="h-2" />
+          </div>
+        </CardContent>
+      </Card>
+
+      {step === 'upload' && (
+        <RegisterUploadStep
+          entity="customers"
+          onFileSelect={handleFileSelect}
+          isLoading={isLoading}
+          error={error}
+        />
+      )}
+
+      {step === 'column_mapping' && parseResult && initialMapping && (
+        <RegisterColumnMappingStep<keyof DetectedCustomerColumns>
+          headers={parseResult.headers}
+          previewRows={parseResult.preview_rows}
+          specs={CUSTOMER_COLUMN_SPECS}
+          initial={initialMapping}
+          onConfirm={handleColumnMappingConfirm}
+          onBack={() => setStep('upload')}
+        />
+      )}
+
+      {step === 'edit' && parseResult && (
+        <CustomersEditStep
+          rows={parseResult.rows}
+          onExecute={handleExecute}
+          onBack={() => setStep(needsMapping ? 'column_mapping' : 'upload')}
+          isLoading={isLoading}
+          error={error}
+        />
+      )}
+
+      {step === 'result' && executeResult && (
+        <RegisterResultStep
+          entity="customers"
+          result={executeResult}
+          onNewImport={handleNewImport}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================
+// Suppliers Flow (entity = "suppliers" inside CSVDataImportWizard)
+// ============================================================
+
+const SUPPLIER_COLUMN_SPECS: RegisterColumnSpec<keyof DetectedSupplierColumns>[] = [
+  { key: 'name_col', label: 'Namn', required: true },
+  { key: 'org_number_col', label: 'Org-/personnummer', required: false },
+  { key: 'supplier_type_col', label: 'Leverantörstyp', required: false },
+  { key: 'email_col', label: 'E-post', required: false },
+  { key: 'phone_col', label: 'Telefon', required: false },
+  { key: 'address_line1_col', label: 'Adress', required: false },
+  { key: 'address_line2_col', label: 'Adress rad 2', required: false },
+  { key: 'postal_code_col', label: 'Postnummer', required: false },
+  { key: 'city_col', label: 'Ort', required: false },
+  { key: 'country_col', label: 'Land', required: false },
+  { key: 'vat_number_col', label: 'VAT-nummer', required: false },
+  { key: 'bankgiro_col', label: 'Bankgiro', required: false },
+  { key: 'plusgiro_col', label: 'Plusgiro', required: false },
+  { key: 'bank_account_col', label: 'Bankkonto', required: false },
+  { key: 'iban_col', label: 'IBAN', required: false },
+  { key: 'bic_col', label: 'BIC/SWIFT', required: false },
+  { key: 'payment_terms_col', label: 'Betalningsvillkor (dagar)', required: false },
+  { key: 'default_currency_col', label: 'Valuta', required: false },
+  { key: 'notes_col', label: 'Anteckning', required: false },
+]
+
+function SuppliersFlow() {
+  const { toast } = useToast()
+
+  const [step, setStep] = useState<RegisterStep>('upload')
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [parseResult, setParseResult] = useState<SupplierImportParseResult | null>(null)
+  const [executeResult, setExecuteResult] = useState<RegisterResult | null>(null)
+
+  const needsMapping = parseResult && parseResult.detected_columns.confidence < 0.8
+  const steps: RegisterStep[] = needsMapping
+    ? ['upload', 'column_mapping', 'edit', 'result']
+    : ['upload', 'edit', 'result']
+  const currentStepIndex = steps.indexOf(step)
+  const progress = ((currentStepIndex + 1) / steps.length) * 100
+
+  const handleFileSelect = useCallback(async (selectedFile: File) => {
+    setError(null)
+    setIsLoading(true)
+    setFile(selectedFile)
+
+    try {
+      const formData = new FormData()
+      formData.append('file', selectedFile)
+
+      const res = await fetch('/api/import/suppliers/parse', {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error?.message_sv || data.error?.message || data.error || 'Kunde inte läsa filen')
+        return
+      }
+
+      const result = data.data as SupplierImportParseResult
+      setParseResult(result)
+
+      if (result.rows.length === 0) {
+        setError('Inga giltiga leverantörsrader hittades. Kontrollera att filen innehåller en namnkolumn.')
+        return
+      }
+
+      toast({
+        title: 'Fil analyserad',
+        description: `${result.rows.length} leverantörer hittades${result.duplicate_count > 0 ? ` (${result.duplicate_count} matchar befintliga)` : ''}`,
+      })
+
+      setStep(result.detected_columns.confidence < 0.8 ? 'column_mapping' : 'edit')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Kunde inte läsa filen')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [toast])
+
+  const handleColumnMappingConfirm = useCallback(async (
+    mapping: Record<keyof DetectedSupplierColumns, number | null>,
+  ) => {
+    if (!file) return
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const overrides: DetectedSupplierColumns = {
+        name_col: mapping.name_col ?? 0,
+        org_number_col: mapping.org_number_col,
+        supplier_type_col: mapping.supplier_type_col,
+        email_col: mapping.email_col,
+        phone_col: mapping.phone_col,
+        address_line1_col: mapping.address_line1_col,
+        address_line2_col: mapping.address_line2_col,
+        postal_code_col: mapping.postal_code_col,
+        city_col: mapping.city_col,
+        country_col: mapping.country_col,
+        vat_number_col: mapping.vat_number_col,
+        bankgiro_col: mapping.bankgiro_col,
+        plusgiro_col: mapping.plusgiro_col,
+        bank_account_col: mapping.bank_account_col,
+        iban_col: mapping.iban_col,
+        bic_col: mapping.bic_col,
+        payment_terms_col: mapping.payment_terms_col,
+        default_currency_col: mapping.default_currency_col,
+        notes_col: mapping.notes_col,
+        confidence: 1,
+      }
+
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('column_overrides', JSON.stringify(overrides))
+
+      const res = await fetch('/api/import/suppliers/parse', {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error?.message_sv || data.error?.message || 'Kunde inte tolka filen')
+        return
+      }
+
+      setParseResult(data.data)
+      setStep('edit')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Kunde inte läsa filen')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [file])
+
+  const handleExecute = useCallback(async (
+    rows: AnnotatedSupplierRow[],
+    updateDuplicates: boolean,
+  ) => {
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const res = await fetch('/api/import/suppliers/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rows: rows.map(({ duplicate_match: _dup, is_valid: _v, validation_errors: _ve, ...rest }) => rest),
+          update_duplicates: updateDuplicates,
+        }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error?.message_sv || data.error?.message || 'Importen misslyckades')
+        return
+      }
+
+      setExecuteResult(data.data as RegisterResult)
+      setStep('result')
+
+      const r = data.data as RegisterResult
+      toast({
+        title: r.success ? 'Leverantörer importerade' : 'Importen slutfördes med fel',
+        description: `${r.created} skapade, ${r.updated} uppdaterade, ${r.skipped} hoppade över${r.failed > 0 ? `, ${r.failed} misslyckades` : ''}`,
+        variant: r.success ? 'default' : 'destructive',
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Importen misslyckades')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [toast])
+
+  const handleNewImport = () => {
+    setStep('upload')
+    setFile(null)
+    setParseResult(null)
+    setExecuteResult(null)
+    setError(null)
+  }
+
+  const initialMapping = parseResult
+    ? columnsToMapping<keyof DetectedSupplierColumns>(parseResult.detected_columns as unknown as { [key: string]: unknown }, SUPPLIER_COLUMN_SPECS)
+    : null
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardContent className="pt-6">
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm">
+              <span className="sm:hidden text-primary font-medium">
+                Steg {currentStepIndex + 1}/{steps.length}: {REGISTER_STEP_LABELS[step]}
+              </span>
+              {steps.map((s, i) => (
+                <span
+                  key={s}
+                  className={cn(
+                    'hidden sm:inline',
+                    i <= currentStepIndex ? 'text-primary font-medium' : 'text-muted-foreground',
+                  )}
+                >
+                  {REGISTER_STEP_LABELS[s]}
+                </span>
+              ))}
+            </div>
+            <Progress value={progress} className="h-2" />
+          </div>
+        </CardContent>
+      </Card>
+
+      {step === 'upload' && (
+        <RegisterUploadStep
+          entity="suppliers"
+          onFileSelect={handleFileSelect}
+          isLoading={isLoading}
+          error={error}
+        />
+      )}
+
+      {step === 'column_mapping' && parseResult && initialMapping && (
+        <RegisterColumnMappingStep<keyof DetectedSupplierColumns>
+          headers={parseResult.headers}
+          previewRows={parseResult.preview_rows}
+          specs={SUPPLIER_COLUMN_SPECS}
+          initial={initialMapping}
+          onConfirm={handleColumnMappingConfirm}
+          onBack={() => setStep('upload')}
+        />
+      )}
+
+      {step === 'edit' && parseResult && (
+        <SuppliersEditStep
+          rows={parseResult.rows}
+          onExecute={handleExecute}
+          onBack={() => setStep(needsMapping ? 'column_mapping' : 'upload')}
+          isLoading={isLoading}
+          error={error}
+        />
+      )}
+
+      {step === 'result' && executeResult && (
+        <RegisterResultStep
+          entity="suppliers"
+          result={executeResult}
+          onNewImport={handleNewImport}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================
+// CSV/Excel Data Import Wizard — entity selector + sub-flow
+// ============================================================
+
+type CSVDataEntity = 'opening_balance' | 'customers' | 'suppliers'
+
+const ENTITY_OPTIONS: { value: CSVDataEntity; label: string }[] = [
+  { value: 'opening_balance', label: 'Ingående balanser' },
+  { value: 'customers', label: 'Kunder' },
+  { value: 'suppliers', label: 'Leverantörer' },
+]
+
+function CSVDataImportWizard() {
+  const [entity, setEntity] = useState<CSVDataEntity | null>('opening_balance')
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap gap-3">
+        {ENTITY_OPTIONS.map((opt) => {
+          const selected = entity === opt.value
+          return (
+            <div key={opt.value} className="relative">
+              {selected && (
+                <svg
+                  aria-hidden
+                  className="pointer-events-none absolute -inset-[3px] h-[calc(100%+6px)] w-[calc(100%+6px)] overflow-visible"
+                >
+                  <motion.rect
+                    x="1"
+                    y="1"
+                    width="calc(100% - 2px)"
+                    height="calc(100% - 2px)"
+                    rx="8"
+                    ry="8"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.25"
+                    strokeDasharray="3 4"
+                    className="text-foreground/45"
+                    animate={{ strokeDashoffset: [0, -14] }}
+                    transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }}
+                  />
+                </svg>
+              )}
+              <button
+                type="button"
+                onClick={() => setEntity(opt.value)}
+                aria-pressed={selected}
+                className={cn(
+                  'relative h-9 rounded-md border px-4 text-sm font-medium transition-colors',
+                  selected
+                    ? 'border-foreground bg-foreground text-background'
+                    : 'border-border bg-card text-foreground hover:border-foreground/30 hover:bg-muted',
+                )}
+              >
+                {opt.label}
+              </button>
+            </div>
+          )
+        })}
+      </div>
+
+      {entity === 'opening_balance' && <OpeningBalanceFlow key="ob-flow" />}
+      {entity === 'customers' && <CustomersFlow key="cust-flow" />}
+      {entity === 'suppliers' && <SuppliersFlow key="supp-flow" />}
+    </div>
+  )
+}
+
+// ============================================================
 // PSD2 Bank Connection (inline, from Enable Banking extension)
 // ============================================================
 
@@ -1112,7 +1722,7 @@ function PSD2ConnectWizard() {
 // Import Page with Selection Cards
 // ============================================================
 
-type ImportMode = null | 'psd2' | 'bank' | 'sie' | 'opening_balance' | 'migration'
+type ImportMode = null | 'psd2' | 'bank' | 'sie' | 'csv_data' | 'migration'
 
 export default function ImportPage() {
   const { company } = useCompany()
@@ -1146,7 +1756,7 @@ export default function ImportPage() {
       setMode('migration')
     } else {
       const modeParam = searchParams.get('mode')
-      if (modeParam && ['psd2', 'bank', 'sie', 'opening_balance', 'migration'].includes(modeParam)) {
+      if (modeParam && ['psd2', 'bank', 'sie', 'csv_data', 'migration'].includes(modeParam)) {
         setMode(modeParam as ImportMode)
       }
     }
@@ -1287,7 +1897,7 @@ export default function ImportPage() {
               <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0 mt-2.5 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
             </div>
 
-            {/* 4. Ingående balanser */}
+            {/* 4. CSV/Excel-data (ingående balanser, kunder, leverantörer) */}
             <div
               role="button"
               tabIndex={isSandbox ? -1 : 0}
@@ -1298,19 +1908,19 @@ export default function ImportPage() {
                   ? 'opacity-50 cursor-not-allowed'
                   : 'cursor-pointer hover:border-foreground/15 hover:shadow-[var(--shadow-sm)] active:scale-[0.998]'
               )}
-              onClick={() => { if (!isSandbox) setMode('opening_balance') }}
-              onKeyDown={(e) => { if (!isSandbox && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setMode('opening_balance') } }}
+              onClick={() => { if (!isSandbox) setMode('csv_data') }}
+              onKeyDown={(e) => { if (!isSandbox && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setMode('csv_data') } }}
             >
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-foreground/[0.06]">
-                <Scale className="h-[18px] w-[18px] text-foreground/60" />
+                <FileSpreadsheet className="h-[18px] w-[18px] text-foreground/60" />
               </div>
               <div className="flex-1 min-w-0">
-                <h3 className="text-[15px] font-semibold leading-tight">Ingående balanser</h3>
+                <h3 className="text-[15px] font-semibold leading-tight">Importera CSV/Excel-data</h3>
                 <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed max-w-lg">
-                  Importera ingående balanser från en Excel- eller CSV-fil.
+                  Importera ingående balanser, kunder eller leverantörer.
                 </p>
                 <div className="flex flex-wrap gap-1.5 mt-2.5">
-                  {['XLSX', 'CSV'].map(fmt => (
+                  {['XLSX', 'CSV', 'Ingående balanser', 'Kunder', 'Leverantörer'].map(fmt => (
                     <span key={fmt} className="text-[11px] text-muted-foreground/80 bg-muted/80 px-1.5 py-0.5 rounded leading-none">
                       {fmt}
                     </span>
@@ -1366,7 +1976,7 @@ export default function ImportPage() {
       {mode === 'psd2' && <PSD2ConnectWizard />}
       {mode === 'bank' && <BankFileImportWizard />}
       {mode === 'sie' && <SIEImportWizard />}
-      {mode === 'opening_balance' && <OpeningBalanceImportWizard />}
+      {mode === 'csv_data' && <CSVDataImportWizard />}
       {mode === 'migration' && <MigrationWizard userId={userId} />}
     </div>
   )

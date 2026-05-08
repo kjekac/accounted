@@ -3,12 +3,11 @@
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
-import { Plus, Search, Building2, Globe, Lock } from 'lucide-react'
+import { Plus, Search, Building2, Lock } from 'lucide-react'
 import SupplierForm from '@/components/suppliers/SupplierForm'
 import Link from 'next/link'
 import { useCompany } from '@/contexts/CompanyContext'
@@ -16,15 +15,23 @@ import { useCanWrite } from '@/lib/hooks/use-can-write'
 import type { Supplier, SupplierType, CreateSupplierInput } from '@/types'
 
 const supplierTypeLabels: Record<SupplierType, string> = {
-  swedish_business: 'Svenskt företag',
+  swedish_business: 'Svenskt företag eller organisation',
   eu_business: 'EU-företag',
   non_eu_business: 'Utanför EU',
 }
 
-const supplierTypeIcons: Record<SupplierType, React.ElementType> = {
-  swedish_business: Building2,
-  eu_business: Globe,
-  non_eu_business: Globe,
+function getPaymentInfo(supplier: Supplier): { label: string; value: string } | null {
+  if (supplier.bankgiro) return { label: 'BG', value: supplier.bankgiro }
+  if (supplier.plusgiro) return { label: 'PG', value: supplier.plusgiro }
+  if (supplier.iban) return { label: 'IBAN', value: supplier.iban }
+  if (supplier.bank_account) return { label: 'Bankkonto', value: supplier.bank_account }
+  return null
+}
+
+function formatLocation(supplier: Supplier): string | null {
+  if (supplier.city && supplier.country) return `${supplier.city}, ${supplier.country}`
+  if (supplier.city) return supplier.city
+  return null
 }
 
 export default function SuppliersPage() {
@@ -150,12 +157,12 @@ export default function SuppliersPage() {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3].map((i) => (
             <Card key={i} className="animate-pulse">
-              <CardHeader>
+              <CardContent className="p-5 space-y-3">
                 <div className="h-5 bg-muted rounded w-1/2" />
-                <div className="h-4 bg-muted rounded w-1/3 mt-2" />
-              </CardHeader>
-              <CardContent>
-                <div className="h-4 bg-muted rounded w-full" />
+                <div className="h-3 bg-muted rounded w-2/3" />
+                <div className="h-px bg-muted" />
+                <div className="h-3 bg-muted rounded w-1/2" />
+                <div className="h-3 bg-muted rounded w-1/3" />
               </CardContent>
             </Card>
           ))}
@@ -198,38 +205,50 @@ export default function SuppliersPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {filteredSuppliers.map((supplier) => {
-            const Icon = supplierTypeIcons[supplier.supplier_type]
+            const payment = getPaymentInfo(supplier)
+            const location = formatLocation(supplier)
             return (
-              <Link key={supplier.id} href={`/suppliers/${supplier.id}`}>
-                <Card className="hover:border-primary/50 transition-colors cursor-pointer h-full">
-                  <CardHeader>
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
-                          <Icon className="h-5 w-5 text-primary" />
-                        </div>
-                        <div>
-                          <CardTitle className="text-base">{supplier.name}</CardTitle>
-                          <CardDescription>{supplier.email || 'Ingen e-post'}</CardDescription>
-                        </div>
-                      </div>
-                      <Badge variant="secondary">
+              <Link key={supplier.id} href={`/suppliers/${supplier.id}`} className="group">
+                <Card className="h-full cursor-pointer transition-all duration-150 hover:border-foreground/20 hover:shadow-sm motion-safe:active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                  <CardContent className="p-5 flex flex-col h-full">
+                    <div className="space-y-1 mb-4">
+                      <h3 className="text-[15px] font-semibold tracking-tight leading-tight truncate group-hover:text-primary transition-colors">
+                        {supplier.name}
+                      </h3>
+                      <p className="text-xs text-muted-foreground leading-snug">
                         {supplierTypeLabels[supplier.supplier_type]}
-                      </Badge>
+                      </p>
                     </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-sm text-muted-foreground space-y-1">
+
+                    <dl className="mt-auto space-y-1.5 text-sm border-t pt-3">
                       {supplier.org_number && (
-                        <p>Org.nr: {supplier.org_number}</p>
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-xs text-muted-foreground shrink-0">Org.nr</dt>
+                          <dd className="tabular-nums truncate">{supplier.org_number}</dd>
+                        </div>
                       )}
-                      {supplier.bankgiro && (
-                        <p>Bankgiro: {supplier.bankgiro}</p>
+                      {payment && (
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-xs text-muted-foreground shrink-0">{payment.label}</dt>
+                          <dd className="tabular-nums truncate">{payment.value}</dd>
+                        </div>
                       )}
-                      {supplier.city && (
-                        <p>{supplier.city}, {supplier.country}</p>
+                      {supplier.email && (
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-xs text-muted-foreground shrink-0">E-post</dt>
+                          <dd className="truncate">{supplier.email}</dd>
+                        </div>
                       )}
-                    </div>
+                      {location && (
+                        <div className="flex items-baseline justify-between gap-3">
+                          <dt className="text-xs text-muted-foreground shrink-0">Plats</dt>
+                          <dd className="truncate">{location}</dd>
+                        </div>
+                      )}
+                      {!supplier.org_number && !payment && !supplier.email && !location && (
+                        <p className="text-xs text-muted-foreground italic">Inga kontaktuppgifter</p>
+                      )}
+                    </dl>
                   </CardContent>
                 </Card>
               </Link>

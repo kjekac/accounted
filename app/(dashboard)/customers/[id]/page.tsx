@@ -32,7 +32,7 @@ import type { Customer, CustomerType, CreateCustomerInput } from '@/types'
 
 const customerTypeLabels: Record<CustomerType, string> = {
   individual: 'Privatperson',
-  swedish_business: 'Svenskt företag',
+  swedish_business: 'Svenskt företag eller organisation',
   eu_business: 'EU-företag',
   non_eu_business: 'Utanför EU',
 }

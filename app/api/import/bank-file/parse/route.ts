@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { parseBankFile, generateFileHash, detectFileFormat } from '@/lib/import/bank-file/parser'
-import { decodeFileContent } from '@/lib/import/bank-file/encoding'
+import { decodeFileContent } from '@/lib/import/shared/encoding'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { BankFileFormatId } from '@/lib/import/bank-file/types'

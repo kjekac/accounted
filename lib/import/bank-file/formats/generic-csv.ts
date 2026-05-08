@@ -6,7 +6,7 @@
  */
 
 import type { BankFileFormat, BankFileParseResult, ParsedBankTransaction, BankFileParseIssue, GenericCSVColumnMapping } from '../types'
-import { prepareContent } from '../encoding'
+import { prepareContent } from '../../shared/encoding'
 import { parseCSVLine } from './nordea'
 import { normalizeDate } from '../date-utils'
 

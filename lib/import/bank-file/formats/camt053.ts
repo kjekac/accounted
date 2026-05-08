@@ -14,7 +14,7 @@
  */
 
 import type { BankFileFormat, BankFileParseResult, ParsedBankTransaction, BankFileParseIssue } from '../types'
-import { prepareContent } from '../encoding'
+import { prepareContent } from '../../shared/encoding'
 
 export const camt053Format: BankFileFormat = {
   id: 'camt053',

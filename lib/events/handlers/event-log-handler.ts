@@ -24,6 +24,7 @@ const PERSISTED_EVENT_TYPES: CoreEventType[] = [
   'period.locked',
   'period.year_closed',
   'customer.created',
+  'supplier.created',
   'receipt.matched',
   'receipt.confirmed',
   'supplier_invoice.registered',
@@ -52,7 +53,7 @@ const PERSISTED_EVENT_TYPES: CoreEventType[] = [
 function extractEntityId(payload: Record<string, unknown>): string | null {
   // Try common entity shapes in priority order
   const entityKeys = [
-    'entry', 'invoice', 'transaction', 'customer', 'receipt',
+    'entry', 'invoice', 'transaction', 'customer', 'supplier', 'receipt',
     'supplierInvoice', 'creditNote', 'period', 'document', 'inboxItem',
   ] as const
 

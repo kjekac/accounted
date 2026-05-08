@@ -1,8 +1,13 @@
 import { NextResponse } from 'next/server'
+import { eventBus } from '@/lib/events'
+import { ensureInitialized } from '@/lib/init'
 import { validateBody } from '@/lib/api/validate'
 import { CreateSupplierSchema } from '@/lib/api/schemas'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
+import type { Supplier } from '@/types'
+
+ensureInitialized()
 
 export const GET = withRouteContext(
   'supplier.list',
@@ -78,6 +83,11 @@ export const POST = withRouteContext(
         details: { reason: error.message },
       })
     }
+
+    await eventBus.emit({
+      type: 'supplier.created',
+      payload: { supplier: data as Supplier, companyId, userId: user.id },
+    })
 
     return NextResponse.json({ data })
   },
