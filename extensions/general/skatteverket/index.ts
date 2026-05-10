@@ -1099,6 +1099,25 @@ export const skatteverketExtension: Extension = {
             }),
           )
 
+          // Flip the matching agi_declarations row to pending_signature when
+          // SKV returns a usable granskningsunderlag. Previously this happened
+          // in /agi/spara, but /spara is only valid for re-saving rejected
+          // underlag — successful underlag are auto-persisted by SKV, so
+          // /spara returns felkod 20 on the happy path. Doing the flip here
+          // ensures the audit trail still moves through pending_signature
+          // → submitted (BFNAR 2013:2 kap 8 / BFL 5 kap 6§) without /spara.
+          if (canSign) {
+            const periodYear = parseInt(period.slice(0, 4))
+            const periodMonth = parseInt(period.slice(4, 6))
+            await ctx.supabase
+              .from('agi_declarations')
+              .update({ status: 'pending_signature' })
+              .eq('company_id', ctx.companyId)
+              .eq('period_year', periodYear)
+              .eq('period_month', periodMonth)
+              .in('status', ['generated', 'rejected'])
+          }
+
           return NextResponse.json({ data: result.data })
         } catch (err) {
           return handleSkvError(err)

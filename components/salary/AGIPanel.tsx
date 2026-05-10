@@ -338,9 +338,12 @@ export function AGIPanel(props: AGIPanelProps) {
    * status flips out of PROCESSING. Skatteverket's spec says polling is
    * usually instantaneous, but we cap at 8 attempts × 1s to be safe.
    *
-   * On DONE_SUCCESS we automatically call /agi/spara to commit into Eget
-   * utrymme, mirroring the user's intent ("send AGI") and matching what the
-   * old draft-then-lock UX promised.
+   * On DONE_SUCCESS the underlag is auto-persisted by SKV — no /spara call.
+   * Calling /spara when there are no errors returns 400 felkod 20
+   * ("Inlämningen är redan sparad/borttagen eller innehöll inga felaktiga
+   * underlag") because /spara is specifically for re-persisting rejected
+   * underlag so the user can fix them later in Mina Sidor. Successful
+   * underlag move straight to the granskningsunderlag step.
    *
    * On DONE_REJECTED we surface the validation findings; the user can still
    * choose to save (so they can fix it in Mina Sidor) or abort.
@@ -391,20 +394,10 @@ export function AGIPanel(props: AGIPanelProps) {
       setKontroller(findings)
 
       if (kr.status === 'DONE_SUCCESS') {
-        const sparaRes = await fetch('/api/extensions/ext/skatteverket/agi/spara', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          // Include salaryRunId so the handler can promote the matching
-          // agi_declarations row to status='pending_signature' without
-          // doing a fallback lookup against locally-cached submission state.
-          body: JSON.stringify({ inlamningId, salaryRunId }),
-        })
-        const sparaJson = await sparaRes.json()
-        if (!sparaRes.ok || sparaJson.error) {
-          setError(sparaJson.error || `Kunde inte spara underlag (${sparaRes.status})`)
-          return
-        }
-        setSuccess('Underlag accepterat och sparat hos Skatteverket. Skapa granskningsunderlag för att fortsätta till BankID-signering.')
+        setSuccess(
+          'Underlag accepterat hos Skatteverket. Klicka "Skapa signeringslänk" ' +
+          'för att gå vidare till BankID-signering i Mina Sidor.',
+        )
       } else if (kr.status === 'DONE_REJECTED') {
         setError(`Underlaget innehåller ${findings.filter(f => f.status === 'STOPP').length} stoppande fel. Åtgärda och skicka igen.`)
       } else {

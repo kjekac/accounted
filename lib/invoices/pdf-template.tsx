@@ -28,7 +28,7 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
   },
   companyInfo: {
-    textAlign: 'right',
+    textAlign: 'left',
   },
   companyName: {
     fontSize: 14,
@@ -373,15 +373,9 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
 
         {/* Header */}
         <View style={styles.header}>
-          <View>
-            <Text style={[styles.title, isCreditNote ? styles.creditNoteTitle : {}]}>
-              {getDocumentTitle(invoice)}
-            </Text>
-            <Text style={{ marginTop: 5, color: '#666' }}>{invoice.invoice_number ?? 'FÖRHANDSGRANSKNING'}</Text>
-          </View>
           <View style={styles.companyInfo}>
             {company.logo_url && (
-              <Image src={company.logo_url} style={{ maxHeight: 40, maxWidth: 150, marginBottom: 6, alignSelf: 'flex-end' }} />
+              <Image src={company.logo_url} style={{ maxHeight: 40, maxWidth: 150, marginBottom: 6, alignSelf: 'flex-start' }} />
             )}
             <Text style={styles.companyName}>{company.trade_name || company.company_name}</Text>
             {company.trade_name && company.company_name && (
@@ -395,6 +389,12 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
               <Text style={{ marginTop: 4 }}>Org.nr: {formatOrgNumber(company.org_number)}</Text>
             )}
             {company.vat_number && <Text>VAT: {company.vat_number}</Text>}
+          </View>
+          <View style={{ textAlign: 'right' }}>
+            <Text style={[styles.title, isCreditNote ? styles.creditNoteTitle : {}]}>
+              {getDocumentTitle(invoice)}
+            </Text>
+            <Text style={{ marginTop: 5, color: '#666' }}>{invoice.invoice_number ?? 'FÖRHANDSGRANSKNING'}</Text>
           </View>
         </View>
 
