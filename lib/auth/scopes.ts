@@ -58,6 +58,9 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   'GET /api/v1/companies/:companyId/invoices/:id': 'invoices:read',
   'POST /api/v1/companies/:companyId/invoices': 'invoices:write',
   'PATCH /api/v1/companies/:companyId/invoices/:id': 'invoices:write',
+  // Phase 2 PR-B-2b — action verbs. URL uses /verb subpath (not Google-AIP-style :verb)
+  // because Next.js routes don't support `:` in folder names.
+  'POST /api/v1/companies/:companyId/invoices/:id/mark-sent': 'invoices:write',
 
   // Webhooks (Phase 6 — placeholder so the catalogue is complete)
   'GET /api/v1/companies/:companyId/webhooks': 'webhooks:manage',
