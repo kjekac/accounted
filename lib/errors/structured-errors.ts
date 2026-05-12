@@ -505,6 +505,14 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
       description: 'Issue a credit note instead of deleting a posted invoice.',
     },
   },
+  INVOICE_UPDATE_NOT_DRAFT: {
+    httpStatus: 409,
+    message_sv: 'Endast utkast kan ändras. Bokförda fakturor är oföränderliga — utfärda en kreditfaktura istället.',
+    message_en: 'Only draft invoices can be updated. Issued invoices are immutable — issue a credit note instead.',
+    remediation: {
+      description: 'Issue a credit note via POST /invoices/{id}:credit and create a fresh invoice with the corrected details.',
+    },
+  },
   INVOICE_CANCEL_RACE: {
     httpStatus: 409,
     message_sv: 'Fakturan ändrades samtidigt och kunde inte makuleras. Ladda om och försök igen.',

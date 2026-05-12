@@ -9,6 +9,11 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 beforeAll(() => {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error(
+      `invoices route tests require NODE_ENV=test (got ${process.env.NODE_ENV ?? 'undefined'})`,
+    )
+  }
   process.env.NEXT_PUBLIC_SUPABASE_URL ||= 'http://localhost:54321'
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||= 'test-anon-key'
 })
@@ -27,9 +32,26 @@ vi.mock('@supabase/supabase-js', async () => {
   return { ...actual, createClient: vi.fn().mockReturnValue({}) }
 })
 
+// Stub the F-series allocator so tests don't depend on the
+// generate_invoice_number Postgres RPC. The route's flow is what we're
+// testing, not the allocator itself (which has its own pg-real tests).
+vi.mock('@/lib/invoices/ensure-invoice-number', () => ({
+  ensureInvoiceNumber: vi.fn().mockResolvedValue(undefined),
+}))
+
+// Riksbanken exchange-rate fetcher — return null by default (treats as
+// SEK-only). Individual tests can override.
+vi.mock('@/lib/currency/riksbanken', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/currency/riksbanken')>('@/lib/currency/riksbanken')
+  return {
+    ...actual,
+    fetchExchangeRate: vi.fn().mockResolvedValue(null),
+  }
+})
+
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
-import { GET as listInvoices } from '../route'
-import { GET as getInvoice } from '../[id]/route'
+import { GET as listInvoices, POST as createInvoice } from '../route'
+import { GET as getInvoice, PATCH as updateInvoice } from '../[id]/route'
 
 const mockValidate = validateApiKey as ReturnType<typeof vi.fn>
 const mockServiceClient = createServiceClientNoCookies as ReturnType<typeof vi.fn>
@@ -54,7 +76,7 @@ function makeFlexibleSupabase(byTable: Record<string, { data?: unknown; error?: 
   return { from: vi.fn((table: string) => buildChain(table)) }
 }
 
-const COMPANY_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+const COMPANY_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const INVOICE_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const CUSTOMER_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const USER_ID = 'user-1'
@@ -375,5 +397,396 @@ describe('scope enforcement', () => {
     expect(res.status).toBe(404)
     const body = await res.json()
     expect(body.error.code).toBe('NOT_FOUND')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────
+// POST /api/v1/companies/:companyId/invoices
+// ──────────────────────────────────────────────────────────────────
+
+function withInvoiceWriteScope() {
+  mockValidate.mockResolvedValue({
+    userId: USER_ID,
+    companyId: COMPANY_ID,
+    apiKeyId: 'ak_1',
+    apiKeyName: 'CI key',
+    scopes: ['invoices:write'],
+    mode: 'live',
+  })
+}
+
+function makePostInvoice(url: string, body: unknown, extraHeaders: Record<string, string> = {}): Request {
+  return new Request(url, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-fixture-not-a-real-key',
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'idem1234-5555-4abc-8def-1234567890ab',
+      ...extraHeaders,
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+function makePatchInvoice(url: string, body: unknown, extraHeaders: Record<string, string> = {}): Request {
+  return new Request(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer test-fixture-not-a-real-key',
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'idem1234-6666-4abc-8def-1234567890ab',
+      ...extraHeaders,
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+// A swedish_business customer with VAT validated — picks up 25% as the
+// only allowed rate (vat_treatment: standard_25). Reduced rates (12 / 6)
+// would need a wider VAT-rule fixture; SEK + standard 25% is enough for
+// the route-level tests here.
+const SWEDISH_BUSINESS_CUSTOMER = {
+  id: CUSTOMER_ID,
+  customer_type: 'swedish_business',
+  vat_number_validated: true,
+}
+
+describe('POST /api/v1/companies/:companyId/invoices', () => {
+  it('creates a draft invoice with computed totals', async () => {
+    withInvoiceWriteScope()
+    const createdInvoice = {
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      invoice_number: null,
+      customer_id: CUSTOMER_ID,
+      invoice_date: '2026-05-12',
+      due_date: '2026-06-11',
+      status: 'draft',
+      currency: 'SEK',
+      subtotal: 10000,
+      vat_amount: 2500,
+      total: 12500,
+      remaining_amount: 12500,
+      document_type: 'invoice',
+      created_at: '2026-05-12T16:00:00Z',
+    }
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        customers: { data: SWEDISH_BUSINESS_CUSTOMER, error: null },
+        invoices: { data: createdInvoice, error: null },
+        invoice_items: { data: null, error: null },
+      }),
+    )
+
+    const res = await createInvoice(
+      makePostInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices`, {
+        customer_id: CUSTOMER_ID,
+        invoice_date: '2026-05-12',
+        due_date: '2026-06-11',
+        currency: 'SEK',
+        items: [{ description: 'Konsultation', quantity: 8, unit: 'tim', unit_price: 1250 }],
+      }),
+      companyParams(COMPANY_ID),
+    )
+
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.data.customer_id).toBe(CUSTOMER_ID)
+    expect(body.data.total).toBe(12500)
+  })
+
+  it('returns 404 INVOICE_CUSTOMER_NOT_FOUND when customer does not belong to company', async () => {
+    withInvoiceWriteScope()
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        customers: { data: null, error: null }, // No match
+      }),
+    )
+
+    const res = await createInvoice(
+      makePostInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices`, {
+        customer_id: CUSTOMER_ID,
+        invoice_date: '2026-05-12',
+        due_date: '2026-06-11',
+        currency: 'SEK',
+        items: [{ description: 'x', quantity: 1, unit: 'st', unit_price: 100 }],
+      }),
+      companyParams(COMPANY_ID),
+    )
+
+    expect(res.status).toBe(404)
+    const body = await res.json()
+    expect(body.error.code).toBe('INVOICE_CUSTOMER_NOT_FOUND')
+  })
+
+  it('rejects a per-item vat_rate not allowed for the customer', async () => {
+    withInvoiceWriteScope()
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        customers: { data: SWEDISH_BUSINESS_CUSTOMER, error: null },
+      }),
+    )
+
+    const res = await createInvoice(
+      makePostInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices`, {
+        customer_id: CUSTOMER_ID,
+        invoice_date: '2026-05-12',
+        due_date: '2026-06-11',
+        currency: 'SEK',
+        // 17 % is not a valid Swedish VAT rate.
+        items: [{ description: 'x', quantity: 1, unit: 'st', unit_price: 100, vat_rate: 17 }],
+      }),
+      companyParams(COMPANY_ID),
+    )
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('INVOICE_CREATE_VAT_RULE_VIOLATION')
+    expect(body.error.details.attempted_rate).toBe(17)
+    expect(Array.isArray(body.error.details.allowed_rates)).toBe(true)
+  })
+
+  it('dry-run returns 200 + X-Dry-Run + preview with computed totals; no DB writes', async () => {
+    withInvoiceWriteScope()
+    const supabaseMock = makeFlexibleSupabase({
+      company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      customers: { data: SWEDISH_BUSINESS_CUSTOMER, error: null },
+    })
+    mockServiceClient.mockReturnValue(supabaseMock)
+
+    const res = await createInvoice(
+      makePostInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices?dry_run=true`, {
+        customer_id: CUSTOMER_ID,
+        invoice_date: '2026-05-12',
+        due_date: '2026-06-11',
+        currency: 'SEK',
+        items: [
+          { description: 'A', quantity: 2, unit: 'st', unit_price: 500 },
+          { description: 'B', quantity: 1, unit: 'st', unit_price: 1000 },
+        ],
+      }),
+      companyParams(COMPANY_ID),
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('X-Dry-Run')).toBe('true')
+    const body = await res.json()
+    expect(body.data.dry_run).toBe(true)
+    // Preview: subtotal=2000, vat=500 (25%), total=2500.
+    expect(body.data.preview.subtotal).toBe(2000)
+    expect(body.data.preview.vat_amount).toBe(500)
+    expect(body.data.preview.total).toBe(2500)
+    expect(body.data.preview.items).toHaveLength(2)
+    // No insert into `invoices` happened.
+    const insertedInvoice = supabaseMock.from.mock.calls.some((c) => c[0] === 'invoices')
+    expect(insertedInvoice).toBe(false)
+  })
+
+  it('rejects keys without invoices:write scope', async () => {
+    mockValidate.mockResolvedValue({
+      userId: USER_ID,
+      companyId: COMPANY_ID,
+      scopes: ['invoices:read'],
+      mode: 'live',
+    })
+    mockServiceClient.mockReturnValue(makeFlexibleSupabase({}))
+
+    const res = await createInvoice(
+      makePostInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices`, {
+        customer_id: CUSTOMER_ID,
+        invoice_date: '2026-05-12',
+        due_date: '2026-06-11',
+        currency: 'SEK',
+        items: [{ description: 'x', quantity: 1, unit: 'st', unit_price: 100 }],
+      }),
+      companyParams(COMPANY_ID),
+    )
+
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error.code).toBe('INSUFFICIENT_SCOPE')
+  })
+
+  it('rejects requests without Idempotency-Key', async () => {
+    withInvoiceWriteScope()
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      }),
+    )
+
+    const req = new Request(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-fixture-not-a-real-key',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        customer_id: CUSTOMER_ID,
+        invoice_date: '2026-05-12',
+        due_date: '2026-06-11',
+        currency: 'SEK',
+        items: [{ description: 'x', quantity: 1, unit: 'st', unit_price: 100 }],
+      }),
+    })
+
+    const res = await createInvoice(req, companyParams(COMPANY_ID))
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('VALIDATION_ERROR')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────
+// PATCH /api/v1/companies/:companyId/invoices/:id
+// ──────────────────────────────────────────────────────────────────
+
+describe('PATCH /api/v1/companies/:companyId/invoices/:id', () => {
+  it('updates allowed metadata fields on a draft invoice', async () => {
+    withInvoiceWriteScope()
+    const draftInvoice = {
+      id: INVOICE_ID,
+      status: 'draft',
+      invoice_date: '2026-05-12',
+      due_date: '2026-06-11',
+      notes: 'old note',
+    }
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: {
+          data: { ...draftInvoice, due_date: '2026-07-15', notes: 'Förlängd' },
+          error: null,
+        },
+      }),
+    )
+
+    const res = await updateInvoice(
+      makePatchInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}`, {
+        due_date: '2026-07-15',
+        notes: 'Förlängd',
+      }),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.due_date).toBe('2026-07-15')
+    expect(body.data.notes).toBe('Förlängd')
+  })
+
+  it('returns 409 INVOICE_UPDATE_NOT_DRAFT for non-draft invoices', async () => {
+    withInvoiceWriteScope()
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: { data: { id: INVOICE_ID, status: 'sent' }, error: null },
+      }),
+    )
+
+    const res = await updateInvoice(
+      makePatchInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}`, {
+        notes: 'will be rejected',
+      }),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.error.code).toBe('INVOICE_UPDATE_NOT_DRAFT')
+    expect(body.error.details.current_status).toBe('sent')
+  })
+
+  it('rejects an empty body', async () => {
+    withInvoiceWriteScope()
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      }),
+    )
+
+    const res = await updateInvoice(
+      makePatchInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}`, {}),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('VALIDATION_ERROR')
+  })
+
+  it('returns 400 VALIDATION_ERROR when :id is not a UUID', async () => {
+    withInvoiceWriteScope()
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      }),
+    )
+
+    const res = await updateInvoice(
+      makePatchInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/not-a-uuid`, {
+        notes: 'x',
+      }),
+      detailParams(COMPANY_ID, 'not-a-uuid'),
+    )
+
+    expect(res.status).toBe(400)
+  })
+
+  it('dry-run merges current + proposed changes without committing', async () => {
+    withInvoiceWriteScope()
+    const draftInvoice = {
+      id: INVOICE_ID,
+      status: 'draft',
+      invoice_date: '2026-05-12',
+      due_date: '2026-06-11',
+      notes: null,
+    }
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: { data: draftInvoice, error: null },
+      }),
+    )
+
+    const res = await updateInvoice(
+      makePatchInvoice(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}?dry_run=true`,
+        { notes: 'preview' },
+      ),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('X-Dry-Run')).toBe('true')
+    const body = await res.json()
+    expect(body.data.preview.notes).toBe('preview')
+    expect(body.data.preview.due_date).toBe('2026-06-11') // unchanged from current
+  })
+
+  it('rejects forbidden fields (items / currency / customer_id)', async () => {
+    withInvoiceWriteScope()
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      }),
+    )
+
+    const res = await updateInvoice(
+      makePatchInvoice(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}`, {
+        customer_id: CUSTOMER_ID,
+        currency: 'EUR',
+        items: [{ description: 'no', quantity: 1, unit: 'st', unit_price: 1 }],
+      }),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    // The forbidden fields are stripped by Zod; the resulting body is `{}`
+    // which fails the "at least one field" guard.
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('VALIDATION_ERROR')
   })
 })

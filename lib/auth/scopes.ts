@@ -53,9 +53,11 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   'PATCH /api/v1/companies/:companyId/customers/:id': 'customers:write',
   'DELETE /api/v1/companies/:companyId/customers/:id': 'customers:write',
 
-  // Invoices (Phase 2 PR-A)
+  // Invoices (Phase 2 PR-A — reads; Phase 2 PR-B-2a — draft writes)
   'GET /api/v1/companies/:companyId/invoices': 'invoices:read',
   'GET /api/v1/companies/:companyId/invoices/:id': 'invoices:read',
+  'POST /api/v1/companies/:companyId/invoices': 'invoices:write',
+  'PATCH /api/v1/companies/:companyId/invoices/:id': 'invoices:write',
 
   // Webhooks (Phase 6 — placeholder so the catalogue is complete)
   'GET /api/v1/companies/:companyId/webhooks': 'webhooks:manage',
