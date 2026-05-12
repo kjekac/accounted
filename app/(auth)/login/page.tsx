@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useState, useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
@@ -18,7 +18,17 @@ import { getBranding } from '@/lib/branding/service'
 const branding = getBranding()
 import type { BankIdResult } from '@/components/auth/BankIdAuth'
 
+// Wrapping in Suspense is required because useSearchParams() forces
+// dynamic rendering in Next.js 16; static prerender bails out otherwise.
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageContent />
+    </Suspense>
+  )
+}
+
+function LoginPageContent() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -29,6 +39,8 @@ export default function LoginPage() {
   const [bankIdNoAccount, setBankIdNoAccount] = useState<{ givenName?: string; surname?: string } | null>(null)
   const { toast } = useToast()
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const callbackError = searchParams.get('error')
   const supabase = createClient()
   const bankIdEnabled = isBankIdEnabled()
 
@@ -353,6 +365,24 @@ export default function LoginPage() {
         </div>
 
         <div className="rounded-xl border bg-card p-6" style={{ boxShadow: 'var(--shadow-md)' }}>
+          {callbackError === 'auth_error' && (
+            <div className="mb-5 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+              <p className="text-sm font-medium text-destructive">
+                Återställningslänken fungerade inte
+              </p>
+              <p className="mt-1 text-sm text-destructive/90">
+                Länken har gått ut eller använts redan.{' '}
+                <button
+                  type="button"
+                  onClick={() => setShowResetPassword(true)}
+                  className="font-medium underline underline-offset-2"
+                >
+                  Begär en ny återställningslänk
+                </button>
+                .
+              </p>
+            </div>
+          )}
           {bankIdEnabled && (
             <>
               {bankIdNoAccount ? (

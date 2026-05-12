@@ -54,6 +54,19 @@ export async function GET(request: NextRequest) {
   if (authenticated) {
     let redirectPath = next
 
+    // Password recovery flow: the user just exchanged a recovery token, so they
+    // have a fresh session whose only purpose is to call updateUser({ password })
+    // on /reset-password. Skip onboarding / team setup / dashboard redirect.
+    // The token-hash flow signals this via type=recovery; PKCE has no type, so
+    // also gate on next === '/reset-password' (only the reset request sets it).
+    if (type === 'recovery' || next === '/reset-password') {
+      const response = NextResponse.redirect(new URL('/reset-password', origin))
+      for (const { name, value, options } of pendingCookies) {
+        response.cookies.set({ name, value, ...options })
+      }
+      return response
+    }
+
     const { data: { user } } = await supabase.auth.getUser()
     if (user) {
       // Check MFA status — redirect to verify if factor is enrolled but session is AAL1

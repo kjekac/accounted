@@ -33,6 +33,7 @@
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
+import { ensureInitialized } from '@/lib/init'
 import {
   type ApiKeyMode,
   type ApiKeyScope,
@@ -41,6 +42,14 @@ import {
   hasScope,
   validateApiKey,
 } from '@/lib/auth/api-keys'
+
+// Per CLAUDE.md: any route that emits events via eventBus must call
+// ensureInitialized() at module level to wire extension event handlers
+// (email, cloud-backup, push-notifications, etc.). Calling it here in the
+// wrapper guarantees every v1 route gets the init at import time — a single
+// source of truth so future routes can't forget. The function itself is
+// idempotent (guarded by a module-level boolean).
+ensureInitialized()
 import { resolveRequiredScope } from '@/lib/auth/scopes'
 import {
   checkIdempotencyKey,

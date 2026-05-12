@@ -22,5 +22,7 @@ import '@/app/api/v1/companies/[companyId]/customers/route'
 import '@/app/api/v1/companies/[companyId]/customers/[id]/route'
 // Phase 2 PR-B-2b — invoice action verbs.
 import '@/app/api/v1/companies/[companyId]/invoices/[id]/mark-sent/route'
+import '@/app/api/v1/companies/[companyId]/invoices/[id]/mark-paid/route'
+import '@/app/api/v1/companies/[companyId]/invoices/[id]/credit/route'
 
 export {}
