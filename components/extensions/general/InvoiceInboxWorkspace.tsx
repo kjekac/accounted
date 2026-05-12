@@ -661,17 +661,31 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
             </div>
           )}
           {items.length === 0 ? (
+            // On desktop the preview pane is always visible alongside this
+            // column, so showing the onboarding card here would duplicate it.
+            // On mobile the layout is a master-detail toggle and the user is
+            // stuck on the list view until they pick a row — without a card
+            // here they'd have no way to reach the explainer at all. So:
+            // compact card on mobile only, quiet empty state on desktop.
             showOnboarding ? (
-              <OnboardingCard
-                hasInboxAddress={hasInboxAddress}
-                hasAnyItem={hasAnyItem}
-                hasResolvedItem={hasResolvedItem}
-                onActivateInbox={handleRotateAddress}
-                onUploadClick={() => fileInputRef.current?.click()}
-                onDismiss={handleDismissOnboarding}
-                isActivating={isRotating}
-                compact
-              />
+              <>
+                <div className="md:hidden">
+                  <OnboardingCard
+                    hasInboxAddress={hasInboxAddress}
+                    hasAnyItem={hasAnyItem}
+                    hasResolvedItem={hasResolvedItem}
+                    onActivateInbox={handleRotateAddress}
+                    onUploadClick={() => fileInputRef.current?.click()}
+                    onDismiss={handleDismissOnboarding}
+                    isActivating={isRotating}
+                    compact
+                  />
+                </div>
+                <div className="hidden md:block p-6 text-center text-sm text-muted-foreground">
+                  <Inbox className="h-6 w-6 mx-auto mb-2 opacity-50" />
+                  Inkorgen är tom.
+                </div>
+              </>
             ) : (
               <div className="p-6 text-center text-sm text-muted-foreground">
                 <Inbox className="h-6 w-6 mx-auto mb-2 opacity-50" />
