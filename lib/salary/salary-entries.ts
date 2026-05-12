@@ -142,7 +142,7 @@ async function createSalaryEntry(
     // Add salary line items that are cash expenses
     // Förmånsvärden (benefits) are excluded — they affect the tax base but
     // have no cash flow and should not appear as expense lines in the journal.
-    const BENEFIT_TYPES = ['benefit_car', 'benefit_housing', 'benefit_meals', 'benefit_wellness', 'benefit_other']
+    const BENEFIT_TYPES = ['benefit_car', 'benefit_housing', 'benefit_meals', 'benefit_wellness', 'benefit_bike', 'benefit_other']
     let lineItemTotal = 0
     for (const li of emp.line_items) {
       if (li.is_net_deduction || li.is_gross_deduction) continue

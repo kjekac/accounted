@@ -90,12 +90,25 @@ export default function JournalEntryPreview({
       const vatRate = templateVatRate ?? 0
       const vatAmt = extractVatAmount(absAmount, vatRate)
       const netAmt = extractNetAmount(absAmount, vatRate)
+      const isIncome = amount > 0
 
-      result.push({ side: 'debet', account: templateDebitAccount, amount: netAmt })
-      if (vatAmt > 0) {
-        result.push({ side: 'debet', account: '2641', amount: vatAmt })
+      if (isIncome) {
+        // Income: debit bank gross, credit revenue net, credit output VAT
+        result.push({ side: 'debet', account: templateDebitAccount, amount: absAmount })
+        result.push({ side: 'kredit', account: templateCreditAccount, amount: netAmt })
+        if (vatAmt > 0) {
+          // Map rate → output VAT account (BAS 2611/2621/2631)
+          const outputVatAccount = vatRate === 0.06 ? '2631' : vatRate === 0.12 ? '2621' : '2611'
+          result.push({ side: 'kredit', account: outputVatAccount, amount: vatAmt })
+        }
+      } else {
+        // Expense: debit expense net + input VAT, credit bank gross
+        result.push({ side: 'debet', account: templateDebitAccount, amount: netAmt })
+        if (vatAmt > 0) {
+          result.push({ side: 'debet', account: '2641', amount: vatAmt })
+        }
+        result.push({ side: 'kredit', account: templateCreditAccount, amount: absAmount })
       }
-      result.push({ side: 'kredit', account: templateCreditAccount, amount: absAmount })
       return result
     }
 

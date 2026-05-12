@@ -699,7 +699,7 @@ export async function generateINK2Declaration(
   // Fetch company settings
   const { data: settings } = await supabase
     .from('company_settings')
-    .select('company_name, trade_name, org_number, entity_type, address_line1, postal_code, city, email')
+    .select('company_name, org_number, entity_type, address_line1, postal_code, city, email')
     .eq('company_id', companyId)
     .single()
 
@@ -934,7 +934,7 @@ export async function generateINK2Declaration(
       resultAfterFinancial,
     },
     companyInfo: {
-      companyName: settings?.trade_name || settings?.company_name || 'Okänt företag',
+      companyName: settings?.company_name || 'Okänt företag',
       orgNumber: settings?.org_number || null,
       addressLine1: settings?.address_line1 || null,
       postalCode: settings?.postal_code || null,

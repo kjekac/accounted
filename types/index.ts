@@ -177,7 +177,6 @@ export interface CompanySettings {
   // Entity info
   entity_type: EntityType
   company_name: string | null
-  trade_name: string | null
   org_number: string | null
 
   // Address
@@ -240,6 +239,7 @@ export interface CompanySettings {
   invoice_show_ocr: boolean
   invoice_show_bankgiro: boolean
   invoice_show_plusgiro: boolean
+  invoice_show_logo: boolean
   invoice_late_fee_text: string | null
   invoice_credit_terms_text: string | null
 
@@ -1264,7 +1264,6 @@ export interface BalansrapportReport {
 export interface SIEExportOptions {
   fiscal_period_id: string
   company_name: string
-  trade_name?: string | null
   org_number: string | null
   program_name?: string
 }
@@ -2481,7 +2480,7 @@ export interface KPIPreferences {
 export type EmploymentType = 'employee' | 'company_owner' | 'board_member'
 export type SalaryType = 'monthly' | 'hourly'
 export type FSkattStatus = 'a_skatt' | 'f_skatt' | 'fa_skatt' | 'not_verified'
-export type VacationRule = 'procentregeln' | 'sammaloneregeln'
+export type VacationRule = 'procentregeln' | 'sammaloneregeln' | 'none'
 export type SalaryRunStatus = 'draft' | 'review' | 'approved' | 'paid' | 'booked' | 'corrected'
 export type AGIStatus =
   | 'generated'         // XML built from a salary run; nothing sent to SKV yet
@@ -2494,7 +2493,7 @@ export type AGIStatus =
 export type SalaryLineItemType =
   | 'monthly_salary' | 'hourly_salary' | 'overtime' | 'bonus' | 'commission'
   | 'gross_deduction_pension' | 'gross_deduction_other'
-  | 'benefit_car' | 'benefit_housing' | 'benefit_meals' | 'benefit_wellness' | 'benefit_other'
+  | 'benefit_car' | 'benefit_housing' | 'benefit_meals' | 'benefit_wellness' | 'benefit_bike' | 'benefit_other'
   | 'sick_karens' | 'sick_day2_14' | 'sick_day15_plus'
   | 'vab' | 'parental_leave' | 'vacation'
   | 'traktamente_taxfree' | 'traktamente_taxable'

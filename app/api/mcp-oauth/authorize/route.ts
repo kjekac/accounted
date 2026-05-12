@@ -95,11 +95,11 @@ export async function GET(request: Request) {
   // Get company name for the consent page
   const { data: settings } = await supabase
     .from('company_settings')
-    .select('company_name, trade_name')
+    .select('company_name')
     .eq('company_id', companyId)
     .single()
 
-  const companyName = settings?.trade_name || settings?.company_name || user.email
+  const companyName = settings?.company_name || user.email
 
   const appNameLower = escapeHtml(getBranding().appName.toLowerCase())
 

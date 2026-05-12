@@ -374,21 +374,10 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.companyInfo}>
-            {company.logo_url && (
+            {company.logo_url && (company.invoice_show_logo ?? true) && (
               <Image src={company.logo_url} style={{ maxHeight: 40, maxWidth: 150, marginBottom: 6, alignSelf: 'flex-start' }} />
             )}
-            <Text style={styles.companyName}>{company.trade_name || company.company_name}</Text>
-            {company.trade_name && company.company_name && (
-              <Text style={{ fontSize: 8, color: '#666' }}>({company.company_name})</Text>
-            )}
-            {company.address_line1 && <Text>{company.address_line1}</Text>}
-            {(company.postal_code || company.city) && (
-              <Text>{company.postal_code} {company.city}</Text>
-            )}
-            {company.org_number && (
-              <Text style={{ marginTop: 4 }}>Org.nr: {formatOrgNumber(company.org_number)}</Text>
-            )}
-            {company.vat_number && <Text>VAT: {company.vat_number}</Text>}
+            <Text style={styles.companyName}>{company.company_name}</Text>
           </View>
           <View style={{ textAlign: 'right' }}>
             <Text style={[styles.title, isCreditNote ? styles.creditNoteTitle : {}]}>
@@ -672,14 +661,16 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
           </View>
         )}
 
-        {/* Footer */}
+        {/* Footer — collected legal info per ML 17 kap 24§ */}
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            {company.trade_name || company.company_name}
-            {company.trade_name && company.company_name ? ` (${company.company_name})` : ''}
-            {company.org_number ? ` | Org.nr: ${formatOrgNumber(company.org_number)}` : ''}
-            {company.f_skatt ? ' | Godkänd för F-skatt' : ''}
-            {company.vat_number ? ` | Momsreg.nr: ${company.vat_number}` : ''}
+            {[
+              company.address_line1,
+              (company.postal_code || company.city) ? `${company.postal_code ?? ''} ${company.city ?? ''}`.trim() : null,
+              company.org_number ? `Org.nr: ${formatOrgNumber(company.org_number)}` : null,
+              company.vat_number ? `Momsreg.nr: ${company.vat_number}` : null,
+              company.f_skatt ? 'Godkänd för F-skatt' : null,
+            ].filter(Boolean).join(' · ')}
           </Text>
         </View>
       </Page>

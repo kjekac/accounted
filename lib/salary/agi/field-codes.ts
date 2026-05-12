@@ -80,6 +80,7 @@ export const BENEFIT_RUTA_MAP: Record<string, string> = {
   benefit_housing: INDIVID_FIELDS.RUTA_014,
   benefit_meals: INDIVID_FIELDS.RUTA_015,
   benefit_wellness: INDIVID_FIELDS.RUTA_019,
+  benefit_bike: INDIVID_FIELDS.RUTA_019,
   benefit_other: INDIVID_FIELDS.RUTA_019,
 }
 

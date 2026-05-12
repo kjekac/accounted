@@ -265,7 +265,7 @@ export function FinancialStatementPDF({
   company,
   generatedAt,
 }: FinancialStatementPDFProps) {
-  const companyDisplayName = company.trade_name || company.company_name || ''
+  const companyDisplayName = company.company_name || ''
   const periodLabel = period.start && period.end
     ? `${formatDateSv(period.start)} – ${formatDateSv(period.end)}`
     : ''

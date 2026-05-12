@@ -34,7 +34,7 @@ export default function SalaryPage() {
   const [runs, setRuns] = useState<SalaryRun[]>([])
   const [employeeCount, setEmployeeCount] = useState(0)
   const [loading, setLoading] = useState(true)
-  const canWrite = useCanWrite()
+  const { canWrite } = useCanWrite()
 
   useEffect(() => {
     async function load() {

@@ -22,22 +22,9 @@ export function CompanyInfoForm({ settings }: CompanyInfoFormProps) {
             id="company_name"
             name="company_name"
             defaultValue={settings.company_name || ''}
-            disabled={settings.onboarding_complete === true}
-          />
-          {settings.onboarding_complete && (
-            <p className="text-xs text-muted-foreground">Kan inte ändras efter att kontot skapats</p>
-          )}
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="trade_name">Handelsnamn</Label>
-          <Input
-            id="trade_name"
-            name="trade_name"
-            defaultValue={settings.trade_name || ''}
-            placeholder="Visas på fakturor istället för företagsnamnet"
           />
           <p className="text-xs text-muted-foreground">
-            Valfritt. Visas som huvudnamn på fakturor och e-post, med det juridiska namnet i parentes.
+            Visas på fakturor, e-post och deklarationsfiler. För enskild firma är det vanligtvis ditt eget namn (Förnamn Efternamn).
           </p>
         </div>
         <div className="space-y-2">

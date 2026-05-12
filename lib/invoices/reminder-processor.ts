@@ -116,7 +116,7 @@ export async function sendReminder(
     html: generateReminderEmailHtml(emailData),
     text: generateReminderEmailText(emailData),
     replyTo: company.email || undefined,
-    fromName: company.trade_name || company.company_name || undefined
+    fromName: company.company_name || undefined
   })
 
   return result

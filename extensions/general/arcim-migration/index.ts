@@ -248,9 +248,22 @@ export const arcimMigrationExtension: Extension = {
             // Generate OTC for OAuth flow
             const otc = await generateOtc(consent.id)
 
-            // Build the OAuth callback URL
+            // Build the OAuth callback URL. Prefer a provider-specific override
+            // (e.g. VISMA_REDIRECT_URI) when set — this lets dev environments
+            // route through a single registered URI (production) rather than
+            // requiring every ngrok URL to be registered on the OAuth client.
+            // Falls back to NEXT_PUBLIC_APP_URL + the canonical callback path.
             const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
-            const callbackUrl = `${appUrl}/api/extensions/ext/arcim-migration/callback`
+            const providerRedirectEnv =
+              provider === 'visma'
+                ? process.env.VISMA_REDIRECT_URI
+                : provider === 'fortnox'
+                  ? process.env.FORTNOX_REDIRECT_URI
+                  : undefined
+            const callbackUrl =
+              providerRedirectEnv && providerRedirectEnv.trim().length > 0
+                ? providerRedirectEnv
+                : `${appUrl}/api/extensions/ext/arcim-migration/callback`
 
             // Encode consentId + provider in state
             const statePayload = JSON.stringify({ otc: otc.code, consentId: consent.id, provider })

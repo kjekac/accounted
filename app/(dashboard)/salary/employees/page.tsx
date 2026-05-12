@@ -21,7 +21,7 @@ const EMPLOYMENT_LABELS: Record<string, string> = {
 export default function EmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [loading, setLoading] = useState(true)
-  const canWrite = useCanWrite()
+  const { canWrite } = useCanWrite()
 
   useEffect(() => {
     async function load() {

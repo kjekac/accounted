@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Download, Loader2, CheckCircle2 } from 'lucide-react'
+import { Download, Loader2, CheckCircle2, ChevronDown, Info } from 'lucide-react'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 
@@ -30,6 +30,20 @@ const FORMAT_DESCRIPTION: Record<PaymentFormat, string> = {
   pain001: 'ISO 20022. För banker som inte är anslutna till Bankgirot, eller internationell SEPA.',
 }
 
+const BANK_INSTRUCTIONS: Record<PaymentFormat, Array<{ bank: string; steps: string }>> = {
+  bg_lb: [
+    { bank: 'Swedbank Företag', steps: 'Företagsbetalningar → Importera fil → välj LB-format → ladda upp och signera med BankID.' },
+    { bank: 'SEB Företag', steps: 'Betalningar → Filöverföring → välj Bankgiro LB → ladda upp och attestera.' },
+    { bank: 'Handelsbanken', steps: 'Betala → Filimport → välj LB → kontrollera summor → signera.' },
+    { bank: 'Nordea Företag', steps: 'Filimport → Bankgiro LB → ladda upp → attestera betalningen.' },
+  ],
+  pain001: [
+    { bank: 'SEB', steps: 'Betalningar → Importera SEPA / ISO 20022 (pain.001) → ladda upp och signera.' },
+    { bank: 'Handelsbanken', steps: 'Betala → Filimport → ISO 20022 → välj pain.001.' },
+    { bank: 'Nordea', steps: 'Filimport → Format pain.001.001.03 → ladda upp → attestera.' },
+  ],
+}
+
 export function PaymentFilePanel({
   salaryRunId,
   periodLabel,
@@ -42,6 +56,7 @@ export function PaymentFilePanel({
   const { toast } = useToast()
   const [format, setFormat] = useState<PaymentFormat>(defaultFormat)
   const [downloading, setDownloading] = useState(false)
+  const [showInstructions, setShowInstructions] = useState(false)
 
   const endpoint =
     format === 'bg_lb'
@@ -122,6 +137,39 @@ export function PaymentFilePanel({
                 )}
                 Ladda ner betalfil
               </Button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowInstructions(s => !s)}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+              aria-expanded={showInstructions}
+            >
+              <ChevronDown className={`h-3 w-3 transition-transform ${showInstructions ? 'rotate-180' : ''}`} />
+              Så importerar du filen i din bank
+            </button>
+
+            {showInstructions && (
+              <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs">
+                {BANK_INSTRUCTIONS[format].map(b => (
+                  <div key={b.bank}>
+                    <strong className="text-foreground">{b.bank}.</strong>{' '}
+                    <span className="text-muted-foreground">{b.steps}</span>
+                  </div>
+                ))}
+                <p className="pt-1 text-muted-foreground border-t mt-2">
+                  Filen innehåller både lön till anställda och beloppen är förberedda — bankens BankID-signering är det enda steget kvar.
+                </p>
+              </div>
+            )}
+
+            <div className="flex items-start gap-2 rounded-md border border-dashed bg-muted/20 p-3 text-xs text-muted-foreground">
+              <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>
+                <strong className="text-foreground">Open Payments / direktbetalning</strong> via PSD2 (utan filimport)
+                är planerat för framtiden via Enable Banking. Initiering kräver separat PIS-avtal — vi följer upp när
+                tillräckligt många kunder använder lönebetalfiler regelbundet.
+              </span>
             </div>
           </>
         )}

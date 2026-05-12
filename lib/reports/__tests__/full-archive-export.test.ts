@@ -67,7 +67,6 @@ const mockGetAuditLog = vi.mocked(getAuditLog)
 
 const COMPANY_ROW = {
   company_name: 'Test AB',
-  trade_name: null,
   org_number: '5566778899',
   moms_period: 'quarterly',
 }

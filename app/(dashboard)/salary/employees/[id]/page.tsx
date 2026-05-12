@@ -14,6 +14,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { Employee } from '@/types'
+import { EmployeeBenefitsPanel } from '@/components/salary/EmployeeBenefitsPanel'
 
 const EMPLOYMENT_LABELS: Record<string, string> = {
   employee: 'Anställd',
@@ -36,7 +37,7 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
   const { id } = use(params)
   const router = useRouter()
   const { toast } = useToast()
-  const canWrite = useCanWrite()
+  const { canWrite } = useCanWrite()
   const [employee, setEmployee] = useState<Employee | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -375,10 +376,16 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="procentregeln">Procentregeln (12%)</SelectItem>
+                    <SelectItem value="procentregeln">Procentregeln (12 %)</SelectItem>
                     <SelectItem value="sammaloneregeln">Sammalöneregeln</SelectItem>
+                    <SelectItem value="none">Ingen semesteravsättning</SelectItem>
                   </SelectContent>
                 </Select>
+                {vacationRule === 'none' && (
+                  <p className="text-xs text-muted-foreground">
+                    Ingen avsättning till 2920 bokas. Använd om semester ingår i månadslönen — vanligt för ägare som är enda anställd.
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="vacation_days_per_year">Semesterdagar per år</Label>
@@ -416,6 +423,9 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
             <p className="text-xs text-muted-foreground mt-2">Krävs innan lönekörning kan godkännas</p>
           </CardContent>
         </Card>
+
+        {/* Benefits */}
+        <EmployeeBenefitsPanel employeeId={id} canWrite={canWrite} />
 
         {canWrite && (
           <div className="flex justify-end gap-3">

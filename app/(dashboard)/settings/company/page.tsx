@@ -18,7 +18,6 @@ export default function CompanySettingsPage() {
   function handleSave(formData: FormData) {
     const updates: Record<string, unknown> = {
       ...(formData.has('company_name') && { company_name: formData.get('company_name') as string }),
-      trade_name: (formData.get('trade_name') as string) || null,
       ...(formData.has('org_number') && { org_number: formData.get('org_number') as string }),
       address_line1: formData.get('address_line1') as string,
       postal_code: formData.get('postal_code') as string,

@@ -17,6 +17,15 @@ const DERIVED_ABSENCE_TYPES: SalaryLineItemType[] = [
   'parental_leave',
 ]
 
+const BENEFIT_TYPE_TO_LINE_ITEM: Record<string, SalaryLineItemType> = {
+  bike: 'benefit_bike',
+  car: 'benefit_car',
+  meals: 'benefit_meals',
+  housing: 'benefit_housing',
+  wellness: 'benefit_wellness',
+  other: 'benefit_other',
+}
+
 ensureInitialized()
 
 export const POST = withRouteContext(
@@ -239,6 +248,61 @@ export const POST = withRouteContext(
       return errorResponse(delAbsErr, opLog, { requestId })
     }
 
+    // ── Derive benefit line items from employee_benefits ──
+    // Active benefits = is_active AND payment_date ∈ [valid_from, valid_to]
+    const { data: activeBenefits, error: benefitsErr } = await supabase
+      .from('employee_benefits')
+      .select('id, benefit_type, description, monthly_value')
+      .eq('employee_id', emp.id)
+      .eq('company_id', companyId)
+      .eq('is_active', true)
+      .lte('valid_from', run.payment_date)
+      .or(`valid_to.is.null,valid_to.gte.${run.payment_date}`)
+    if (benefitsErr) {
+      return errorResponse(benefitsErr, opLog, { requestId })
+    }
+
+    // Replace prior auto-generated benefit rows for this sre.
+    const { error: delBenefitErr } = await supabase
+      .from('salary_line_items')
+      .delete()
+      .eq('salary_run_employee_id', sre.id)
+      .not('source_benefit_id', 'is', null)
+    if (delBenefitErr) {
+      return errorResponse(delBenefitErr, opLog, { requestId })
+    }
+
+    const derivedBenefitRows = (activeBenefits ?? [])
+      .filter(b => b.monthly_value > 0)
+      .map((b, idx) => {
+        const itemType = BENEFIT_TYPE_TO_LINE_ITEM[b.benefit_type] ?? 'benefit_other'
+        return {
+          salary_run_employee_id: sre.id,
+          company_id: companyId,
+          item_type: itemType,
+          description: b.description,
+          quantity: 1,
+          amount: Math.round(b.monthly_value * 100) / 100,
+          is_taxable: true,
+          is_avgift_basis: true,
+          is_vacation_basis: false,
+          is_gross_deduction: false,
+          is_net_deduction: false,
+          account_number: getLineItemAccount(itemType, emp.employment_type),
+          sort_order: 200 + idx,
+          source_benefit_id: b.id,
+        }
+      })
+
+    if (derivedBenefitRows.length > 0) {
+      const { error: insBenefitErr } = await supabase
+        .from('salary_line_items')
+        .insert(derivedBenefitRows)
+      if (insBenefitErr) {
+        return errorResponse(insBenefitErr, opLog, { requestId })
+      }
+    }
+
     if (absenceResult.lineItems.length > 0) {
       const rows = absenceResult.lineItems.map((li, idx) => ({
         salary_run_employee_id: sre.id,
@@ -265,10 +329,13 @@ export const POST = withRouteContext(
 
     // Build the merged in-memory line items: keep non-derived items from
     // the originally-loaded sre.line_items, then append the freshly-derived
-    // absence items.
+    // absence and benefit items.
     const manualLineItems = (sre.line_items || [])
-      .filter((li: Record<string, unknown>) =>
-        !DERIVED_ABSENCE_TYPES.includes(li.item_type as SalaryLineItemType))
+      .filter((li: Record<string, unknown>) => {
+        if (DERIVED_ABSENCE_TYPES.includes(li.item_type as SalaryLineItemType)) return false
+        if (li.source_benefit_id) return false
+        return true
+      })
       .map((li: Record<string, unknown>) => ({
         itemType: li.item_type as SalaryLineItemType,
         amount: li.amount as number,
@@ -287,7 +354,16 @@ export const POST = withRouteContext(
       isGrossDeduction: li.is_gross_deduction,
       isNetDeduction: false,
     }))
-    const lineItems = [...manualLineItems, ...derivedLineItems]
+    const derivedBenefitLineItems = derivedBenefitRows.map(row => ({
+      itemType: row.item_type as SalaryLineItemType,
+      amount: row.amount,
+      isTaxable: true,
+      isAvgiftBasis: true,
+      isVacationBasis: false,
+      isGrossDeduction: false,
+      isNetDeduction: false,
+    }))
+    const lineItems = [...manualLineItems, ...derivedLineItems, ...derivedBenefitLineItems]
 
     const result = calculateSalary(
       {

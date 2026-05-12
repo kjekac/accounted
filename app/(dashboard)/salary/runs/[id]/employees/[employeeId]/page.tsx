@@ -21,6 +21,7 @@ const LINE_ITEM_TYPE_LABELS: Record<SalaryLineItemType, string> = {
   benefit_housing: 'Bostadsförmån',
   benefit_meals: 'Kostförmån',
   benefit_wellness: 'Friskvård',
+  benefit_bike: 'Cykelförmån',
   benefit_other: 'Övrig förmån',
   sick_karens: 'Karensavdrag',
   sick_day2_14: 'Sjuklön (dag 2–14, 80 %)',

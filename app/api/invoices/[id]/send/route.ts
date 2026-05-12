@@ -155,7 +155,7 @@ export const POST = withRouteContext(
       html: generateInvoiceEmailHtml(emailData),
       text: generateInvoiceEmailText(emailData),
       replyTo: company.email || undefined,
-      fromName: company.trade_name || company.company_name,
+      fromName: company.company_name,
       attachments: [
         {
           filename,

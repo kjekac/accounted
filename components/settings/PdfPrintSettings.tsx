@@ -95,6 +95,17 @@ export function PdfPrintSettings({ settings, onUpdate }: PdfPrintSettingsProps) 
             onCheckedChange={(v) => saveToggle('invoice_show_plusgiro', v)}
           />
         </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <Label>Visa logga</Label>
+            <p className="text-xs text-muted-foreground">Visa uppladdad logga i fakturahuvudet</p>
+          </div>
+          <Switch
+            checked={settings.invoice_show_logo ?? true}
+            onCheckedChange={(v) => saveToggle('invoice_show_logo', v)}
+          />
+        </div>
       </div>
 
       <div className="space-y-4 pt-2">

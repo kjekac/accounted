@@ -137,7 +137,6 @@ export function generateInvoiceEmailHtml(data: InvoiceEmailData): string {
       <p style="margin: 0; color: #666; font-size: 14px;">
         Med vänliga hälsningar,<br>
         <strong>${getCompanyPrimaryName(company)}</strong>
-        ${company.trade_name && company.company_name ? `<br><span style="font-weight: normal; font-size: 12px; color: #999;">(${company.company_name})</span>` : ''}
       </p>
       ${company.org_number ? `
       <p style="margin: 10px 0 0 0; color: #999; font-size: 12px;">

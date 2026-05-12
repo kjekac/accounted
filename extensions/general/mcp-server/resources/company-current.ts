@@ -19,7 +19,7 @@ export const companyCurrentResource: McpResource = {
     const { data: settings } = await supabase
       .from('company_settings')
       .select(`
-        company_name, trade_name, address_line1, address_line2, postal_code, city, country,
+        company_name, address_line1, address_line2, postal_code, city, country,
         phone, email, website,
         pays_salaries, f_skatt, vat_registered, vat_number, moms_period,
         fiscal_year_start_month,

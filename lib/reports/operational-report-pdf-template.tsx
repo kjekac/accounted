@@ -255,7 +255,7 @@ interface CommonHeaderProps {
 }
 
 function HeaderBlock({ title, company, period }: CommonHeaderProps) {
-  const companyDisplayName = company.trade_name || company.company_name || ''
+  const companyDisplayName = company.company_name || ''
   const periodLabel = period.start && period.end
     ? `${formatDateSv(period.start)} – ${formatDateSv(period.end)}`
     : ''
@@ -288,7 +288,7 @@ function HeaderBlock({ title, company, period }: CommonHeaderProps) {
 }
 
 function FooterBlock({ company, generatedAt }: { company: CompanySettings; generatedAt: string }) {
-  const companyDisplayName = company.trade_name || company.company_name || ''
+  const companyDisplayName = company.company_name || ''
   return (
     <View style={styles.footer} fixed>
       <Text style={styles.footerText}>

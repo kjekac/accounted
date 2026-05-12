@@ -175,7 +175,7 @@ export async function generateNEDeclaration(
   // Fetch company settings
   const { data: settings } = await supabase
     .from('company_settings')
-    .select('company_name, trade_name, org_number, entity_type')
+    .select('company_name, org_number, entity_type')
     .eq('company_id', companyId)
     .single()
 
@@ -331,7 +331,7 @@ export async function generateNEDeclaration(
     rutor,
     breakdown,
     companyInfo: {
-      companyName: settings?.trade_name || settings?.company_name || 'Okänt företag',
+      companyName: settings?.company_name || 'Okänt företag',
       orgNumber: settings?.org_number || null,
     },
     warnings,

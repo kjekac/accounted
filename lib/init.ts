@@ -24,11 +24,6 @@ const REQUIRED_EXTENSION_VARS = [
   'OPENAI_API_KEY',
 ] as const
 
-const OPTIONAL_VARS = [
-  'LANGFUSE_SECRET_KEY',
-  'LANGFUSE_PUBLIC_KEY',
-] as const
-
 function validateEnvironment(): void {
   // During builds (CI, Docker, Vercel), env vars may be absent or set to
   // placeholder sentinels. Skip validation so Next.js page collection
@@ -53,12 +48,6 @@ function validateEnvironment(): void {
 
   if (missingExt.length > 0) {
     log.warn(`Missing extension environment variables (extensions needing them may not work): ${missingExt.join(', ')}`)
-  }
-
-  for (const v of OPTIONAL_VARS) {
-    if (!process.env[v]) {
-      log.warn(`Optional environment variable ${v} is not set`)
-    }
   }
 }
 

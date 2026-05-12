@@ -31,7 +31,7 @@ export interface SalaryCalculationInput {
   paymentDate: string
 
   /** Vacation */
-  vacationRule: 'procentregeln' | 'sammaloneregeln'
+  vacationRule: 'procentregeln' | 'sammaloneregeln' | 'none'
   vacationDaysPerYear: number
   semestertillaggRate: number
 
@@ -217,7 +217,7 @@ export function calculateSalary(
 
   // ─── Step 5: Add förmånsvärden to tax base ───
   const benefitItems = input.lineItems.filter(
-    li => ['benefit_car', 'benefit_housing', 'benefit_meals', 'benefit_wellness', 'benefit_other'].includes(li.itemType)
+    li => ['benefit_car', 'benefit_housing', 'benefit_meals', 'benefit_wellness', 'benefit_bike', 'benefit_other'].includes(li.itemType)
   )
   const totalBenefits = r(benefitItems.reduce((sum, li) => sum + li.amount, 0))
   if (totalBenefits > 0) {
@@ -355,7 +355,15 @@ export function calculateSalary(
     baseSalary + vacationBasisItems.reduce((sum, li) => sum + li.amount, 0)
   )
   let vacationAccrual: number
-  if (input.vacationRule === 'procentregeln') {
+  if (input.vacationRule === 'none') {
+    vacationAccrual = 0
+    steps.push({
+      label: 'Semesteravsättning (avstängd)',
+      formula: 'ingen semesteravsättning bokas — semester ingår i månadslönen',
+      input: {},
+      output: 0,
+    })
+  } else if (input.vacationRule === 'procentregeln') {
     const rate = input.vacationDaysPerYear >= 30 ? 0.144 : 0.12
     vacationAccrual = r(vacationBasis * rate)
     steps.push({
@@ -585,12 +593,22 @@ export function calculateSjuklon(
  */
 export function calculateVacationAccrual(params: {
   monthlySalary: number
-  vacationRule: 'procentregeln' | 'sammaloneregeln'
+  vacationRule: 'procentregeln' | 'sammaloneregeln' | 'none'
   vacationDaysPerYear: number
   semestertillaggRate: number
   vacationBasis: number
 }): { accrual: number; steps: CalculationStep[] } {
   const steps: CalculationStep[] = []
+
+  if (params.vacationRule === 'none') {
+    steps.push({
+      label: 'Semesteravsättning (avstängd)',
+      formula: 'ingen semesteravsättning',
+      input: {},
+      output: 0,
+    })
+    return { accrual: 0, steps }
+  }
 
   if (params.vacationRule === 'procentregeln') {
     const rate = params.vacationDaysPerYear >= 30 ? 0.144 : 0.12

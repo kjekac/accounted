@@ -5,8 +5,7 @@ import type { CompanySettings } from '@/types'
 
 function fakeCompany(): CompanySettings {
   return {
-    company_name: 'Gnubok AB',
-    trade_name: 'Gnubok',
+    company_name: 'Gnubok',
     org_number: '5566778899',
     vat_number: 'SE556677889901',
     address_line1: 'Kungsgatan 1',

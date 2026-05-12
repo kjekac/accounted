@@ -173,12 +173,26 @@ export function calculateParentalLeaveDeduction(
 export function calculateVacationPay(params: {
   monthlySalary: number
   vacationDaysTaken: number
-  vacationRule: 'procentregeln' | 'sammaloneregeln'
+  vacationRule: 'procentregeln' | 'sammaloneregeln' | 'none'
   semestertillaggRate: number
   vacationDaysPerYear: number
 }): { amount: number; tillagg: number; steps: AbsenceStep[] } {
   const r = (x: number) => Math.round(x * 100) / 100
   const dailyRate = r(params.monthlySalary / 21)
+
+  if (params.vacationRule === 'none') {
+    // No accrual — vacation is included in monthly pay. No tillägg paid.
+    return {
+      amount: 0,
+      tillagg: 0,
+      steps: [{
+        label: 'Semesterlön (avstängd)',
+        formula: 'ingen separat semesterlön — ingår i månadslönen',
+        input: { days: params.vacationDaysTaken },
+        output: 0,
+      }],
+    }
+  }
 
   if (params.vacationRule === 'sammaloneregeln') {
     // Sammalöneregeln: regular pay + semestertillägg per day

@@ -7,11 +7,12 @@ import {
 } from '@/lib/http/fetch-with-timeout';
 
 const DEFAULT_SCOPES = [
-  'ea:api',
   'offline_access',
-  'ea:sales_readonly',
-  'ea:accounting_readonly',
-  'ea:purchase_readonly',
+  'ea:api',
+  'ea:sales',
+  'ea:accounting',
+  'ea:purchase',
+  'vls:api',
 ];
 
 const EACCOUNTING_ACR_VALUE = 'service:44643EB1-3F76-4C1C-A672-402AE8085934';

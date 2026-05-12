@@ -21,6 +21,7 @@ const LINE_ITEM_ACCOUNTS: Record<SalaryLineItemType, string> = {
   benefit_housing: '7381',
   benefit_meals: '7382',
   benefit_wellness: '7699',
+  benefit_bike: '7388',
   benefit_other: '7389',
   // Absence
   sick_karens: '7281',

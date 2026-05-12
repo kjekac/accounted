@@ -24,6 +24,7 @@ export default function NewEmployeePage() {
   const [salaryType, setSalaryType] = useState('monthly')
   const [fSkattStatus, setFSkattStatus] = useState('a_skatt')
   const [isSidoinkomst, setIsSidoinkomst] = useState(false)
+  const [vacationRule, setVacationRule] = useState('procentregeln')
 
   const requiresTaxTable = fSkattStatus === 'a_skatt' && !isSidoinkomst
 
@@ -54,6 +55,8 @@ export default function NewEmployeePage() {
       city: form.get('city') as string || undefined,
       clearing_number: form.get('clearing_number') as string || undefined,
       bank_account_number: form.get('bank_account_number') as string || undefined,
+      vacation_rule: vacationRule,
+      vacation_days_per_year: parseInt(form.get('vacation_days_per_year') as string) || 25,
     }
 
     const res = await fetch('/api/salary/employees', {
@@ -269,6 +272,40 @@ export default function NewEmployeePage() {
                   Folkbokföringskommun{requiresTaxTable && <RequiredMark />}
                 </Label>
                 <Input id="tax_municipality" name="tax_municipality" required={requiresTaxTable} />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Vacation */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Semester</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="vacation_rule">Semesterregel</Label>
+                <Select value={vacationRule} onValueChange={setVacationRule}>
+                  <SelectTrigger id="vacation_rule">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="procentregeln">Procentregeln (12 %)</SelectItem>
+                    <SelectItem value="sammaloneregeln">Sammalöneregeln</SelectItem>
+                    <SelectItem value="none">Ingen semesteravsättning</SelectItem>
+                  </SelectContent>
+                </Select>
+                {vacationRule === 'none' && (
+                  <p className="text-xs text-muted-foreground">
+                    Ingen avsättning till 2920 bokas. Vanligt för ägare som är enda anställd.
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="vacation_days_per_year">Semesterdagar per år</Label>
+                <Input id="vacation_days_per_year" name="vacation_days_per_year" type="number" min="25" max="40" defaultValue="25" />
+                <p className="text-xs text-muted-foreground">Lagstadgat minimum: 25 dagar</p>
               </div>
             </div>
           </CardContent>
