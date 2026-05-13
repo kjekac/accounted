@@ -56,6 +56,15 @@ export default function SupplierInvoiceDetailPage() {
   const [payAmount, setPayAmount] = useState('')
   const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().split('T')[0])
   const [isProcessing, setIsProcessing] = useState(false)
+  const [duplicateCandidates, setDuplicateCandidates] = useState<
+    Array<{
+      id: string
+      date: string
+      amount: number
+      description: string | null
+      merchant_name: string | null
+    }> | null
+  >(null)
   const { dialogProps: confirmDialogProps, confirm: confirmAction } = useDestructiveConfirm()
 
   async function fetchInvoice() {
@@ -89,22 +98,28 @@ export default function SupplierInvoiceDetailPage() {
     setIsProcessing(false)
   }
 
-  async function handleMarkPaid() {
+  async function handleMarkPaid(force: boolean = false) {
     setIsProcessing(true)
     const res = await fetch(`/api/supplier-invoices/${params.id}/mark-paid`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: parseFloat(payAmount), payment_date: paymentDate }),
+      body: JSON.stringify({ amount: parseFloat(payAmount), payment_date: paymentDate, ...(force ? { force: true } : {}) }),
     })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Betalning misslyckades', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
+      if (result?.error?.code === 'SI_PAID_LIKELY_DUPLICATE' && Array.isArray(result.error.details?.candidates)) {
+        setDuplicateCandidates(result.error.details.candidates)
+        setIsPayDialogOpen(false)
+      } else {
+        toast({ title: 'Betalning misslyckades', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
+      }
     } else {
       toast({
         title: result.status === 'paid' ? 'Betald' : 'Delbetalning registrerad',
         description: `${formatAmount(parseFloat(payAmount))} kr registrerat`,
       })
       setIsPayDialogOpen(false)
+      setDuplicateCandidates(null)
       fetchInvoice()
     }
     setIsProcessing(false)
@@ -593,8 +608,63 @@ export default function SupplierInvoiceDetailPage() {
               <Button variant="outline" onClick={() => setIsPayDialogOpen(false)}>
                 Avbryt
               </Button>
-              <Button onClick={handleMarkPaid} disabled={isProcessing}>
+              <Button onClick={() => handleMarkPaid(false)} disabled={isProcessing}>
                 {isProcessing ? 'Bearbetar...' : 'Registrera betalning'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Duplicate-payment warning dialog */}
+      <Dialog
+        open={duplicateCandidates !== null}
+        onOpenChange={(open) => {
+          if (!open) setDuplicateCandidates(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Möjlig dubbelbetalning</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Vi hittade {duplicateCandidates?.length === 1 ? 'en banktransaktion' : 'banktransaktioner'} som
+              verkar matcha denna betalning. Länka den befintliga transaktionen istället för att skapa en ny
+              verifikation.
+            </p>
+            <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+              {duplicateCandidates?.map((c) => (
+                <div key={c.id} className="flex items-center justify-between gap-3 text-sm">
+                  <div className="min-w-0">
+                    <div className="font-medium tabular-nums">{formatDate(c.date)}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {c.merchant_name || c.description || 'Banktransaktion'}
+                    </div>
+                  </div>
+                  <div className="tabular-nums font-medium">
+                    {formatAmount(Math.abs(c.amount))} {invoice.currency}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => router.push(`/transactions?highlight=${c.id}`)}
+                  >
+                    Gå till
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={() => setDuplicateCandidates(null)}>
+                Avbryt
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => handleMarkPaid(true)}
+                disabled={isProcessing}
+              >
+                {isProcessing ? 'Bearbetar...' : 'Skapa ny verifikation ändå'}
               </Button>
             </div>
           </div>

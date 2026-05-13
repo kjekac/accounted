@@ -271,6 +271,7 @@ export const MarkSupplierInvoicePaidSchema = z.object({
   payment_date: isoDate.optional(),
   exchange_rate_difference: z.number().optional(),
   notes: z.string().optional(),
+  force: z.boolean().optional(),
 })
 
 export const UpdateSupplierInvoiceSchema = z.object({
@@ -327,6 +328,7 @@ export const CategorizeTransactionSchema = z.object({
   counterparty_template_id: z.string().uuid().optional(),
   user_description: z.string().max(500).optional(),
   inbox_item_id: z.string().uuid().optional(),
+  confirm_no_match: z.boolean().optional(),
 })
 
 export const BookTransactionSchema = z.object({

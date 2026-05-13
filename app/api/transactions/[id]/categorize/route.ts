@@ -9,6 +9,11 @@ import { saveUserMappingRule } from '@/lib/bookkeeping/mapping-engine'
 import { upsertCounterpartyTemplate, buildMappingResultFromCounterpartyTemplate } from '@/lib/bookkeeping/counterparty-templates'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
+import {
+  DUPLICATE_AMOUNT_TOLERANCE_PCT,
+  DUPLICATE_DATE_WINDOW_DAYS,
+  escapeLikePattern,
+} from '@/lib/invoices/duplicate-payment-guard'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { Logger } from '@/lib/logger'
@@ -260,6 +265,86 @@ export const POST = withRouteContext(
           creditAccount: mappingResult.credit_account,
         },
       })
+    }
+
+    if (body.confirm_no_match && /^244\d$/.test(mappingResult.debit_account)) {
+      txLog.warn('supplier-invoice match suggestion bypassed', {
+        reason: 'confirm_no_match=true',
+        debitAccount: mappingResult.debit_account,
+        creditAccount: mappingResult.credit_account,
+      })
+    }
+
+    // Prong B: intercept plain 244x categorization of supplier payments when
+    // an open supplier invoice already covers this amount. Categorizing direct
+    // to 244x leaves the invoice with status='approved' and lures the user
+    // into a duplicate "Markera som betald" later. Credit must be a bank/cash
+    // account (1xxx) — 244x against a clearing account, equity, etc. isn't a
+    // supplier payment and the suggestion would misdirect the user.
+    if (
+      !body.confirm_no_match &&
+      is_business &&
+      transaction.amount < 0 &&
+      /^244\d$/.test(mappingResult.debit_account) &&
+      /^1\d{3}$/.test(mappingResult.credit_account)
+    ) {
+      const txAmountAbs = Math.abs(transaction.amount)
+      const windowLow = Math.round(txAmountAbs * (1 - DUPLICATE_AMOUNT_TOLERANCE_PCT) * 100) / 100
+      const windowHigh = Math.round(txAmountAbs * (1 + DUPLICATE_AMOUNT_TOLERANCE_PCT) * 100) / 100
+
+      let supplierIds: string[] = []
+      if (transaction.merchant_name) {
+        const escapedMerchant = escapeLikePattern(transaction.merchant_name)
+        const { data: matchedSuppliers } = await supabase
+          .from('suppliers')
+          .select('id')
+          .eq('company_id', companyId)
+          .ilike('name', `%${escapedMerchant}%`)
+          .limit(10)
+        supplierIds = (matchedSuppliers || []).map((s) => s.id)
+      }
+
+      if (supplierIds.length > 0) {
+        // Restrict candidates to invoices within the date window relative to
+        // the bank tx date. Without this, an open invoice from years back can
+        // surface as a match and misdirect the user (swedish-compliance bot).
+        const txDateMs = new Date(transaction.date).getTime()
+        const invoiceDateLow = new Date(txDateMs - DUPLICATE_DATE_WINDOW_DAYS * 24 * 3600 * 1000)
+          .toISOString()
+          .split('T')[0]
+        const invoiceDateHigh = new Date(txDateMs + DUPLICATE_DATE_WINDOW_DAYS * 24 * 3600 * 1000)
+          .toISOString()
+          .split('T')[0]
+
+        const { data: openInvoices } = await supabase
+          .from('supplier_invoices')
+          .select('id, supplier_invoice_number, invoice_date, remaining_amount, currency, supplier:suppliers(name)')
+          .eq('company_id', companyId)
+          .in('supplier_id', supplierIds)
+          .in('status', ['registered', 'approved', 'partially_paid', 'overdue'])
+          .gte('remaining_amount', windowLow)
+          .lte('remaining_amount', windowHigh)
+          .gte('invoice_date', invoiceDateLow)
+          .lte('invoice_date', invoiceDateHigh)
+          .order('invoice_date', { ascending: false })
+          .limit(5)
+
+        if (openInvoices && openInvoices.length > 0) {
+          return errorResponseFromCode('TX_CATEGORIZE_SUGGEST_SI_MATCH', txLog, {
+            requestId,
+            details: {
+              candidates: openInvoices.map((inv) => ({
+                supplier_invoice_id: inv.id,
+                invoice_number: inv.supplier_invoice_number,
+                invoice_date: inv.invoice_date,
+                remaining_amount: inv.remaining_amount,
+                currency: inv.currency,
+                supplier_name: (inv.supplier as { name?: string } | null)?.name ?? null,
+              })),
+            },
+          })
+        }
+      }
     }
 
     await ensureFiscalPeriod(supabase, user.id, companyId, transaction.date, fiscalYearStartMonth, txLog)

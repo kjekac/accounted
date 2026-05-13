@@ -111,6 +111,8 @@ describe('POST /api/supplier-invoices/[id]/mark-paid', () => {
 
     // Fetch invoice
     enqueue({ data: invoice, error: null })
+    // Duplicate-payment guard: no candidate transactions
+    enqueue({ data: [], error: null })
     // Fetch company settings
     enqueue({ data: { accounting_method: 'accrual' }, error: null })
 
@@ -212,6 +214,8 @@ describe('POST /api/supplier-invoices/[id]/mark-paid', () => {
     })
 
     enqueue({ data: invoice, error: null })
+    // Duplicate-payment guard: no candidate transactions
+    enqueue({ data: [], error: null })
     enqueue({ data: { accounting_method: 'cash' }, error: null })
 
     mockCreateSupplierInvoiceCashEntry.mockResolvedValue({ id: 'je-3' })
@@ -249,6 +253,8 @@ describe('POST /api/supplier-invoices/[id]/mark-paid', () => {
     })
 
     enqueue({ data: invoice, error: null })
+    // Duplicate-payment guard: no candidate transactions
+    enqueue({ data: [], error: null })
     enqueue({ data: { accounting_method: 'accrual' }, error: null })
 
     mockCreateSupplierInvoicePaymentEntry.mockRejectedValue(new Error('Period locked'))
@@ -264,6 +270,109 @@ describe('POST /api/supplier-invoices/[id]/mark-paid', () => {
     expect((body.error as unknown as { code: string }).code).toBe('SI_PAID_FAILED')
   })
 
+  it('returns 409 SI_PAID_LIKELY_DUPLICATE when an unlinked transaction matches', async () => {
+    const supplier = makeSupplier()
+    const invoice = makeSupplierInvoice({
+      id: 'si-1',
+      status: 'approved',
+      total: 10000,
+      remaining_amount: 10000,
+      paid_amount: 0,
+      supplier,
+      items: [],
+    })
+
+    enqueue({ data: invoice, error: null })
+    // Duplicate-payment guard: one likely-matching unlinked transaction
+    enqueue({
+      data: [
+        {
+          id: 'tx-99',
+          date: '2026-05-10',
+          amount: -10000,
+          description: 'Faktura Leverantör AB',
+          merchant_name: 'Leverantör AB',
+          journal_entry_id: 'je-99',
+        },
+      ],
+      error: null,
+    })
+
+    const request = createMockRequest('/api/supplier-invoices/si-1/mark-paid', {
+      method: 'POST',
+      body: {},
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'si-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string; details: { candidates: unknown[] } } }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('SI_PAID_LIKELY_DUPLICATE')
+    expect(body.error.details.candidates).toHaveLength(1)
+    expect(mockCreateSupplierInvoicePaymentEntry).not.toHaveBeenCalled()
+  })
+
+  it('proceeds when force=true even with candidates present', async () => {
+    const supplier = makeSupplier()
+    const invoice = makeSupplierInvoice({
+      id: 'si-1',
+      status: 'approved',
+      total: 10000,
+      remaining_amount: 10000,
+      paid_amount: 0,
+      supplier,
+      items: [],
+    })
+
+    enqueue({ data: invoice, error: null })
+    // No candidates query happens because force=true skips it
+    enqueue({ data: { accounting_method: 'accrual' }, error: null })
+    mockCreateSupplierInvoicePaymentEntry.mockResolvedValue({ id: 'je-1' })
+    enqueue({ data: [{ id: 'si-1' }], error: null })
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/supplier-invoices/si-1/mark-paid', {
+      method: 'POST',
+      body: { force: true },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'si-1' }))
+    const { status, body } = await parseJsonResponse<{ success: boolean; status: string }>(response)
+
+    expect(status).toBe(200)
+    expect(body.success).toBe(true)
+    expect(body.status).toBe('paid')
+    expect(mockCreateSupplierInvoicePaymentEntry).toHaveBeenCalled()
+  })
+
+  it('skips duplicate guard on partial payment (amount < remaining)', async () => {
+    const supplier = makeSupplier()
+    const invoice = makeSupplierInvoice({
+      id: 'si-1',
+      status: 'approved',
+      total: 10000,
+      remaining_amount: 10000,
+      paid_amount: 0,
+      supplier,
+      items: [],
+    })
+
+    // Note: no candidates enqueue — guard is skipped for partial payments
+    enqueue({ data: invoice, error: null })
+    enqueue({ data: { accounting_method: 'accrual' }, error: null })
+    mockCreateSupplierInvoicePaymentEntry.mockResolvedValue({ id: 'je-1' })
+    enqueue({ data: [{ id: 'si-1' }], error: null })
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/supplier-invoices/si-1/mark-paid', {
+      method: 'POST',
+      body: { amount: 3000 },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'si-1' }))
+    const { status, body } = await parseJsonResponse<{ status: string }>(response)
+
+    expect(status).toBe(200)
+    expect(body.status).toBe('partially_paid')
+  })
+
   it('emits supplier_invoice.paid event', async () => {
     const supplier = makeSupplier()
     const invoice = makeSupplierInvoice({
@@ -277,6 +386,8 @@ describe('POST /api/supplier-invoices/[id]/mark-paid', () => {
     })
 
     enqueue({ data: invoice, error: null })
+    // Duplicate-payment guard: no candidate transactions
+    enqueue({ data: [], error: null })
     enqueue({ data: { accounting_method: 'accrual' }, error: null })
     mockCreateSupplierInvoicePaymentEntry.mockResolvedValue({ id: 'je-1' })
     // Update invoice (CAS guard: returns matched row)

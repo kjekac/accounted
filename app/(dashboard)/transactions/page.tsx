@@ -115,6 +115,22 @@ export default function TransactionsPage() {
   const [quickReviewOpen, setQuickReviewOpen] = useState(false)
   const [quickReview, setQuickReview] = useState<QuickReviewState | null>(null)
 
+  // Prong B: prompt to match against an open supplier invoice instead of
+  // categorizing direct to 2440. Triggered by a 409 TX_CATEGORIZE_SUGGEST_SI_MATCH.
+  const [siMatchSuggestion, setSiMatchSuggestion] = useState<{
+    transactionId: string
+    retry: () => Promise<string | null>
+    candidates: Array<{
+      supplier_invoice_id: string
+      invoice_number: string
+      invoice_date: string
+      remaining_amount: number
+      currency: string
+      supplier_name: string | null
+    }>
+  } | null>(null)
+  const [siMatchProcessing, setSiMatchProcessing] = useState(false)
+
   // Entity type for tooltip context
   const [entityType, setEntityType] = useState<string>('enskild_firma')
 
@@ -423,6 +439,20 @@ export default function TransactionsPage() {
   }, [transactions.length])
 
   const handleCategorize: CategorizeHandler = async (id, isBusiness, category, vatTreatment, accountOverride, templateId, inboxItemId) => {
+    return runCategorize({ id, isBusiness, category, vatTreatment, accountOverride, templateId, inboxItemId, confirmNoMatch: false })
+  }
+
+  async function runCategorize(args: {
+    id: string
+    isBusiness: boolean
+    category?: TransactionCategory
+    vatTreatment?: VatTreatment
+    accountOverride?: string
+    templateId?: string
+    inboxItemId?: string
+    confirmNoMatch: boolean
+  }): Promise<string | null> {
+    const { id, isBusiness, category, vatTreatment, accountOverride, templateId, inboxItemId, confirmNoMatch } = args
     try {
       setProcessingId(id)
       const response = await fetch(`/api/transactions/${id}/categorize`, {
@@ -435,11 +465,27 @@ export default function TransactionsPage() {
           account_override: accountOverride,
           template_id: templateId,
           inbox_item_id: inboxItemId,
+          ...(confirmNoMatch ? { confirm_no_match: true } : {}),
         }),
       })
 
       const result = await response.json()
       if (!response.ok) {
+        if (
+          result?.error?.code === 'TX_CATEGORIZE_SUGGEST_SI_MATCH' &&
+          Array.isArray(result.error.details?.candidates)
+        ) {
+          // Prong B: invite the user to match the open supplier invoice
+          // instead of booking a plain 2440 categorization that would later
+          // create a duplicate when they hit "Markera som betald".
+          setSiMatchSuggestion({
+            transactionId: id,
+            retry: () => runCategorize({ ...args, confirmNoMatch: true }),
+            candidates: result.error.details.candidates,
+          })
+          setProcessingId(null)
+          return null
+        }
         toast({
           title: 'Kategorisering misslyckades',
           description: getErrorMessage(result, { context: 'transaction', statusCode: response.status }),
@@ -520,6 +566,55 @@ export default function TransactionsPage() {
 
   async function handleMarkPrivate(id: string) {
     await handleCategorize(id, false, 'private')
+  }
+
+  async function handleMatchSuggestedSupplierInvoice(transactionId: string, supplierInvoiceId: string) {
+    setSiMatchProcessing(true)
+    try {
+      const response = await fetch(`/api/transactions/${transactionId}/match-supplier-invoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ supplier_invoice_id: supplierInvoiceId }),
+      })
+      const result = await response.json()
+      if (!response.ok) {
+        toast({
+          title: 'Matchning misslyckades',
+          description: getErrorMessage(result, { context: 'transaction', statusCode: response.status }),
+          variant: 'destructive',
+        })
+        setSiMatchProcessing(false)
+        return
+      }
+
+      toast({ title: 'Leverantörsfaktura matchad', description: 'Fakturan markerades som betald' })
+      setSiMatchSuggestion(null)
+      setExitingIds((prev) => new Set(prev).add(transactionId))
+      setTotalUncategorizedCount((prev) => Math.max(0, (prev ?? 1) - 1))
+      setTimeout(() => {
+        setTransactions((prev) =>
+          prev.map((t) =>
+            t.id === transactionId
+              ? {
+                  ...t,
+                  supplier_invoice_id: supplierInvoiceId,
+                  is_business: true,
+                  journal_entry_id: result.journal_entry_id ?? t.journal_entry_id,
+                }
+              : t
+          )
+        )
+        setExitingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(transactionId)
+          return next
+        })
+      }, 350)
+    } catch {
+      toast({ title: 'Matchning misslyckades', description: 'Försök igen.', variant: 'destructive' })
+    } finally {
+      setSiMatchProcessing(false)
+    }
   }
 
   async function handleConfirmInvoiceMatch() {
@@ -1340,6 +1435,64 @@ export default function TransactionsPage() {
         onClose={() => setSkvMatchTarget(null)}
         onMatched={handleSkvMatched}
       />
+
+      {/* Prong B: match-against-supplier-invoice suggestion */}
+      <Dialog
+        open={siMatchSuggestion !== null}
+        onOpenChange={(open) => {
+          if (!open) setSiMatchSuggestion(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Matcha mot leverantörsfaktura?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Det finns en öppen leverantörsfaktura med samma belopp från samma leverantör. Matcha mot
+              fakturan istället för att bokföra direkt på leverantörsskuldskontot, annars skapas en
+              dubblerad verifikation som måste stornas (BFL 5 kap 5 §).
+            </p>
+            <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+              {siMatchSuggestion?.candidates.map((c) => (
+                <div key={c.supplier_invoice_id} className="flex items-center justify-between gap-3 text-sm">
+                  <div className="min-w-0">
+                    <div className="font-medium">
+                      {c.supplier_name || 'Leverantör'} · {c.invoice_number}
+                    </div>
+                    <div className="text-xs text-muted-foreground tabular-nums">
+                      {formatDate(c.invoice_date)} · kvar {formatCurrency(c.remaining_amount, c.currency)}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    onClick={() => handleMatchSuggestedSupplierInvoice(siMatchSuggestion.transactionId, c.supplier_invoice_id)}
+                    disabled={siMatchProcessing}
+                  >
+                    Matcha
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={() => setSiMatchSuggestion(null)}>
+                Avbryt
+              </Button>
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  const retry = siMatchSuggestion?.retry
+                  setSiMatchSuggestion(null)
+                  if (retry) await retry()
+                }}
+                disabled={siMatchProcessing}
+              >
+                Bokför på leverantörsskulder ändå
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

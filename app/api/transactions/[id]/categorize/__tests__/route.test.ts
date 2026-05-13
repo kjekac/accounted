@@ -271,6 +271,130 @@ describe('POST /api/transactions/[id]/categorize', () => {
     expect(mockCreateTransactionJournalEntry).not.toHaveBeenCalled()
   })
 
+  it('returns 409 TX_CATEGORIZE_SUGGEST_SI_MATCH when 2440 mapping matches an open supplier invoice', async () => {
+    const tx = makeTransaction({
+      id: 'tx-1',
+      amount: -10000,
+      merchant_name: 'Leverantör AB',
+      journal_entry_id: null,
+    })
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: { entity_type: 'enskild_firma', fiscal_year_start_month: 1 }, error: null })
+
+    mockBuildMappingResultFromCategory.mockReturnValue({
+      ...defaultMappingResult,
+      debit_account: '2440',
+    })
+
+    // Prong B: supplier lookup
+    enqueue({ data: [{ id: 'sup-1' }], error: null })
+    // Open supplier invoices candidate query
+    enqueue({
+      data: [
+        {
+          id: 'si-1',
+          supplier_invoice_number: 'INV-2026-0042',
+          invoice_date: '2026-05-01',
+          remaining_amount: 10000,
+          currency: 'SEK',
+          supplier: { name: 'Leverantör AB' },
+        },
+      ],
+      error: null,
+    })
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: { is_business: true, category: 'expense_software' },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string; details: { candidates: unknown[] } } }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('TX_CATEGORIZE_SUGGEST_SI_MATCH')
+    expect(body.error.details.candidates).toHaveLength(1)
+    expect(mockCreateTransactionJournalEntry).not.toHaveBeenCalled()
+  })
+
+  it('proceeds with 2440 categorization when confirm_no_match=true', async () => {
+    const tx = makeTransaction({
+      id: 'tx-1',
+      amount: -10000,
+      merchant_name: 'Leverantör AB',
+      journal_entry_id: null,
+    })
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: { entity_type: 'enskild_firma', fiscal_year_start_month: 1 }, error: null })
+
+    mockBuildMappingResultFromCategory.mockReturnValue({
+      ...defaultMappingResult,
+      debit_account: '2440',
+    })
+
+    // No supplier/invoice lookups happen because confirm_no_match=true skips the block
+    // ensureFiscalPeriod
+    enqueue({ data: [{ id: 'period-1' }], error: null })
+    mockCreateTransactionJournalEntry.mockResolvedValue({ id: 'je-1' })
+    // Transaction update
+    enqueue({ data: [{ id: 'tx-1' }], error: null })
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: { is_business: true, category: 'expense_software', confirm_no_match: true },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{
+      success: boolean
+      journal_entry_created: boolean
+      journal_entry_id: string
+    }>(response)
+
+    expect(status).toBe(200)
+    expect(body.success).toBe(true)
+    expect(body.journal_entry_created).toBe(true)
+    expect(body.journal_entry_id).toBe('je-1')
+  })
+
+  it('does not trigger SI suggestion when 2440 has no matching open supplier invoice', async () => {
+    const tx = makeTransaction({
+      id: 'tx-1',
+      amount: -10000,
+      merchant_name: 'Leverantör AB',
+      journal_entry_id: null,
+    })
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: { entity_type: 'enskild_firma', fiscal_year_start_month: 1 }, error: null })
+
+    mockBuildMappingResultFromCategory.mockReturnValue({
+      ...defaultMappingResult,
+      debit_account: '2440',
+    })
+
+    // Supplier lookup returns a supplier
+    enqueue({ data: [{ id: 'sup-1' }], error: null })
+    // No open invoices in the amount window
+    enqueue({ data: [], error: null })
+    // ensureFiscalPeriod
+    enqueue({ data: [{ id: 'period-1' }], error: null })
+    mockCreateTransactionJournalEntry.mockResolvedValue({ id: 'je-1' })
+    // Transaction update
+    enqueue({ data: [{ id: 'tx-1' }], error: null })
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: { is_business: true, category: 'expense_software' },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ success: boolean; journal_entry_created: boolean }>(response)
+
+    expect(status).toBe(200)
+    expect(body.success).toBe(true)
+    expect(body.journal_entry_created).toBe(true)
+  })
+
   it('categorizes as private when is_business is false', async () => {
     const tx = makeTransaction({
       id: 'tx-1',

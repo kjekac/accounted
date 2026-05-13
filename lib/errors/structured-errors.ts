@@ -269,6 +269,17 @@ const TRANSACTIONS: Record<string, StructuredErrorEntry> = {
     message_sv: 'Transaktionen kategoriserades av en annan förfrågan. Ladda om och försök igen.',
     message_en: 'Transaction was already categorized by another request.',
   },
+  TX_CATEGORIZE_SUGGEST_SI_MATCH: {
+    httpStatus: 409,
+    message_sv:
+      'Det finns en öppen leverantörsfaktura från samma leverantör med samma belopp. Matcha mot fakturan istället för att bokföra direkt på leverantörsskuldskontot — annars skapas en dubblerad verifikation som måste stornas (BFL 5 kap 5 §).',
+    message_en:
+      'An open supplier invoice from the same supplier matches this amount. Suggest matching to the invoice instead of a plain 244x categorization to avoid producing a duplicate verifikation (BFL 5 kap 5 §).',
+    remediation: {
+      description:
+        'Match the transaction via POST /api/transactions/{id}/match-supplier-invoice, or resend with confirm_no_match: true to keep the plain 244x categorization.',
+    },
+  },
   TX_UNCATEGORIZE_NO_LINKED_ENTRY: {
     httpStatus: 400,
     message_sv: 'Transaktionen har ingen kopplad verifikation att stornera.',
@@ -1128,6 +1139,17 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
     httpStatus: 500,
     message_sv: 'Kunde inte registrera betalningen.',
     message_en: 'Failed to record supplier invoice payment.',
+  },
+  SI_PAID_LIKELY_DUPLICATE: {
+    httpStatus: 409,
+    message_sv:
+      'Det finns redan en obokförd banktransaktion som kan vara denna betalning. Länka den istället, eller markera som betald ändå om du är säker.',
+    message_en:
+      'A likely-matching unlinked bank transaction was found for this supplier. Suggest linking it instead of creating a new payment entry.',
+    remediation: {
+      description:
+        'Match the candidate transaction via POST /api/transactions/{id}/match-supplier-invoice, or resend mark-paid with force: true to create the payment entry anyway.',
+    },
   },
   SI_CREDIT_ALREADY_CREDITED: {
     httpStatus: 409,
