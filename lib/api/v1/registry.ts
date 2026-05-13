@@ -74,6 +74,14 @@ export interface EndpointDefinition {
     query?: ZodTypeAny
     /** Request body. */
     body?: ZodTypeAny
+    /**
+     * Body content-type. Defaults to 'application/json' when omitted.
+     * Set to 'multipart/form-data' for upload endpoints (Phase 4 PR-3:
+     * documents). The OpenAPI generator emits the appropriate schema
+     * (`{ type: 'string', format: 'binary' }` for the file part) so
+     * code generators produce correct multipart clients.
+     */
+    contentType?: 'application/json' | 'multipart/form-data'
   }
   response: {
     /** Successful response body. */

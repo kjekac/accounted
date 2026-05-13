@@ -105,10 +105,10 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   'POST /api/v1/companies/:companyId/fiscal-periods/:id/currency-revaluation': 'bookkeeping:write',
   // Compliance check (gnubok's defensible edge).
   'GET /api/v1/companies/:companyId/compliance/check': 'compliance:read',
-  // Note: documents (multipart) scopes are intentionally NOT pre-registered
-  // here — they ship in the dedicated documents follow-up PR so an API key
-  // issued today with documents:write cannot match a route that doesn't
-  // yet exist.
+  // Phase 4 PR-3 — Documents (multipart).
+  'POST /api/v1/companies/:companyId/documents': 'documents:write',
+  'GET /api/v1/companies/:companyId/documents/:id/download': 'documents:read',
+  'POST /api/v1/companies/:companyId/documents/:id/link': 'documents:write',
 
   // Phase 3 — transactions + reconciliation vertical.
   // Reads

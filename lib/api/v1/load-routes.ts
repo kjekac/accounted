@@ -37,6 +37,11 @@ import '@/app/api/v1/companies/[companyId]/fiscal-periods/[id]/year-end/route'
 import '@/app/api/v1/companies/[companyId]/fiscal-periods/[id]/opening-balances/route'
 import '@/app/api/v1/companies/[companyId]/fiscal-periods/[id]/currency-revaluation/route'
 
+// Phase 4 PR-3 — Documents (multipart).
+import '@/app/api/v1/companies/[companyId]/documents/route'
+import '@/app/api/v1/companies/[companyId]/documents/[id]/download/route'
+import '@/app/api/v1/companies/[companyId]/documents/[id]/link/route'
+
 // Phase 2 PR-A — invoice + customer reads.
 import '@/app/api/v1/companies/[companyId]/invoices/route'
 import '@/app/api/v1/companies/[companyId]/invoices/[id]/route'

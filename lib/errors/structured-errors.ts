@@ -1046,6 +1046,11 @@ const DOCUMENT: Record<string, StructuredErrorEntry> = {
     message_sv: 'Filen kunde inte sparas.',
     message_en: 'Document storage failed.',
   },
+  DOC_DOWNLOAD_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Det gick inte att skapa nedladdningslänken.',
+    message_en: 'Failed to create signed download URL.',
+  },
   DOC_NOT_FOUND: {
     httpStatus: 404,
     message_sv: 'Dokumentet kunde inte hittas.',
