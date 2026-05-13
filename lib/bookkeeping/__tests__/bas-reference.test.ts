@@ -166,10 +166,11 @@ describe('K2-excluded accounts', () => {
   const k2Excluded = [
     '1010', '1011', '1012', '1018', '1019',
     '1370', '1518',
-    '2092', '2096', '2240', '2448',
+    '2089', '2092', '2096', '2240', '2448',
     '3940', '7940',
     '8290', '8291', '8295',
     '8320', '8321', '8325',
+    '8417',
     '8450', '8451', '8455',
     '8480', '8940',
   ]
@@ -191,9 +192,9 @@ describe('K2-excluded accounts', () => {
     }
   })
 
-  it('total K2-excluded count matches expected (24)', () => {
+  it('total K2-excluded count matches expected (26)', () => {
     const k2Count = BAS_REFERENCE.filter((a) => a.k2_excluded).length
-    expect(k2Count).toBe(24)
+    expect(k2Count).toBe(26)
   })
 })
 

@@ -1070,12 +1070,12 @@ export const CLASS_8_ACCOUNTS: BASReferenceAccount[] = [
   },
   {
     account_number: '8411',
-    account_name: 'Räntekostnader för obligations-, förlagsoch konvertibla lån',
+    account_name: 'Räntekostnader för obligations-, förlags- och konvertibla lån',
     account_class: 8,
     account_group: '84',
     account_type: 'expense',
     normal_balance: 'debit',
-    description: 'Räntekostnader för obligations-, förlagsoch konvertibla lån',
+    description: 'Räntekostnader för obligations-, förlags- och konvertibla lån',
     sru_code: '7323',
     k2_excluded: false,
   },
@@ -1121,7 +1121,7 @@ export const CLASS_8_ACCOUNTS: BASReferenceAccount[] = [
     normal_balance: 'debit',
     description: 'Räntekostnader för dold räntekompensation m.m.',
     sru_code: '7323',
-    k2_excluded: false,
+    k2_excluded: true,
   },
   {
     account_number: '8418',
