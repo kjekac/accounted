@@ -517,7 +517,7 @@ export default function NewInvoicePage() {
           </Card>
 
           {/* Invoice items */}
-          <Card className="lg:col-span-3 lg:row-start-2">
+          <Card className="lg:col-span-2 lg:row-start-2">
             <CardHeader>
               <CardTitle>Fakturarader</CardTitle>
               <CardDescription>Lägg till produkter eller tjänster</CardDescription>
@@ -682,7 +682,7 @@ export default function NewInvoicePage() {
           </Card>
 
           {/* Invoice details */}
-          <Card className="lg:col-start-3 lg:row-start-1">
+          <Card className="lg:col-start-3 lg:row-start-1 lg:row-span-2">
             <CardHeader>
               <CardTitle>Fakturadetaljer</CardTitle>
             </CardHeader>

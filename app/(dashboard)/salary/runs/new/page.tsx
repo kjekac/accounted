@@ -56,7 +56,7 @@ export default function NewSalaryRunPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 max-w-2xl mx-auto">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" asChild>
           <Link href="/salary" aria-label="Tillbaka till löner"><ArrowLeft className="h-4 w-4" /></Link>
@@ -64,7 +64,7 @@ export default function NewSalaryRunPage() {
         <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight">Ny lönekörning</h1>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6 max-w-xl">
+      <form onSubmit={handleSubmit} className="space-y-6">
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Period och utbetalning</CardTitle>
