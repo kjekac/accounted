@@ -28,6 +28,7 @@ import {
   ExternalLink,
   Info,
   RotateCcw,
+  RefreshCw,
   AlertTriangle,
   ChevronDown,
   ChevronRight,
@@ -135,8 +136,17 @@ interface PreviewData {
 
 interface SIEFileStatus {
   fiscalYear: number
+  // Legacy field for older builds — read previousImport instead.
   alreadyImported: boolean
   importedAt: string | null
+  // New (period-based) detection. When present, this fiscal year already has a
+  // completed import in gnubok and a re-sync will replace it (cancelling the
+  // imported journal entries; user-created entries are untouched).
+  previousImport: {
+    importedAt: string | null
+    fiscalYearStart: string | null
+    fiscalYearEnd: string | null
+  } | null
 }
 
 interface SIEData {
@@ -147,6 +157,7 @@ interface SIEData {
   fileStatuses: SIEFileStatus[]
   allImported: boolean
   newFileCount: number
+  replacedFileCount?: number
   basAccounts: BASAccount[]
 }
 
@@ -776,8 +787,11 @@ function OptionsStep({
   }
 
   const fileStatuses = sieData?.fileStatuses ?? []
-  const allSieImported = sieData?.allImported ?? false
   const newFileCount = sieData?.newFileCount ?? 0
+  const replacedFileCount = fileStatuses.filter(fs => fs.previousImport).length
+  const yearsToReplace = fileStatuses
+    .filter(fs => fs.previousImport)
+    .map(fs => fs.fiscalYear)
 
   const selectedItems: string[] = []
   if (options.importCompanyInfo) selectedItems.push('Företagsinformation')
@@ -810,26 +824,31 @@ function OptionsStep({
               <OptionRow
                 icon={<Database className="h-4 w-4" />}
                 label="Bokföringsdata (SIE)"
-                description={allSieImported
-                  ? 'All bokföringsdata är redan importerad — inga ändringar'
-                  : newFileCount > 0
-                    ? `${newFileCount} ny(a) räkenskapsår att importera`
-                    : 'Kontoplan, ingående balanser och verifikationer'
+                description={
+                  replacedFileCount > 0 && newFileCount > 0
+                    ? `${newFileCount} nya och ${replacedFileCount} uppdaterade räkenskapsår`
+                    : replacedFileCount > 0
+                      ? `${replacedFileCount} räkenskapsår med uppdaterad data — tidigare import ersätts`
+                      : newFileCount > 0
+                        ? `${newFileCount} ny(a) räkenskapsår att importera`
+                        : 'Kontoplan, ingående balanser och verifikationer'
                 }
-                checked={options.importSIEData && !allSieImported}
-                onChange={() => !allSieImported && toggleOption('importSIEData')}
-                disabled={allSieImported}
+                checked={options.importSIEData}
+                onChange={() => toggleOption('importSIEData')}
               />
               {/* Per-file import status */}
               {fileStatuses.length > 0 && (
                 <div className="ml-4 space-y-1.5">
                   {fileStatuses.map((fs) => (
                     <div key={fs.fiscalYear} className="flex items-center gap-2 text-xs">
-                      {fs.alreadyImported ? (
+                      {fs.previousImport ? (
                         <>
-                          <CheckCircle className="h-3.5 w-3.5 text-emerald-500" />
+                          <RefreshCw className="h-3.5 w-3.5 text-amber-500" />
                           <span className="text-muted-foreground">
-                            Räkenskapsår {fs.fiscalYear} — importerad {fs.importedAt ? new Date(fs.importedAt).toLocaleDateString('sv-SE') : ''}
+                            Räkenskapsår {fs.fiscalYear} — ersätter tidigare import
+                            {fs.previousImport.importedAt
+                              ? ` från ${new Date(fs.previousImport.importedAt).toLocaleDateString('sv-SE')}`
+                              : ''}
                           </span>
                         </>
                       ) : (
@@ -842,7 +861,7 @@ function OptionsStep({
                   ))}
                 </div>
               )}
-              {options.importSIEData && !allSieImported && (
+              {options.importSIEData && (
                 <div className="flex items-center gap-3 rounded-lg border border-border p-3 ml-4">
                   <div className="text-muted-foreground">
                     <FileText className="h-4 w-4" />
@@ -918,16 +937,38 @@ function OptionsStep({
         warningText={`Bokföringsdata, kunder, leverantörer och fakturor importeras till ${branding.appName.toLowerCase()}. Se till att ingen annan import pågår.`}
         confirmLabel="Starta migrering"
       >
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Följande importeras:</p>
-          <ul className="space-y-1">
-            {selectedItems.map((item) => (
-              <li key={item} className="flex items-center gap-2 text-sm text-muted-foreground">
-                <CheckCircle className="h-3.5 w-3.5 text-primary" />
-                {item}
-              </li>
-            ))}
-          </ul>
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Följande importeras:</p>
+            <ul className="space-y-1">
+              {selectedItems.map((item) => (
+                <li key={item} className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <CheckCircle className="h-3.5 w-3.5 text-primary" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {options.importSIEData && yearsToReplace.length > 0 && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-50/50 p-3 dark:bg-amber-950/20">
+              <div className="flex items-start gap-2">
+                <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">
+                    {yearsToReplace.length === 1
+                      ? `Räkenskapsår ${yearsToReplace[0]} ersätts`
+                      : `Räkenskapsår ${yearsToReplace.join(', ')} ersätts`}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Tidigare importerade verifikationer markeras som annullerade och ersätts av
+                    uppdaterad data från källsystemet. Verifikationer som du själv skapat i {branding.appName.toLowerCase()}
+                    (kategoriserade banktransaktioner, fakturor m.m.) påverkas inte.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </ConfirmationDialog>
     </div>
@@ -1059,6 +1100,11 @@ function FiscalYearResult({ result, index }: { result: ImportResult; index: numb
             {d?.skippedVouchers && d.skippedVouchers.total > 0 && (
               <span className="text-amber-600">
                 {' · '}{d.skippedVouchers.total} hoppade över
+              </span>
+            )}
+            {result.replacedPriorImport && result.replacedPriorImport.cancelledEntries > 0 && (
+              <span>
+                {' · '}ersatte {result.replacedPriorImport.cancelledEntries.toLocaleString('sv-SE')} tidigare importerade verifikationer
               </span>
             )}
           </p>
@@ -1823,43 +1869,43 @@ export default function ArcimMigrationWorkspace(_props: WorkspaceComponentProps)
         setMigrationProgress(10)
         setSieImportResults([])
 
-        // Only import files that haven't been imported yet
-        const filesToImport = sieData.rawContent
-          .map((content, i) => ({ content, status: sieData.fileStatuses?.[i] }))
-          .filter(f => !f.status?.alreadyImported)
+        // Send every file to the engine. The Fortnox endpoint runs in
+        // replace-mode, so a year that already has a completed import
+        // gets its prior import marked 'replaced' (imported entries
+        // cancelled, user-created entries untouched) before the new
+        // SIE is loaded. The per-file result reports replacedPriorImport.
+        const filesToImport = sieData.rawContent.map((content, i) => ({
+          content,
+          status: sieData.fileStatuses?.[i],
+        }))
 
-        if (filesToImport.length === 0) {
-          // All files already imported — skip SIE phase
-          setSieImportResults([])
-        } else {
-          for (let i = 0; i < filesToImport.length; i++) {
-            const progress = 10 + Math.round((i / filesToImport.length) * 40)
-            setMigrationProgress(progress)
-            setMigrationStep(`Importerar bokföringsdata (SIE) — fil ${i + 1} av ${filesToImport.length}...`)
+        for (let i = 0; i < filesToImport.length; i++) {
+          const progress = 10 + Math.round((i / filesToImport.length) * 40)
+          setMigrationProgress(progress)
+          setMigrationStep(`Importerar bokföringsdata (SIE) — fil ${i + 1} av ${filesToImport.length}...`)
 
-            const res = await fetch('/api/extensions/ext/arcim-migration/import-sie', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                rawContent: filesToImport[i].content,
-                mappings: sieData.mappings,
-                options: {
-                  createFiscalPeriod: true,
-                  importOpeningBalances: true,
-                  importTransactions: true,
-                  voucherSeries: migrationOptions.voucherSeries,
-                },
-              }),
-            })
+          const res = await fetch('/api/extensions/ext/arcim-migration/import-sie', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              rawContent: filesToImport[i].content,
+              mappings: sieData.mappings,
+              options: {
+                createFiscalPeriod: true,
+                importOpeningBalances: true,
+                importTransactions: true,
+                voucherSeries: migrationOptions.voucherSeries,
+              },
+            }),
+          })
 
-            if (!res.ok) {
-              const data = await res.json().catch(() => ({}))
-              throw new Error(data.error || `SIE import HTTP ${res.status}`)
-            }
-
-            const result = await res.json() as ImportResult
-            setSieImportResults(prev => [...prev, result])
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}))
+            throw new Error(data.error || `SIE import HTTP ${res.status}`)
           }
+
+          const result = await res.json() as ImportResult
+          setSieImportResults(prev => [...prev, result])
         }
       }
 

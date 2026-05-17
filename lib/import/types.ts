@@ -296,6 +296,11 @@ export interface ImportResult {
 
   // Structured details for UI (populated alongside warnings for backwards compat)
   details?: ImportResultDetails
+
+  // If this import replaced a prior completed import for the same fiscal year
+  // (Fortnox re-sync flow), the prior import's id and the count of journal
+  // entries that were cancelled as a result.
+  replacedPriorImport?: { importId: string; cancelledEntries: number } | null
 }
 
 /**

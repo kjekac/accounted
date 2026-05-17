@@ -191,23 +191,41 @@ export async function replaceSIEImport(
 }
 
 /**
- * Clean up stale pending/failed import records for a given file hash.
- * Prevents UNIQUE constraint conflicts when re-importing after a failure.
+ * Clean up orphan in-flight import records for a given file hash.
+ *
+ * Targets rows in status='pending' — left behind when a prior import
+ * crashed (or short-circuited at checkDuplicatePeriodImport) before
+ * reaching finalizeImportRecord. They hold the slot in the partial
+ * unique index `sie_imports_company_id_file_hash_active_idx`, so a
+ * retry would fail with a constraint violation.
+ *
+ * Five-minute age gate protects an in-flight import in another tab/
+ * session: createPendingImportRecord → ... → finalizeImportRecord can
+ * take tens of seconds for large SIE files. Without the gate, a
+ * concurrent retry of the same file would delete the live pending row
+ * mid-flight and the original session's finalize would silently no-op.
+ * Five minutes is long enough for any normal interactive import yet
+ * short enough that legitimate retries after a crash succeed.
+ *
+ * The 'mapped' status is defined in the type but never written by any
+ * code path, so we don't include it. 'failed' and 'replaced' rows are
+ * allowed by the partial index (excluded from its predicate), so they
+ * stay in place for the audit trail.
  */
 async function cleanupStaleImportRecords(
   supabase: SupabaseClient,
   companyId: string,
   fileHash: string
 ): Promise<void> {
-  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()
 
   await supabase
     .from('sie_imports')
     .delete()
     .eq('company_id', companyId)
     .eq('file_hash', fileHash)
-    .in('status', ['pending', 'failed'])
-    .lt('created_at', oneHourAgo)
+    .eq('status', 'pending')
+    .lt('created_at', fiveMinutesAgo)
 }
 
 /**
@@ -1377,7 +1395,22 @@ async function createPendingImportRecord(
     .single()
 
   if (error || !data) {
-    throw new Error(`Failed to create pending import record: ${error?.message}`)
+    // PG error 23505 (unique_violation) on the partial index means another
+    // active row exists for the same (company_id, file_hash). Surface the
+    // recovery path in Swedish instead of leaking the raw Postgres message.
+    const pgCode = (error as { code?: string } | null | undefined)?.code
+    const pgMessage = error?.message ?? ''
+    const hitsActiveIdx =
+      pgCode === '23505' &&
+      pgMessage.includes('sie_imports_company_id_file_hash_active_idx')
+
+    if (hitsActiveIdx) {
+      throw new Error(
+        'En tidigare SIE-import för samma fil finns redan i gnubok. Öppna importhistoriken och välj "Ersätt import" på den befintliga raden, eller använd Fortnox-synkningen för att hämta uppdaterad data automatiskt.'
+      )
+    }
+
+    throw new Error(`Failed to create pending import record: ${pgMessage}`)
   }
 
   return data.id
@@ -1490,6 +1523,19 @@ export async function loadMappings(supabase: SupabaseClient, companyId: string):
 
 /**
  * Execute the full SIE import
+ *
+ * `onExistingPeriod` controls how a prior completed import that overlaps
+ * the new SIE's fiscal year is handled:
+ *   - 'block' (default): refuse with a Swedish error. Used by the manual
+ *     upload route in app/api/import/sie. Preserves prior behavior.
+ *   - 'replace': automatically call replaceSIEImport on the prior row
+ *     (marks it 'replaced', cancels its imported journal entries) and
+ *     proceed. Used by the Fortnox re-sync flow so the user can pull
+ *     updated data from Fortnox without manual cleanup.
+ *
+ * Replace only cancels journal entries with source_type='import' — entries
+ * the user created natively in gnubok (categorized transactions, invoices,
+ * etc.) are left alone. See the replace_sie_import RPC.
  */
 export async function executeSIEImport(
   supabase: SupabaseClient,
@@ -1504,6 +1550,7 @@ export async function executeSIEImport(
     importOpeningBalances: boolean
     importTransactions: boolean
     voucherSeries?: string
+    onExistingPeriod?: 'block' | 'replace'
   }
 ): Promise<ImportResult> {
   const result: ImportResult = {
@@ -1515,7 +1562,10 @@ export async function executeSIEImport(
     journalEntryIds: [],
     errors: [],
     warnings: [],
+    replacedPriorImport: null,
   }
+
+  const onExistingPeriod = options.onExistingPeriod ?? 'block'
 
   try {
     // Validate all accounts are mapped
@@ -1527,13 +1577,66 @@ export async function executeSIEImport(
       return result
     }
 
-    // Check for duplicate import (only completed imports count as duplicates)
-    const duplicate = await checkDuplicateImport(supabase, companyId, options.fileContent)
-    if (duplicate) {
-      result.errors.push(
-        `This file has already been imported on ${duplicate.imported_at ? new Date(duplicate.imported_at).toLocaleDateString('sv-SE') : 'okänt datum'}`
-      )
-      return result
+    // Replace mode: if a prior completed import overlaps the new SIE's fiscal
+    // year, mark it 'replaced' (and cancel its imported entries) before we
+    // try to insert. Done before checkDuplicateImport / checkDuplicatePeriodImport
+    // since both of those would otherwise reject the replace flow.
+    if (onExistingPeriod === 'replace') {
+      const fyStart = parsed.stats.fiscalYearStart
+      const fyEnd = parsed.stats.fiscalYearEnd
+      if (fyStart && fyEnd) {
+        const priorPeriodImport = await checkDuplicatePeriodImport(
+          supabase, companyId, fyStart, fyEnd
+        )
+        if (priorPeriodImport) {
+          const replaceResult = await replaceSIEImport(
+            supabase, companyId, priorPeriodImport.id
+          )
+          if (!replaceResult.success) {
+            result.errors.push(
+              replaceResult.error ?? 'Kunde inte ersätta tidigare SIE-import'
+            )
+            return result
+          }
+          result.replacedPriorImport = {
+            importId: priorPeriodImport.id,
+            cancelledEntries: replaceResult.cancelledEntries,
+          }
+
+          // The replace_sie_import RPC cancelled the prior import's opening
+          // balance entry, but the fiscal_periods row still flags
+          // opening_balances_set=true and points opening_balance_entry_id at
+          // the now-cancelled row. Without clearing those, the IB import
+          // below would skip ("Ingående balanser finns redan...") and the
+          // new IB would be lost. Only reset when the cleared entry was the
+          // prior import's IB — if the period's IB came from somewhere else
+          // (manual entry, year-end carryover), we must not touch it.
+          if (priorPeriodImport.fiscal_period_id && priorPeriodImport.opening_balance_entry_id) {
+            await supabase
+              .from('fiscal_periods')
+              .update({
+                opening_balances_set: false,
+                opening_balance_entry_id: null,
+              })
+              .eq('id', priorPeriodImport.fiscal_period_id)
+              .eq('company_id', companyId)
+              .eq('opening_balance_entry_id', priorPeriodImport.opening_balance_entry_id)
+          }
+        }
+      }
+    }
+
+    // Block mode (default): the hash and period checks reject duplicates with
+    // graceful Swedish errors. Skipped in replace mode because we've already
+    // resolved any prior import above.
+    if (onExistingPeriod === 'block') {
+      const duplicate = await checkDuplicateImport(supabase, companyId, options.fileContent)
+      if (duplicate) {
+        result.errors.push(
+          `This file has already been imported on ${duplicate.imported_at ? new Date(duplicate.imported_at).toLocaleDateString('sv-SE') : 'okänt datum'}`
+        )
+        return result
+      }
     }
 
     // Create pending import record early — ensures tracking even if later steps fail
@@ -1628,15 +1731,19 @@ export async function executeSIEImport(
       return result
     }
 
-    // Safety net: reject if a completed import already exists for this period
-    const periodDuplicate = await checkDuplicatePeriodImport(
-      supabase, companyId, fiscalYearStart, fiscalYearEnd
-    )
-    if (periodDuplicate) {
-      result.errors.push(
-        `En SIE-import för ett överlappande räkenskapsår (${periodDuplicate.fiscal_year_start} – ${periodDuplicate.fiscal_year_end}) finns redan`
+    // Safety net: reject if a completed import already exists for this period.
+    // Skipped in replace mode — any overlapping prior import was already
+    // marked 'replaced' at the top of executeSIEImport.
+    if (onExistingPeriod === 'block') {
+      const periodDuplicate = await checkDuplicatePeriodImport(
+        supabase, companyId, fiscalYearStart, fiscalYearEnd
       )
-      return result
+      if (periodDuplicate) {
+        result.errors.push(
+          `En SIE-import för ett överlappande räkenskapsår (${periodDuplicate.fiscal_year_start} – ${periodDuplicate.fiscal_year_end}) finns redan`
+        )
+        return result
+      }
     }
 
     if (options.createFiscalPeriod) {

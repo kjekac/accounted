@@ -17,7 +17,7 @@ import { mapCompanyInfo } from './lib/entity-mapper'
 import { executeMigration } from './lib/migration-orchestrator'
 import type { ArcimProvider } from './types'
 import { ARCIM_PROVIDERS } from './types'
-import { parseSIEFile, validateSIEFile, calculateFileHash } from '@/lib/import/sie-parser'
+import { parseSIEFile, validateSIEFile } from '@/lib/import/sie-parser'
 import { suggestMappings, getMappingStats, isSystemAccount } from '@/lib/import/account-mapper'
 import { loadMappings, generateImportPreview, executeSIEImport, saveMappings } from '@/lib/import/sie-import'
 import { BAS_REFERENCE, getBASReference } from '@/lib/bookkeeping/bas-reference'
@@ -724,28 +724,57 @@ export const arcimMigrationExtension: Extension = {
 
           const preview = generateImportPreview(parsed, mappings)
 
-          // Check each file's hash against existing imports
-          const fileStatuses: { fiscalYear: number; rawContent: string; alreadyImported: boolean; importedAt: string | null }[] = []
+          // Detect prior imports by *fiscal period overlap*, not file hash.
+          // Fortnox embeds the export-time #GEN date in every SIE export so
+          // the hash always changes between syncs; only the period stays
+          // stable. A re-sync replaces the prior import for the same period.
+          const fileStatuses: {
+            fiscalYear: number
+            rawContent: string
+            previousImport: {
+              importedAt: string | null
+              fiscalYearStart: string | null
+              fiscalYearEnd: string | null
+            } | null
+          }[] = []
           for (const file of sieFiles) {
-            const fileHash = await calculateFileHash(file.rawContent)
-            const { data: existingImport } = await supabase
-              .from('sie_imports')
-              .select('imported_at')
-              .eq('company_id', companyId)
-              .eq('file_hash', fileHash)
-              .eq('status', 'completed')
-              .maybeSingle()
+            const fileParsed = parseSIEFile(file.rawContent)
+            const fyStart = fileParsed.stats.fiscalYearStart
+            const fyEnd = fileParsed.stats.fiscalYearEnd
+
+            let priorImport: {
+              imported_at: string | null
+              fiscal_year_start: string | null
+              fiscal_year_end: string | null
+            } | null = null
+
+            if (fyStart && fyEnd) {
+              const { data } = await supabase
+                .from('sie_imports')
+                .select('imported_at, fiscal_year_start, fiscal_year_end')
+                .eq('company_id', companyId)
+                .eq('status', 'completed')
+                .lte('fiscal_year_start', fyEnd)
+                .gte('fiscal_year_end', fyStart)
+                .limit(1)
+                .maybeSingle()
+              priorImport = data
+            }
 
             fileStatuses.push({
               fiscalYear: file.fiscalYear,
               rawContent: file.rawContent,
-              alreadyImported: !!existingImport,
-              importedAt: existingImport?.imported_at ?? null,
+              previousImport: priorImport
+                ? {
+                    importedAt: priorImport.imported_at,
+                    fiscalYearStart: priorImport.fiscal_year_start,
+                    fiscalYearEnd: priorImport.fiscal_year_end,
+                  }
+                : null,
             })
           }
 
-          const allImported = fileStatuses.every(f => f.alreadyImported)
-          const newFiles = fileStatuses.filter(f => !f.alreadyImported)
+          const replacedFileCount = fileStatuses.filter(f => f.previousImport).length
 
           return NextResponse.json({
             parsed,
@@ -756,11 +785,15 @@ export const arcimMigrationExtension: Extension = {
             rawContent: fileStatuses.map(f => f.rawContent),
             fileStatuses: fileStatuses.map(f => ({
               fiscalYear: f.fiscalYear,
-              alreadyImported: f.alreadyImported,
-              importedAt: f.importedAt,
+              previousImport: f.previousImport,
+              // Back-compat for older wizard builds: an `alreadyImported`
+              // boolean. The new wizard reads `previousImport` directly.
+              alreadyImported: !!f.previousImport,
+              importedAt: f.previousImport?.importedAt ?? null,
             })),
-            allImported,
-            newFileCount: newFiles.length,
+            allImported: false,
+            newFileCount: fileStatuses.length - replacedFileCount,
+            replacedFileCount,
             basAccounts: BAS_REFERENCE,
           })
         } catch (error) {
@@ -917,6 +950,12 @@ export const arcimMigrationExtension: Extension = {
             importOpeningBalances: options.importOpeningBalances,
             importTransactions: options.importTransactions,
             voucherSeries: options.voucherSeries,
+            // Fortnox re-sync semantics: a prior completed import for the
+            // same fiscal year is automatically replaced (its imported
+            // entries are cancelled) so the user can pull updated data
+            // without manual cleanup. Manual SIE upload keeps default
+            // 'block' behavior.
+            onExistingPeriod: 'replace',
           })
 
           log.info('SIE import completed:', {
