@@ -22,11 +22,13 @@ export interface AccrualProposal {
   amount: number
   /** Final voucher lines if the user accepts. Already balanced. */
   lines: CreateJournalEntryLineInput[]
-  /** Date the entry should be reversed on (typically Jan 1 of next FY).
-   *  Phase 4 ships this as metadata; the actual auto-reversal cron is
-   *  follow-up infra. UI surfaces the date so users know to reverse manually
-   *  in the meantime. */
-  reverses_on: string
+  /** Date the entry should be reversed on (typically Jan 1 of next FY), or
+   *  null for accruals that intentionally do NOT reverse (e.g. semesterlöne-
+   *  skuld carries forward — see proposeVacationLiabilityChange). Phase 4
+   *  ships this as metadata; the actual auto-reversal cron is follow-up
+   *  infra. Using null instead of an empty string keeps the future cron's
+   *  filter (`reverses_on IS NOT NULL`) unambiguous. */
+  reverses_on: string | null
   /** Soft warnings the UI surfaces beside the card. Never blockers. */
   warnings: string[]
   /** Calculator-specific breakdown for the "Visa beräkning" panel. */

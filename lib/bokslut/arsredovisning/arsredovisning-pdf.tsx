@@ -138,8 +138,8 @@ export function ArsredovisningPDF({ data }: { data: ArsredovisningData }) {
           </Text>
           <Text style={styles.paragraph}>{data.company.name}</Text>
           <Text style={styles.paragraph}>Organisationsnummer: {data.company.org_number}</Text>
-          {data.company.sate && (
-            <Text style={styles.paragraph}>Säte: {data.company.sate}</Text>
+          {data.company.city && (
+            <Text style={styles.paragraph}>Säte: {data.company.city}</Text>
           )}
         </View>
       </Page>
@@ -265,7 +265,7 @@ export function ArsredovisningPDF({ data }: { data: ArsredovisningData }) {
         <PageChrome data={data} pageLabel="Underskrifter" />
         <Text style={styles.sectionTitle}>Underskrifter</Text>
         <Text style={styles.paragraph}>
-          {data.company.sate ? `${data.company.sate}, ` : ''}
+          {data.company.city ? `${data.company.city}, ` : ''}
           {data.fiscal_period.period_end}
         </Text>
         {(data.signatures.length > 0
@@ -282,6 +282,55 @@ export function ArsredovisningPDF({ data }: { data: ArsredovisningData }) {
             <Text style={{ width: 120 }}>{sig.role}</Text>
           </View>
         ))}
+      </Page>
+
+      {/*
+        Fastställelseintyg — required by ÅRL 8 kap 3 § for Bolagsverket
+        filing. The intyg confirms that the income statement and balance
+        sheet have been adopted at the AGM (årsstämma) and reports the
+        AGM's resolution on resultatdisposition. Without this page the
+        document cannot be filed as-is — Bolagsverket rejects submissions
+        that lack the intyg.
+
+        Signer label is "Styrelseledamot (närvarande vid stämman)" per
+        ÅRL 8:3 → 6:6-7 §§ — a VD who is not also a styrelseledamot cannot
+        sign the fastställelseintyg. Conflating the two roles ("VD") would
+        render the certificate defective.
+
+        Body refers to the AGM's RESOLUTION (stämmobeslut), not the board's
+        proposal — the board proposes in förvaltningsberättelsen but the
+        AGM votes, and it is the vote that must be certified.
+      */}
+      <Page size="A4" style={styles.page}>
+        <PageChrome data={data} pageLabel="Fastställelseintyg" />
+        <Text style={styles.sectionTitle}>Fastställelseintyg</Text>
+        <Text style={styles.paragraph}>
+          Undertecknad styrelseledamot, närvarande vid årsstämman, intygar härmed
+          att resultaträkningen och balansräkningen har fastställts på årsstämma
+          den {data.forvaltningsberattelse.agm_date ?? '____________________'} och
+          att årsstämman beslutade om disposition av bolagets resultat i enlighet
+          med vad som anges nedan.
+        </Text>
+        <Text style={styles.paragraph}>
+          Jag intygar också att årsredovisningen ger en rättvisande bild av
+          företagets ställning och resultat samt att förvaltningsberättelsen ger
+          en rättvisande översikt över utvecklingen av företagets verksamhet,
+          ställning och resultat.
+        </Text>
+        <Text style={styles.sectionTitle}>Stämmans beslut om resultatdisposition</Text>
+        <Text style={styles.paragraph}>
+          {data.forvaltningsberattelse.resultatdisposition}
+        </Text>
+        <View style={styles.signatureLine}>
+          <View style={styles.signatureSlot}>
+            <Text> </Text>
+          </View>
+          <Text style={{ width: 240 }}>Styrelseledamot (närvarande vid stämman)</Text>
+        </View>
+        <Text style={[styles.paragraph, { marginTop: 30, fontSize: 9, color: '#666' }]}>
+          {data.company.city ? `${data.company.city}, ` : ''}
+          datum: {data.forvaltningsberattelse.agm_date ?? '____________________'}
+        </Text>
       </Page>
     </Document>
   )

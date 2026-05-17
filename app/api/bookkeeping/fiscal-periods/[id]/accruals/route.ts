@@ -82,7 +82,7 @@ export const POST = withRouteContext(
         return errorResponseFromCode('PERIOD_LOCKED', log, { requestId })
       }
 
-      const created: { kind: string; entry: JournalEntry; reverses_on: string }[] = []
+      const created: { kind: string; entry: JournalEntry; reverses_on: string | null }[] = []
       const skipped: { kind: string; existing_entry_id: string; reason: string }[] = []
 
       for (const item of validation.data.items) {

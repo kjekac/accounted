@@ -49,7 +49,9 @@ export interface ArsredovisningData {
   company: {
     name: string
     org_number: string
-    sate: string | null
+    /** Företagets säte (Bolagsverket-registered registered office city).
+     *  Used in the underskrifter "Stad, datum" line and the fastställelseintyg. */
+    city: string | null
   }
   fiscal_period: {
     id: string
@@ -69,6 +71,10 @@ export interface ArsredovisningData {
     egen_kapital_changes: EgenKapitalRow[]
     /** Styrelsens förslag till resultatdisposition (manual input). */
     resultatdisposition: string
+    /** ISO date of the årsstämma where the årsredovisning was adopted.
+     *  Populates the fastställelseintyg date blank. Null means "not yet
+     *  recorded" — PDF then leaves the blank. */
+    agm_date: string | null
   }
   resultatrakning: IncomeStatementLine[]
   balansrakning: {
@@ -84,4 +90,9 @@ export interface ArsredovisningData {
     name: string
     signed_at: string | null
   }[]
+  /** Pre-download blockers / warnings the UI surfaces so the user knows the
+   *  PDF is not yet Bolagsverket-fileable as-is. Examples: aktiekapital
+   *  uppgifter saknas, AGM-datum saknas, K3 entity. Never an error — the
+   *  user can still download to iterate. */
+  warnings: string[]
 }

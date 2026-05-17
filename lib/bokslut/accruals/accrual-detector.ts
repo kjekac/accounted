@@ -113,9 +113,10 @@ export async function proposeVacationLiabilityChange(
       'Justering av 2920 mot 7090 plus 31,42 % sociala avgifter på 2940 mot 7519. Saldot på 2920 rullas vidare till nästa år (ingen vändning).',
     amount: totalAmount,
     lines,
-    // Empty string = no reversal. UI / commit handler treats this differently
-    // from the periodisering case (which has a real reverses_on date).
-    reverses_on: '',
+    // null (not '') = no reversal. The future accrual-reversal cron will
+    // filter `reverses_on IS NOT NULL` and an empty string would silently
+    // match that.
+    reverses_on: null,
     warnings: [],
     computation: {
       current_2920: currentLiability,
