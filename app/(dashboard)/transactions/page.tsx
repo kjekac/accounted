@@ -699,7 +699,7 @@ export default function TransactionsPage() {
     }
   }
 
-  async function handleConfirmInvoiceMatch() {
+  async function handleConfirmInvoiceMatch(opts?: { force?: boolean; expected_journal_entry_id?: string }) {
     if (!selectedTransaction) return
     const isSupplier = !!selectedTransaction.potential_supplier_invoice
     const isCustomer = !!selectedTransaction.potential_invoice
@@ -711,9 +711,19 @@ export default function TransactionsPage() {
       const url = isSupplier
         ? `/api/transactions/${selectedTransaction.id}/match-supplier-invoice`
         : `/api/transactions/${selectedTransaction.id}/match-invoice`
-      const body = isSupplier
+      const body: Record<string, unknown> = isSupplier
         ? { supplier_invoice_id: selectedTransaction.potential_supplier_invoice!.id }
         : { invoice_id: selectedTransaction.potential_invoice!.id }
+      if (!isSupplier && opts?.force) {
+        body.force = true
+        // Bind the override to the candidate the user saw in the dialog.
+        // The server re-detects the candidate and rejects the bypass if
+        // the id doesn't match, so an empty value here surfaces as a
+        // clean validation error instead of silently widening the guard.
+        if (opts.expected_journal_entry_id) {
+          body.expected_journal_entry_id = opts.expected_journal_entry_id
+        }
+      }
 
       const response = await fetch(url, {
         method: 'POST',
@@ -773,6 +783,77 @@ export default function TransactionsPage() {
       }, 350)
     } catch {
       toast({ title: 'Matchning misslyckades', description: 'Transaktionen kunde inte matchas. Försök igen.', variant: 'destructive' })
+      setIsConfirmingMatch(false)
+    }
+  }
+
+  async function handleLinkToExistingVoucher(journalEntryId: string) {
+    if (!selectedTransaction) return
+    const invoiceId = selectedTransaction.potential_invoice?.id ?? null
+    setIsConfirmingMatch(true)
+    try {
+      const response = await fetch(
+        `/api/transactions/${selectedTransaction.id}/link-journal-entry`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            journal_entry_id: journalEntryId,
+            ...(invoiceId ? { invoice_id: invoiceId } : {}),
+          }),
+        },
+      )
+      const result = await response.json()
+      if (!response.ok) {
+        toast({
+          title: 'Kunde inte koppla till befintlig verifikation',
+          description: getErrorMessage(result, { context: 'transaction' }),
+          variant: 'destructive',
+        })
+        setIsConfirmingMatch(false)
+        return
+      }
+
+      const voucherLabel = (result as { voucher_label?: string }).voucher_label ?? ''
+      toast({
+        title: 'Bankhändelsen kopplad',
+        description: voucherLabel
+          ? `Kopplad till verifikation ${voucherLabel}. Ingen ny bokföring skapad.`
+          : 'Ingen ny bokföring skapad.',
+      })
+      setMatchDialogOpen(false)
+
+      // Animate out + update local state, same pattern as handleConfirmInvoiceMatch.
+      setExitingIds((prev) => new Set(prev).add(selectedTransaction.id))
+      setTimeout(() => {
+        setTransactions((prev) =>
+          prev.map((t) =>
+            t.id === selectedTransaction.id
+              ? {
+                  ...t,
+                  invoice_id: invoiceId,
+                  potential_invoice_id: null,
+                  potential_invoice: undefined,
+                  is_business: true,
+                  journal_entry_id: journalEntryId,
+                }
+              : t,
+          ),
+        )
+        setExitingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(selectedTransaction.id)
+          return next
+        })
+        setSelectedTransaction(null)
+        setIsConfirmingMatch(false)
+      }, 350)
+    } catch {
+      toast({
+        title: 'Koppling misslyckades',
+        description: 'Verifikationen kunde inte kopplas. Försök igen.',
+        variant: 'destructive',
+      })
       setIsConfirmingMatch(false)
     }
   }
@@ -1386,6 +1467,7 @@ export default function TransactionsPage() {
         transaction={selectedTransaction}
         isConfirming={isConfirmingMatch}
         onConfirm={handleConfirmInvoiceMatch}
+        onLinkToExisting={handleLinkToExistingVoucher}
       />
 
       <TransactionBookingDialog

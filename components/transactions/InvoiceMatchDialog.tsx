@@ -1,17 +1,29 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { CheckCircle2, AlertTriangle } from 'lucide-react'
 import type { TransactionWithInvoice } from './transaction-types'
 
+interface DuplicateCandidate {
+  journal_entry_id: string
+  voucher_label: string
+  entry_date: string
+  description: string | null
+  amount: number
+  bank_account_number: string
+  reason: 'exact_amount_same_date' | 'exact_amount_within_window'
+}
+
 interface InvoiceMatchDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   transaction: TransactionWithInvoice | null
   isConfirming: boolean
-  onConfirm: () => void
+  onConfirm: (opts?: { force?: boolean; expected_journal_entry_id?: string }) => void
+  onLinkToExisting?: (journalEntryId: string) => void
 }
 
 export default function InvoiceMatchDialog({
@@ -20,9 +32,43 @@ export default function InvoiceMatchDialog({
   transaction,
   isConfirming,
   onConfirm,
+  onLinkToExisting,
 }: InvoiceMatchDialogProps) {
   const isSupplierInvoice = !!transaction?.potential_supplier_invoice
   const isCustomerInvoice = !!transaction?.potential_invoice
+  const transactionId = transaction?.id ?? null
+
+  // Customer-side only: pre-flight check for a manual verifikation that
+  // already books this receipt. Supplier-side duplicate-payment surfacing
+  // is handled by the mark-paid guard on the supplier-invoice side; here
+  // we only need the customer flow for the reported issue.
+  const [candidate, setCandidate] = useState<DuplicateCandidate | null>(null)
+  const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false)
+
+  useEffect(() => {
+    if (!open || !transactionId || !isCustomerInvoice || !onLinkToExisting) {
+      setCandidate(null)
+      return
+    }
+    let cancelled = false
+    async function check() {
+      setIsCheckingDuplicate(true)
+      try {
+        const res = await fetch(`/api/transactions/${transactionId}/duplicate-payment-check`)
+        if (!res.ok) return
+        const data = (await res.json()) as { candidate: DuplicateCandidate | null }
+        if (!cancelled) setCandidate(data.candidate ?? null)
+      } catch {
+        // Fail-open: hide the warning panel; the server still enforces the guard.
+      } finally {
+        if (!cancelled) setIsCheckingDuplicate(false)
+      }
+    }
+    check()
+    return () => {
+      cancelled = true
+    }
+  }, [open, transactionId, isCustomerInvoice, onLinkToExisting])
 
   // The invoice candidate the dialog is about, normalized to a single shape.
   // Supplier invoices show the negative-amount paid-out match; customer
@@ -43,6 +89,66 @@ export default function InvoiceMatchDialog({
 
         {transaction && (isCustomerInvoice || isSupplierInvoice) && (
           <div className="space-y-4">
+            {/* Duplicate-payment warning — customer-side only, only when a candidate exists */}
+            {candidate && isCustomerInvoice && (
+              <div className="rounded-lg border border-warning/40 bg-warning/10 p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5 text-warning-foreground" />
+                  <div className="text-sm space-y-1">
+                    <p className="font-medium text-warning-foreground">Möjlig dubblettbokning</p>
+                    <p className="text-muted-foreground">
+                      Det finns redan en bokförd verifikation <span className="font-mono">{candidate.voucher_label}</span> på samma belopp ({formatCurrency(candidate.amount, transaction.currency)}) {candidate.reason === 'exact_amount_same_date' ? 'på samma datum' : `inom ±7 dagar (${formatDate(candidate.entry_date)})`}.
+                      Har du redan bokfört denna betalning manuellt?
+                    </p>
+                    {candidate.description && (
+                      // Truncate to a short head before render. The
+                      // description is free-text and may carry a customer
+                      // name or note that's not strictly required to
+                      // identify the verifikation (voucher_label + amount +
+                      // date already do that). Cap length to keep the
+                      // dialog tight and limit incidental PII surfacing
+                      // in the rendered DOM. GDPR Art.5(1)(c).
+                      <p className="text-xs text-muted-foreground truncate">
+                        {candidate.description.length > 80
+                          ? `${candidate.description.slice(0, 80).trimEnd()}…`
+                          : candidate.description}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                {onLinkToExisting && (
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={() => onLinkToExisting(candidate.journal_entry_id)}
+                      disabled={isConfirming}
+                      className="sm:flex-1"
+                    >
+                      Koppla till {candidate.voucher_label}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        onConfirm({
+                          force: true,
+                          // Echo the candidate the user reviewed back to
+                          // the server so the bypass is bound to this
+                          // specific duplicate. See match-invoice route.
+                          expected_journal_entry_id: candidate.journal_entry_id,
+                        })
+                      }
+                      disabled={isConfirming}
+                      className="sm:flex-1"
+                    >
+                      Skapa ny verifikation ändå
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Transaction details */}
             <div className="rounded-lg border p-4 space-y-2">
               <p className="text-sm font-medium text-muted-foreground">Transaktion</p>
@@ -156,7 +262,7 @@ export default function InvoiceMatchDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isConfirming}>
             Avbryt
           </Button>
-          <Button onClick={onConfirm} disabled={isConfirming}>
+          <Button onClick={() => onConfirm()} disabled={isConfirming || isCheckingDuplicate}>
             {isConfirming ? 'Bekräftar...' : 'Bekräfta matchning'}
           </Button>
         </DialogFooter>

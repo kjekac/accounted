@@ -21,6 +21,8 @@ import {
   Trash2,
 } from 'lucide-react'
 import { TransactionAttachmentIndicator } from './TransactionAttachmentIndicator'
+import CorrectionAffordance from '@/components/bookkeeping/CorrectionAffordance'
+import { useCanWrite } from '@/lib/hooks/use-can-write'
 import type { TransactionWithInvoice, HistoryFilter } from './transaction-types'
 import type {
   SkattekontoTransactionWithSuggestion,
@@ -216,6 +218,11 @@ function BankHistoryRow({
   onOpenCategoryDialog: (transaction: TransactionWithInvoice) => void
   onDelete?: (id: string) => void
 }) {
+  // Viewers must not see write affordances. CorrectionAffordance opens a
+  // dialog that stages a storno + correction journal entry; the API path
+  // already 403s for viewers but rendering the trigger creates a confusing
+  // dead end. Mirrors the canWrite gate on the invoice detail page.
+  const { canWrite } = useCanWrite()
   return (
     <Card data-tx-id={transaction.id} className="hover:border-primary/50 transition-colors">
       <CardContent className="py-4">
@@ -272,6 +279,26 @@ function BankHistoryRow({
                       <Check className="h-3 w-3 mr-1" />
                       Bokförd
                     </Badge>
+                    <Link
+                      href={`/bookkeeping/${transaction.journal_entry_id}`}
+                      className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+                    >
+                      Visa verifikation
+                    </Link>
+                    {canWrite && (
+                      <CorrectionAffordance journalEntryId={transaction.journal_entry_id}>
+                        {({ open, isLoading }) => (
+                          <button
+                            type="button"
+                            onClick={open}
+                            disabled={isLoading}
+                            className="text-xs text-muted-foreground hover:text-foreground hover:underline disabled:opacity-50"
+                          >
+                            {isLoading ? 'Hämtar…' : 'Skapa ändringsverifikation'}
+                          </button>
+                        )}
+                      </CorrectionAffordance>
+                    )}
                   </>
                 ) : (
                   <>

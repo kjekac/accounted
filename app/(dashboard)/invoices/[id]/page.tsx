@@ -33,6 +33,7 @@ import {
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import PaymentBookingDialog from '@/components/invoices/PaymentBookingDialog'
 import SendInvoiceDialog from '@/components/invoices/SendInvoiceDialog'
+import CorrectionAffordance from '@/components/bookkeeping/CorrectionAffordance'
 import {
   Dialog,
   DialogContent,
@@ -63,6 +64,10 @@ interface InvoiceWithRelations extends Invoice {
   customer: Customer
   items: InvoiceItem[]
   sent_at?: string
+  // Optional reference to the issuance verifikation. Populated by the
+  // backend when the invoice flow auto-books an entry on send; absent on
+  // older invoices and on companies where issuance is not auto-booked.
+  journal_entry_id?: string | null
 }
 
 export default function InvoiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -689,6 +694,39 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                     ))}
                   </div>
                 </div>
+              )}
+              {invoice.journal_entry_id && (
+                <>
+                  <Separator />
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground text-sm">Bokföring</span>
+                    <div className="flex flex-col items-end gap-1.5">
+                      <Link
+                        href={`/bookkeeping/${invoice.journal_entry_id}`}
+                        className="text-sm hover:underline tabular-nums"
+                      >
+                        Visa verifikation
+                      </Link>
+                      {canWrite && (
+                        <CorrectionAffordance
+                          journalEntryId={invoice.journal_entry_id}
+                          onCorrected={fetchInvoice}
+                        >
+                          {({ open, isLoading }) => (
+                            <button
+                              type="button"
+                              onClick={open}
+                              disabled={isLoading}
+                              className="text-xs text-muted-foreground hover:text-foreground hover:underline disabled:opacity-50"
+                            >
+                              {isLoading ? 'Hämtar…' : 'Något fel? Skapa ändringsverifikation'}
+                            </button>
+                          )}
+                        </CorrectionAffordance>
+                      )}
+                    </div>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>

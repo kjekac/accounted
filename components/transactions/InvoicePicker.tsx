@@ -26,6 +26,11 @@ export default function InvoicePicker({ transaction, onSelect, isProcessing }: I
 
   useEffect(() => {
     if (!company) return
+    // Capture the company id once so the async closure below never
+    // dereferences a `company` that has flipped to null between renders.
+    // The earlier non-null assertions allowed a stale render to query
+    // against an undefined company_id; pinning the value avoids that.
+    const companyId = company.id
     let cancelled = false
     async function load() {
       setIsLoading(true)
@@ -39,14 +44,38 @@ export default function InvoicePicker({ transaction, onSelect, isProcessing }: I
       const { data } = await supabase
         .from('invoices')
         .select('*, customer:customers(*)')
-        .eq('company_id', company!.id)
+        .eq('company_id', companyId)
         .eq('document_type', 'invoice')
         .in('status', ['sent', 'overdue', 'partially_paid'])
         .gt('remaining_amount', 0)
         .order('invoice_date', { ascending: false })
         .limit(200)
       if (cancelled) return
-      setInvoices((data as OpenInvoice[]) || [])
+      const all = (data as OpenInvoice[]) || []
+
+      // Status-leak guard: if an invoice still says 'sent'/'overdue' but
+      // already has a payment voucher attached (manual or system), hide it.
+      // Partially-paid invoices intentionally pass through — they may take
+      // more payments. Mirrors the server-side filter in findMatchingInvoices.
+      const fullIds = all
+        .filter((inv) => inv.status === 'sent' || inv.status === 'overdue')
+        .map((inv) => inv.id)
+      let visible = all
+      if (fullIds.length > 0) {
+        const { data: paid } = await supabase
+          .from('invoice_payments')
+          .select('invoice_id')
+          .eq('company_id', companyId)
+          .in('invoice_id', fullIds)
+          .not('journal_entry_id', 'is', null)
+        if (cancelled) return
+        const paidSet = new Set<string>(
+          ((paid as { invoice_id: string }[] | null) ?? []).map((r) => r.invoice_id),
+        )
+        visible = all.filter((inv) => !paidSet.has(inv.id))
+      }
+
+      setInvoices(visible)
       setIsLoading(false)
     }
     load()

@@ -143,6 +143,7 @@ export async function processOverdueReminders(): Promise<ProcessRemindersResult>
       customer:customers(*)
     `)
     .eq('status', 'sent')
+    .is('credited_invoice_id', null)
     .lte('due_date', cutoffDate.toISOString().split('T')[0])
     .order('due_date', { ascending: true })
 
