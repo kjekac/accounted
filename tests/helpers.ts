@@ -193,6 +193,8 @@ export function makeTransaction(overrides: Partial<Transaction> = {}): Transacti
     document_id: null,
     import_source: null,
     reference: null,
+    counterparty_iban: null,
+    counterparty_account: null,
     notes: null,
     created_at: '2024-06-15T14:30:00Z',
     updated_at: '2024-06-15T14:30:00Z',

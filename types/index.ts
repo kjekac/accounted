@@ -317,6 +317,32 @@ export interface BankAccount {
   balance_updated_at?: string | null
 }
 
+// Cash account — first-class entity for ledger-account routing decisions.
+// Backed by the cash_accounts table; bank_connections.accounts_data remains
+// the source for PSD2 sync metadata + UI display until a follow-up migration
+// drops it 30 days after this PR.
+export type CashAccountSource = 'enable_banking' | 'manual' | 'sie_import'
+
+export interface CashAccount {
+  id: string
+  company_id: string
+  bank_connection_id: string | null
+  external_uid: string | null    // PSD2 StoredAccount.uid
+  iban: string | null
+  bg_pg: string | null
+  name: string | null
+  currency: string                // 3-char ISO; broader than Currency union to
+                                  // tolerate future currencies without DB-driven enum drift
+  ledger_account: string
+  balance: number | null
+  balance_updated_at: string | null
+  enabled: boolean
+  is_primary: boolean
+  source: CashAccountSource
+  created_at: string
+  updated_at: string
+}
+
 // Import source identifiers
 export type ImportSource =
   | 'enable_banking'
@@ -383,6 +409,13 @@ export interface Transaction {
   // Import tracking
   import_source: string | null
   reference: string | null  // OCR number, Bankgiro reference
+
+  // Counterparty identification from PSD2 (creditor for outflows, debtor for
+  // inflows). The own-account transfer detector matches `counterparty_iban`
+  // against cash_accounts.iban for the same company. `counterparty_account`
+  // is the BG/PG/BBAN fallback for Swedish domestic transfers without IBAN.
+  counterparty_iban: string | null
+  counterparty_account: string | null
 
   // Notes
   notes: string | null
@@ -2507,6 +2540,18 @@ export interface RawTransaction {
   reference?: string | null
   bank_connection_id?: string | null
   import_source?: string
+  /**
+   * Counterparty IBAN from PSD2 (creditor for outflows, debtor for inflows).
+   * Used by the own-account transfer detector — when this matches another
+   * cash_accounts row for the same company, both legs auto-book as a transfer.
+   */
+  counterparty_iban?: string | null
+  /**
+   * Bankgiro / Plusgiro / BBAN fallback when no IBAN is available (typical
+   * for Swedish domestic transfers). Kept distinct from IBAN so matching
+   * doesn't accidentally collide BG numbers with IBAN strings.
+   */
+  counterparty_account?: string | null
 }
 
 /** Options for the transaction ingestion pipeline */

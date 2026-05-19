@@ -630,6 +630,12 @@ export const BankUnlinkSchema = z.object({
 export const RunReconciliationSchema = z.object({
   date_from: isoDate.optional(),
   date_to: isoDate.optional(),
+  // BAS settlement account to reconcile against (e.g. '1930', '1932'). Defaults
+  // to '1930' server-side so existing clients stay correct.
+  account_number: z
+    .string()
+    .regex(/^[0-9]{4}$/, 'Kontonummer måste vara 4 siffror')
+    .optional(),
   dry_run: z.boolean().optional(),
 })
 

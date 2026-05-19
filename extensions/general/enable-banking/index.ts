@@ -627,6 +627,34 @@ export const enableBankingExtension: Extension = {
           return NextResponse.json({ error: 'Kunde inte spara kontoval' }, { status: 500 })
         }
 
+        // Mirror the user's selection into cash_accounts so routing decisions
+        // and reconciliation pick up the new enabled state + ledger mapping
+        // without reading the JSONB column.
+        {
+          const { upsertFromPsd2 } = await import('@/lib/cash-accounts/service')
+          for (const a of updatedAccounts) {
+            try {
+              await upsertFromPsd2(supabase, companyId, {
+                bank_connection_id: connection.id,
+                external_uid: a.uid,
+                currency: a.currency,
+                ledger_account: a.ledger_account ?? '1930',
+                iban: a.iban ?? null,
+                name: a.name ?? null,
+                balance: a.balance ?? null,
+                balance_updated_at: a.balance_updated_at ?? null,
+                enabled: a.enabled ?? true,
+              })
+            } catch (cashErr) {
+              log.error('[enable-banking] Failed to mirror cash_account on selection save', {
+                connectionId: connection.id,
+                uid: a.uid,
+                error: cashErr instanceof Error ? cashErr.message : String(cashErr),
+              })
+            }
+          }
+        }
+
         const newStatus = updatePayload.status ?? connection.status
         log.info('[enable-banking] Account selection saved', {
           connectionId: connection.id,

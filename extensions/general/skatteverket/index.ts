@@ -27,6 +27,7 @@ import {
 } from './lib/agi-client'
 import { syncSkattekonto, SKATTEKONTO_BALANCE_SNAPSHOT_KEY, SKATTEKONTO_LAST_SYNCED_AT_KEY } from './lib/skattekonto-sync'
 import { bokforSkattekontoTransaction, SkattekontoBookingError } from './lib/skattekonto-booking'
+import { handleSkattekontoDriftDetected } from './lib/skattekonto-drift-email'
 import {
   findMatchCandidates,
   findMatchSuggestionsBulk,
@@ -1891,6 +1892,13 @@ export const skatteverketExtension: Extension = {
           return handleSkvError(err)
         }
       },
+    },
+  ],
+
+  eventHandlers: [
+    {
+      eventType: 'skattekonto.drift_detected',
+      handler: handleSkattekontoDriftDetected,
     },
   ],
 }

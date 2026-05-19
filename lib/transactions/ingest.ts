@@ -255,6 +255,8 @@ export async function ingestTransactions(
         merchant_name: raw.merchant_name || null,
         reference: raw.reference || null,
         import_source: raw.import_source || null,
+        counterparty_iban: raw.counterparty_iban || null,
+        counterparty_account: raw.counterparty_account || null,
       })
       .select()
       .single()
