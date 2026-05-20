@@ -15,17 +15,17 @@ import { z } from 'zod'
 
 const RegistrationSchema = z.object({
   client_name: z.string().trim().min(1).max(100),
-  // Require https for non-loopback URIs. We reject loopback here because
-  // localhost is already on the built-in allowlist — there's no reason to
-  // register it explicitly.
+  // Reject loopback first (covers http:// too) so the user gets the helpful
+  // "already allowed" message instead of being told to use https for localhost.
+  // Non-loopback URIs must use https.
   redirect_uri: z
     .string()
     .url('redirect_uri must be a valid URL')
-    .refine((u) => u.startsWith('https://'), 'redirect_uri must use https://')
     .refine(
-      (u) => !/^https:\/\/(localhost|127\.0\.0\.1|::1)(:|\/|$)/i.test(u),
-      'localhost is already allowed without registration'
+      (u) => !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|::1)(:|\/|$)/i.test(u),
+      'localhost är redan tillåtet utan registrering'
     )
+    .refine((u) => u.startsWith('https://'), 'redirect_uri måste använda https://')
     .max(500),
 })
 
@@ -60,10 +60,13 @@ export async function POST(request: Request) {
     const json = await request.json()
     body = RegistrationSchema.parse(json)
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Invalid request body' },
-      { status: 400 }
-    )
+    const message =
+      err instanceof z.ZodError
+        ? err.issues[0]?.message ?? 'Ogiltig redirect URI'
+        : err instanceof SyntaxError
+          ? 'Ogiltig JSON i request body'
+          : 'Ogiltig redirect URI'
+    return NextResponse.json({ error: message }, { status: 400 })
   }
 
   const { data, error } = await supabase

@@ -52,6 +52,8 @@ import { InvoicePDF } from '@/lib/invoices/pdf-template'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import { createLogger } from '@/lib/logger'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
+import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/create-supplier'
+import { z } from 'zod'
 import type {
   Transaction,
   TransactionCategory,
@@ -60,6 +62,7 @@ import type {
   Currency,
   Invoice,
   Customer,
+  Supplier,
   PendingOperation,
   CompanySettings,
   InvoiceItem,
@@ -317,6 +320,63 @@ async function commitCreateCustomer(
   await eventBus.emit({ type: 'customer.created', payload: { customer: data as Customer, userId, companyId } })
 
   return { data: { customer_id: data.id } }
+}
+
+async function commitCreateSupplier(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>
+): Promise<ExecutorResult> {
+  // Defense in depth: re-validate the staged params at the commit boundary so a
+  // tampered pending_operations row cannot inject unexpected fields or
+  // malformed payment-routing data into the suppliers table (ASVS V4.5).
+  let validated
+  try {
+    validated = CreateSupplierParamsSchema.parse(params)
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      const issue = err.issues[0]
+      const path = issue?.path?.join('.') ?? 'params'
+      return { error: `Invalid ${path}: ${issue?.message ?? 'validation failed'}`, status: 400 }
+    }
+    throw err
+  }
+
+  const { data, error } = await supabase
+    .from('suppliers')
+    .insert({
+      user_id: userId,
+      company_id: companyId,
+      name: validated.name,
+      supplier_type: validated.supplier_type,
+      email: validated.email ?? null,
+      phone: validated.phone ?? null,
+      org_number: validated.org_number ?? null,
+      vat_number: validated.vat_number ?? null,
+      address_line1: validated.address_line1 ?? null,
+      address_line2: validated.address_line2 ?? null,
+      postal_code: validated.postal_code ?? null,
+      city: validated.city ?? null,
+      country: validated.country ?? 'SE',
+      bankgiro: validated.bankgiro ?? null,
+      plusgiro: validated.plusgiro ?? null,
+      bank_account: validated.bank_account ?? null,
+      iban: validated.iban ?? null,
+      bic: validated.bic ?? null,
+      default_expense_account: validated.default_expense_account ?? null,
+      default_payment_terms: validated.default_payment_terms,
+      default_currency: validated.default_currency ?? 'SEK',
+      notes: validated.notes ?? null,
+    })
+    .select()
+    .single()
+
+  if (error) return { error: error.message, status: 500 }
+
+  await eventBus.emit({ type: 'supplier.created', payload: { supplier: data as Supplier, userId, companyId } })
+
+  return { data: { supplier_id: data.id } }
 }
 
 async function commitCreateTransaction(
@@ -1934,6 +1994,9 @@ export async function commitPendingOperation(
         break
       case 'create_customer':
         result = await commitCreateCustomer(supabase, userId, companyId, pendingOp.params)
+        break
+      case 'create_supplier':
+        result = await commitCreateSupplier(supabase, userId, companyId, pendingOp.params)
         break
       case 'create_invoice':
         result = await commitCreateInvoice(supabase, userId, companyId, pendingOp.params)

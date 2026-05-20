@@ -1414,6 +1414,7 @@ export interface CreateFiscalPeriodInput {
 export type PendingOperationType =
   | 'categorize_transaction'
   | 'create_customer'
+  | 'create_supplier'
   | 'create_invoice'
   | 'mark_invoice_paid'
   | 'send_invoice'

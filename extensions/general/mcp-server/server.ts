@@ -30,6 +30,8 @@ import { dataResources, findResource, parseResourceQuery } from './resources'
 import { prompts, findPrompt } from './prompts'
 import { skills, findSkill, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
 import { getRiskLevel } from '@/lib/pending-operations/risk-tiers'
+import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/create-supplier'
+import { z } from 'zod'
 import {
   checkIdempotencyKey,
   storeIdempotencyResponse,
@@ -2628,6 +2630,141 @@ export const tools: McpTool[] = [
       if (error) throw new Error(`Database error: ${error.message}`)
 
       return { suppliers: data ?? [], count: data?.length ?? 0 }
+    },
+  },
+
+  {
+    name: 'gnubok_create_supplier',
+    description: 'Stage a new supplier (leverantör). Stages for user approval — NOT created until approved in the web app. Use to add a vendor before booking a supplier invoice or matching expenses.',
+    outputSchema: STAGED_OPERATION_SCHEMA,
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', maxLength: 255, description: 'Supplier name' },
+        supplier_type: {
+          type: 'string',
+          enum: ['swedish_business', 'eu_business', 'non_eu_business'],
+          description: 'Supplier type (default swedish_business). eu_business requires vat_number.',
+        },
+        email: { type: 'string', maxLength: 255, format: 'email', description: 'Email address' },
+        phone: { type: 'string', maxLength: 50, description: 'Phone number' },
+        org_number: {
+          type: 'string',
+          maxLength: 20,
+          pattern: '^\\d{6}-?\\d{4}$|^\\d{12}$',
+          description: 'Swedish org number (10 digits with optional hyphen XXXXXX-XXXX, or 12 digits).',
+        },
+        vat_number: {
+          type: 'string',
+          maxLength: 20,
+          description: 'EU VAT number with country prefix (e.g. SE556677778800, DE123456789). Required when supplier_type is eu_business.',
+        },
+        address_line1: { type: 'string', maxLength: 255, description: 'Street address' },
+        address_line2: { type: 'string', maxLength: 255 },
+        postal_code: { type: 'string', maxLength: 20 },
+        city: { type: 'string', maxLength: 100 },
+        country: {
+          type: 'string',
+          maxLength: 2,
+          pattern: '^[A-Za-z]{2}$',
+          description: 'ISO 3166-1 alpha-2 country code (default SE)',
+        },
+        bankgiro: {
+          type: 'string',
+          maxLength: 20,
+          pattern: '^\\d{3,4}-?\\d{4}$',
+          description: 'Swedish Bankgiro number (7-8 digits with valid Luhn check digit).',
+        },
+        plusgiro: {
+          type: 'string',
+          maxLength: 20,
+          pattern: '^\\d{1,7}-?\\d{1}$',
+          description: 'Swedish Plusgiro number (2-8 digits).',
+        },
+        bank_account: { type: 'string', maxLength: 50, description: 'Bank account number' },
+        iban: {
+          type: 'string',
+          maxLength: 34,
+          pattern: '^[A-Z]{2}\\d{2}[A-Z0-9]{11,30}$',
+          description: 'IBAN (ISO 13616). Country code + 2 check digits + alphanumeric.',
+        },
+        bic: {
+          type: 'string',
+          maxLength: 11,
+          pattern: '^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$',
+          description: 'BIC/SWIFT code (8 or 11 chars).',
+        },
+        default_expense_account: {
+          type: 'string',
+          maxLength: 10,
+          pattern: '^[4567]\\d{3}$',
+          description: '4-digit BAS expense account (class 4, 5, 6, or 7). e.g. "5010".',
+        },
+        default_payment_terms: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 365,
+          description: 'Payment terms in days (default 30). Use 0 for due-on-receipt.',
+        },
+        default_currency: {
+          type: 'string',
+          minLength: 3,
+          maxLength: 3,
+          description: 'Default invoice currency, 3-letter ISO code (default SEK).',
+        },
+        notes: { type: 'string', maxLength: 2000 },
+        dry_run: {
+          type: 'boolean',
+          description: 'If true, validate inputs and return the would-be preview without staging or creating. No DB writes, no side-effects.',
+        },
+        idempotency_key: {
+          type: 'string',
+          description: 'Random per-operation UUID. Repeat calls with the same key + same payload return the original response (24h TTL). Different payload → IDEMPOTENCY_KEY_REUSE error.',
+        },
+      },
+      required: ['name'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, userId, supabase, actor) {
+      // Server-side validation (defense in depth): MCP transport already
+      // checks the JSON Schema, but we re-validate with Zod so financial
+      // identifiers (IBAN, BIC, bankgiro Luhn, org_number, VAT format) are
+      // rejected at the ingestion boundary rather than persisted.
+      // Strip MCP control fields before parsing — the strict schema rejects
+      // unknown keys to satisfy ASVS V4.5 field-allow-listing.
+      const { dry_run, idempotency_key, ...supplierArgs } = args
+      let params
+      try {
+        params = CreateSupplierParamsSchema.parse(supplierArgs)
+      } catch (err) {
+        if (err instanceof z.ZodError) {
+          const issue = err.issues[0]
+          const path = issue?.path?.join('.') ?? 'params'
+          throw new Error(`Invalid ${path}: ${issue?.message ?? 'validation failed'}`)
+        }
+        throw err
+      }
+
+      return stagePendingOperation(supabase, companyId, userId, 'create_supplier',
+        `Ny leverantör: ${params.name}`,
+        params,
+        params,
+        actor,
+        {
+          description: 'Once approved, you can book supplier invoices against this supplier with gnubok_create_supplier_invoice_from_inbox using the returned supplier_id.',
+          tool: 'gnubok_create_supplier_invoice_from_inbox',
+        },
+        {
+          dryRun: Boolean(dry_run),
+          idempotencyKey: typeof idempotency_key === 'string' ? idempotency_key : undefined,
+        }
+      )
     },
   },
 
@@ -6821,6 +6958,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
             'Common workflows:',
             '• Categorize transactions: gnubok_list_uncategorized_transactions → gnubok_suggest_categories → gnubok_categorize_transaction (stages) → gnubok_approve_pending_operation (after user confirms in chat). Use gnubok_match_transaction_to_invoice to apply income to a specific invoice.',
             '• Invoicing: gnubok_list_customers (or gnubok_create_customer) → gnubok_create_invoice → gnubok_send_invoice or gnubok_mark_invoice_as_sent → gnubok_mark_invoice_as_paid. Refund via gnubok_credit_invoice.',
+            '• Suppliers: gnubok_list_suppliers (or gnubok_create_supplier) → gnubok_create_supplier_invoice_from_inbox → gnubok_approve_supplier_invoice. Refund via gnubok_credit_supplier_invoice.',
             '• VAT: gnubok_get_vat_report(period_type, year, period). Ruta49 = VAT to pay (positive) or refund (negative).',
             '• Reporting: gnubok_get_trial_balance / _income_statement / _balance_sheet / _kpi_report / _ar_ledger / _supplier_ledger — all default to the most recent fiscal period.',
             '• Year-end: gnubok_lock_period → gnubok_run_year_end → gnubok_set_opening_balances → gnubok_close_period. Each stages for human approval; closing is irreversible per BFL.',

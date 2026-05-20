@@ -190,7 +190,12 @@ export function OAuthClientsPanel() {
           <DialogHeader>
             <DialogTitle>Registrera redirect URI</DialogTitle>
             <DialogDescription>
-              Måste vara en exakt URL som börjar med https://. Den jämförs sedan ord-för-ord mot
+              Bara för egenbyggda MCP-klienter med en publik HTTPS-callback. Lägg{' '}
+              <span className="font-medium">inte</span> till{' '}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">localhost</code>{' '}
+              eller{' '}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">claude.ai</code>{' '}
+              — de fungerar redan utan registrering. URI:n jämförs ord-för-ord mot
               redirect_uri-parametern i OAuth-flödet.
             </DialogDescription>
           </DialogHeader>

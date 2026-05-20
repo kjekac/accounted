@@ -201,6 +201,8 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_export_sie:                      'reports:read',
   gnubok_audit_package:                   'reports:read',
   gnubok_import_sie:                      'bookkeeping:write',
+  // Supplier CRUD
+  gnubok_create_supplier:                 'suppliers:write',
   // Supplier invoice lifecycle
   gnubok_approve_supplier_invoice:        'suppliers:write',
   gnubok_credit_supplier_invoice:         'suppliers:write',
