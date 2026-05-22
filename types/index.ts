@@ -1445,6 +1445,8 @@ export type PendingOperationType =
   // Stream 1 Phase 1: supplier invoice lifecycle
   | 'approve_supplier_invoice'
   | 'credit_supplier_invoice'
+  // Phase 5: convert an OCR'd inbox item to a leverantörsfaktura + registration JE
+  | 'create_supplier_invoice_from_inbox'
   // Stream 1 Phase 1: invoice operations beyond simple create/send
   | 'credit_invoice'
   | 'convert_invoice'

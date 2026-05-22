@@ -5734,7 +5734,7 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_create_voucher',
-    description: 'Stage a manual verifikation with arbitrary balanced lines. Use for capitalization (e.g. 1010), period-end accruals, FX adjustments, and rättelseposter outside categorize_transaction. HIGH risk — always staged, never auto-committed.',
+    description: 'Stage a manual verifikation with arbitrary balanced lines. Use for capitalization (1010), period-end accruals, FX adjustments, rättelseposter outside categorize_transaction. Pass inbox_item_id to book a kvitto direct — links inbox + attaches doc. HIGH risk.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -5744,6 +5744,7 @@ export const tools: McpTool[] = [
         fiscal_period_id: { type: 'string', description: 'UUID of fiscal period. If omitted, resolved from entry_date.' },
         voucher_series: { type: 'string', description: 'Single letter A–Z. Defaults to A.' },
         notes: { type: 'string', description: 'Internal notes (max 2000 chars) — visible on the verifikation but not on reports.' },
+        inbox_item_id: { type: 'string', description: 'Optional inbox item UUID to book directly. On confirm, the inbox item is linked to the new verifikat and its OCR document is attached to the journal entry. Fails if the inbox item is already booked (as voucher) or converted (to supplier invoice).' },
         lines: {
           type: 'array',
           description: 'At least 2 balanced lines. sum(debit_amount) === sum(credit_amount), both > 0.',
@@ -5886,6 +5887,38 @@ export const tools: McpTool[] = [
         line_description: l.line_description ?? null,
       }))
 
+      // Optional inbox-direct booking. Validate at staging so the agent gets a
+      // tight rejection signal — once staged, an already-booked inbox item
+      // would only surface at commit time with a generic 409. The executor
+      // re-checks idempotently via UNIQUE constraint on
+      // invoice_inbox_items.created_journal_entry_id.
+      const inboxItemId = (args.inbox_item_id as string | undefined) ?? null
+      let inboxDocumentId: string | null = null
+      if (inboxItemId) {
+        const { data: inbox, error: inboxErr } = await supabase
+          .from('invoice_inbox_items')
+          .select('id, document_id, created_journal_entry_id, created_supplier_invoice_id')
+          .eq('id', inboxItemId)
+          .eq('company_id', companyId)
+          .single()
+        if (inboxErr || !inbox) {
+          throw new Error(`Inbox item ${inboxItemId} not found for this company.`)
+        }
+        if (inbox.created_journal_entry_id) {
+          throw new Error(
+            `Inbox item is already booked as journal entry ${inbox.created_journal_entry_id}. ` +
+            'Use gnubok_correct_entry or gnubok_reverse_entry if it needs to be changed.'
+          )
+        }
+        if (inbox.created_supplier_invoice_id) {
+          throw new Error(
+            `Inbox item is already converted to supplier invoice ${inbox.created_supplier_invoice_id}. ` +
+            'Cancel that path before booking it as a verifikat.'
+          )
+        }
+        inboxDocumentId = (inbox.document_id as string | null) ?? null
+      }
+
       // NOTE: source_type is intentionally NOT included in the staged params.
       // The executor hardcodes 'manual' so a tampered or future direct-staged
       // pending_operations row can't misrepresent the entry's origin.
@@ -5897,6 +5930,8 @@ export const tools: McpTool[] = [
           fiscal_period_id: fiscalPeriodId,
           voucher_series: (args.voucher_series as string) || undefined,
           notes: (args.notes as string) || undefined,
+          inbox_item_id: inboxItemId,
+          document_id: inboxDocumentId,
           lines,
         },
         {
@@ -5908,7 +5943,11 @@ export const tools: McpTool[] = [
           total_credit: balance.totalCredit,
           line_count: lines.length,
           lines: previewLines,
-          will: 'create a posted journal entry with a fresh sequential voucher number',
+          inbox_item_id: inboxItemId,
+          document_attached: Boolean(inboxDocumentId),
+          will: inboxItemId
+            ? 'create a posted journal entry with a fresh sequential voucher number, link the inbox item to it, and attach the OCR document to the verifikat'
+            : 'create a posted journal entry with a fresh sequential voucher number',
         },
         actor,
         undefined,

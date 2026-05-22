@@ -253,6 +253,207 @@ describe('gnubok_create_voucher — staging gates', () => {
     const insertCalls = (supabase.from as ReturnType<typeof vi.fn>).mock.calls
     expect(insertCalls.some((args) => args[0] === 'pending_operations')).toBe(true)
   })
+
+  it('exposes inbox_item_id as an optional input', () => {
+    const schema = createVoucher.inputSchema as {
+      properties: { inbox_item_id?: { type: string; description?: string } }
+      required?: string[]
+    }
+    expect(schema.properties.inbox_item_id).toBeDefined()
+    expect(schema.properties.inbox_item_id?.type).toBe('string')
+    // Must NOT be required — voucher creation works standalone too.
+    expect(schema.required ?? []).not.toContain('inbox_item_id')
+  })
+
+  it('happy path with inbox_item_id: stages the op with inbox_item_id + document_id in params', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({
+      data: {
+        id: 'fp-1',
+        is_closed: false,
+        period_start: '2026-01-01',
+        period_end: '2026-12-31',
+        name: '2026',
+      },
+      error: null,
+    })
+    enqueue({
+      data: [
+        { account_number: '5410', account_name: 'Förbrukningsinventarier', is_active: true },
+        { account_number: '1930', account_name: 'Företagskonto', is_active: true },
+      ],
+      error: null,
+    })
+    enqueue({
+      data: {
+        id: 'inbox-1',
+        document_id: 'doc-1',
+        created_journal_entry_id: null,
+        created_supplier_invoice_id: null,
+      },
+      error: null,
+    }) // invoice_inbox_items lookup
+    enqueue({ data: null, error: null }) // resolvePeriodStatusForDate layer 1
+    enqueue({ data: null, error: null }) // resolvePeriodStatusForDate layer 2
+    enqueue({ data: { id: 'op-inbox' }, error: null }) // pending_operations insert
+
+    const result = (await createVoucher.execute(
+      {
+        entry_date: '2026-05-12',
+        description: 'Kvitto från Clas Ohlson — adapter',
+        fiscal_period_id: 'fp-1',
+        inbox_item_id: 'inbox-1',
+        lines: [
+          { account_number: '5410', debit_amount: 250, credit_amount: 0 },
+          { account_number: '1930', debit_amount: 0, credit_amount: 250 },
+        ],
+      },
+      'company-1',
+      'user-1',
+      supabase as never,
+    )) as { staged: boolean; operation_id?: string; preview: Record<string, unknown> }
+
+    expect(result.staged).toBe(true)
+    expect(result.preview.inbox_item_id).toBe('inbox-1')
+    expect(result.preview.document_attached).toBe(true)
+    expect(result.preview.will).toMatch(/link the inbox item/i)
+  })
+
+  it('rejects when inbox_item_id is already booked as a journal entry', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({
+      data: {
+        id: 'fp-1',
+        is_closed: false,
+        period_start: '2026-01-01',
+        period_end: '2026-12-31',
+        name: '2026',
+      },
+      error: null,
+    })
+    enqueue({
+      data: [
+        { account_number: '5410', account_name: 'Förbrukningsinventarier', is_active: true },
+        { account_number: '1930', account_name: 'Företagskonto', is_active: true },
+      ],
+      error: null,
+    })
+    enqueue({
+      data: {
+        id: 'inbox-1',
+        document_id: 'doc-1',
+        created_journal_entry_id: 'je-existing',
+        created_supplier_invoice_id: null,
+      },
+      error: null,
+    })
+
+    await expect(
+      createVoucher.execute(
+        {
+          entry_date: '2026-05-12',
+          description: 'duplicate book attempt',
+          fiscal_period_id: 'fp-1',
+          inbox_item_id: 'inbox-1',
+          lines: [
+            { account_number: '5410', debit_amount: 250, credit_amount: 0 },
+            { account_number: '1930', debit_amount: 0, credit_amount: 250 },
+          ],
+        },
+        'company-1',
+        'user-1',
+        supabase as never,
+      ),
+    ).rejects.toThrow(/already booked/i)
+  })
+
+  it('rejects when inbox_item_id is already converted to a supplier invoice', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({
+      data: {
+        id: 'fp-1',
+        is_closed: false,
+        period_start: '2026-01-01',
+        period_end: '2026-12-31',
+        name: '2026',
+      },
+      error: null,
+    })
+    enqueue({
+      data: [
+        { account_number: '5410', account_name: 'Förbrukningsinventarier', is_active: true },
+        { account_number: '1930', account_name: 'Företagskonto', is_active: true },
+      ],
+      error: null,
+    })
+    enqueue({
+      data: {
+        id: 'inbox-1',
+        document_id: 'doc-1',
+        created_journal_entry_id: null,
+        created_supplier_invoice_id: 'si-existing',
+      },
+      error: null,
+    })
+
+    await expect(
+      createVoucher.execute(
+        {
+          entry_date: '2026-05-12',
+          description: 'voucher attempt on AP-converted inbox',
+          fiscal_period_id: 'fp-1',
+          inbox_item_id: 'inbox-1',
+          lines: [
+            { account_number: '5410', debit_amount: 250, credit_amount: 0 },
+            { account_number: '1930', debit_amount: 0, credit_amount: 250 },
+          ],
+        },
+        'company-1',
+        'user-1',
+        supabase as never,
+      ),
+    ).rejects.toThrow(/already converted/i)
+  })
+
+  it('rejects when inbox_item_id does not exist for the company', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({
+      data: {
+        id: 'fp-1',
+        is_closed: false,
+        period_start: '2026-01-01',
+        period_end: '2026-12-31',
+        name: '2026',
+      },
+      error: null,
+    })
+    enqueue({
+      data: [
+        { account_number: '5410', account_name: 'Förbrukningsinventarier', is_active: true },
+        { account_number: '1930', account_name: 'Företagskonto', is_active: true },
+      ],
+      error: null,
+    })
+    enqueue({ data: null, error: { message: 'not found' } })
+
+    await expect(
+      createVoucher.execute(
+        {
+          entry_date: '2026-05-12',
+          description: 'unknown inbox uuid',
+          fiscal_period_id: 'fp-1',
+          inbox_item_id: 'inbox-missing',
+          lines: [
+            { account_number: '5410', debit_amount: 250, credit_amount: 0 },
+            { account_number: '1930', debit_amount: 0, credit_amount: 250 },
+          ],
+        },
+        'company-1',
+        'user-1',
+        supabase as never,
+      ),
+    ).rejects.toThrow(/inbox item .* not found/i)
+  })
 })
 
 describe('gnubok_correct_entry — registration', () => {
