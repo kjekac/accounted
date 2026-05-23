@@ -675,6 +675,22 @@ export const ReportPeriodQuerySchema = z.object({
   month: z.coerce.number().int().min(1).max(12).optional(),
 })
 
+export const AccountBalancesQuerySchema = z.object({
+  accounts: z
+    .string()
+    .transform((s) => s.split(',').map((a) => a.trim()).filter(Boolean))
+    .pipe(z.array(accountNumber).min(1).max(50)),
+  // Reject future dates — a saldo "as of tomorrow" would include unposted
+  // future entries (if any) and mislead the bookkeeper about the true
+  // pre-entry state of the ledger. Compared in Europe/Stockholm so a Swedish
+  // bookkeeper working in the 00:00–02:00 CET window (after midnight UTC has
+  // not yet passed) isn't rejected for entering their local today's date.
+  as_of: isoDate.refine(
+    (d) => d <= new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Stockholm' }),
+    { message: 'as_of cannot be in the future' },
+  ),
+})
+
 // ============================================================
 // VAT validation schemas
 // ============================================================

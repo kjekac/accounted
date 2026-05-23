@@ -2692,6 +2692,8 @@
     "col_description": "Description",
     "col_debit": "Debit",
     "col_credit": "Credit",
+    "col_saldo": "Balance (before)",
+    "saldo_label": "Balance (before)",
     "line_description_placeholder": "Line text...",
     "sum": "Total",
     "sum_d": "D: {amount}",

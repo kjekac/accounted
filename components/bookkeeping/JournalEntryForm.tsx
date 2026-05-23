@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,7 @@ import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import BookingTemplatePicker from '@/components/bookkeeping/BookingTemplatePicker'
 import CreatePeriodDialog from '@/components/bookkeeping/CreatePeriodDialog'
 import { ActivateAccountsDialog } from '@/components/bookkeeping/ActivateAccountsDialog'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   useSubmitWithAccountActivation,
   throwOnStructuredError,
@@ -102,6 +103,9 @@ export default function JournalEntryForm({
   const [foreignAmount, setForeignAmount] = useState('')
   const [periodMismatch, setPeriodMismatch] = useState<'no_period' | 'wrong_period' | null>(null)
   const [showCreatePeriod, setShowCreatePeriod] = useState(false)
+  // Per-account saldo as of entryDate, keyed by account_number.
+  // undefined = not fetched, null = fetch in flight.
+  const [accountBalances, setAccountBalances] = useState<Record<string, number | null>>({})
 
   const isForeign = entryCurrency !== 'SEK'
 
@@ -211,6 +215,76 @@ export default function JournalEntryForm({
       fetchRate(entryCurrency)
     }
   }, [entryCurrency, fetchRate])
+
+  // Stable key of selected account numbers across all lines, sorted + deduped.
+  // Only valid 4-digit BAS account numbers are included.
+  const accountsKey = useMemo(
+    () =>
+      Array.from(
+        new Set(lines.map((l) => l.account_number).filter((a) => /^\d{4}$/.test(a)))
+      )
+        .sort()
+        .join(','),
+    [lines]
+  )
+
+  // Fetch per-account saldo as of entryDate for the accounts currently on the
+  // form. Balances are reference-only ("saldo before this entry") — they ignore
+  // the draft lines the user is typing, by design.
+  useEffect(() => {
+    if (!accountsKey) {
+      setAccountBalances({})
+      return
+    }
+    const accountList = accountsKey.split(',')
+    // Carry forward any previously-known balances for these accounts so the
+    // value doesn't blank out on re-fetch; mark genuinely new accounts as
+    // loading (null).
+    setAccountBalances((prev) => {
+      const next: Record<string, number | null> = {}
+      for (const a of accountList) next[a] = a in prev ? prev[a] : null
+      return next
+    })
+
+    let cancelled = false
+    const handle = setTimeout(async () => {
+      try {
+        const qs = new URLSearchParams({ accounts: accountsKey, as_of: entryDate })
+        const res = await fetch(`/api/bookkeeping/account-balances?${qs}`)
+        if (!res.ok) {
+          // 4xx (e.g. future entryDate rejected by Zod) or 5xx: collapse the
+          // loading skeleton so the column doesn't get stuck. Saldo is a
+          // reference value, not authoritative — showing 0 here is preferable
+          // to an indefinite spinner.
+          if (cancelled) return
+          setAccountBalances((prev) => {
+            const next = { ...prev }
+            for (const a of accountList) {
+              if (next[a] == null) next[a] = 0
+            }
+            return next
+          })
+          return
+        }
+        const body = (await res.json()) as {
+          data: Array<{ account_number: string; balance: number }>
+        }
+        if (cancelled) return
+        setAccountBalances((prev) => {
+          const next = { ...prev }
+          for (const row of body.data) next[row.account_number] = row.balance
+          return next
+        })
+      } catch {
+        // Reference value — failure is non-fatal, just leave previous state.
+      }
+    }, 150)
+
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [accountsKey, entryDate])
 
   const addLine = () => {
     setLines([...lines, { ...BLANK_LINE }])
@@ -691,6 +765,17 @@ export default function JournalEntryForm({
                 />
               </div>
             </div>
+            {/^\d{4}$/.test(line.account_number) && (
+              <div className="flex justify-end text-xs text-muted-foreground tabular-nums pt-0.5">
+                {accountBalances[line.account_number] === null || accountBalances[line.account_number] === undefined ? (
+                  <Skeleton className="h-3 w-20" />
+                ) : (
+                  <span>
+                    {t('saldo_label')} {formatCurrency(accountBalances[line.account_number] as number)}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         ))}
 
@@ -733,6 +818,7 @@ export default function JournalEntryForm({
               <th className="py-2 px-1">{t('col_description')}</th>
               <th className="py-2 w-32 px-1 text-right">{t('col_debit')}</th>
               <th className="py-2 w-32 px-1 text-right">{t('col_credit')}</th>
+              <th className="py-2 w-28 px-1 text-right">{t('col_saldo')}</th>
               <th className="py-2 w-10"></th>
             </tr>
           </thead>
@@ -778,6 +864,16 @@ export default function JournalEntryForm({
                     step="0.01"
                   />
                 </td>
+                <td className="py-1.5 px-1 text-right tabular-nums text-muted-foreground">
+                  {(() => {
+                    if (!/^\d{4}$/.test(line.account_number)) return null
+                    const bal = accountBalances[line.account_number]
+                    if (bal === null || bal === undefined) {
+                      return <Skeleton className="h-4 w-20 ml-auto" />
+                    }
+                    return formatCurrency(bal)
+                  })()}
+                </td>
                 <td className="py-1.5">
                   <Button
                     variant="ghost"
@@ -811,6 +907,7 @@ export default function JournalEntryForm({
               >
                 {totalCredit.toLocaleString('sv-SE', { minimumFractionDigits: 2 })}
               </td>
+              <td></td>
               <td></td>
             </tr>
           </tfoot>
