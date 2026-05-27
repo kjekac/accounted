@@ -23,7 +23,7 @@ import { formatCurrency, formatDate } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { invoiceNumberDisplay } from '@/lib/invoices/display'
 import { getDisplayTotal } from '@/lib/invoices/rounding'
-import { Plus, Search, Receipt, Lock, Repeat, FileText } from 'lucide-react'
+import { Plus, Search, Receipt, Lock, Repeat } from 'lucide-react'
 import { EmptyInvoices } from '@/components/ui/empty-state'
 import { useCompany } from '@/contexts/CompanyContext'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
@@ -151,12 +151,6 @@ export default function InvoicesPage() {
         title={t('title')}
         action={
           <div className="flex gap-2">
-            <Link href="/invoices/quotes">
-              <Button variant="secondary">
-                <FileText className="mr-2 h-4 w-4" />
-                Offerter
-              </Button>
-            </Link>
             <Link href="/invoices/recurring">
               <Button variant="secondary">
                 <Repeat className="mr-2 h-4 w-4" />

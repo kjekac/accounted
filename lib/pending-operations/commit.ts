@@ -2198,7 +2198,7 @@ async function commitCorrectEntry(
   // commit-time gate matches the staging-time signal.
   const { data: original, error: origErr } = await supabase
     .from('journal_entries')
-    .select('id, status, entry_date, fiscal_period_id, fiscal_periods!inner(is_closed, locked_at)')
+    .select('id, status, entry_date, fiscal_period_id, fiscal_periods!journal_entries_fiscal_period_id_fkey!inner(is_closed, locked_at)')
     .eq('id', entryId)
     .eq('company_id', companyId)
     .maybeSingle()
@@ -2281,7 +2281,7 @@ async function commitReverseEntry(
   // via resolvePeriodStatusForDate, matching the staging-time signal.
   const { data: original, error: origErr } = await supabase
     .from('journal_entries')
-    .select('id, status, entry_date, fiscal_period_id, fiscal_periods!inner(is_closed, locked_at)')
+    .select('id, status, entry_date, fiscal_period_id, fiscal_periods!journal_entries_fiscal_period_id_fkey!inner(is_closed, locked_at)')
     .eq('id', entryId)
     .eq('company_id', companyId)
     .maybeSingle()
