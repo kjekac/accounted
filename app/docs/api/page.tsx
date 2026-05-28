@@ -6,7 +6,7 @@ import { LANDING_MD } from '@/lib/docs/content/landing'
 import Link from 'next/link'
 
 export const metadata: Metadata = {
-  title: 'gnubok API · Documentation',
+  title: 'accounted API · Documentation',
   description: 'Swedish double-entry bookkeeping as a public REST API for agents and integrations.',
 }
 

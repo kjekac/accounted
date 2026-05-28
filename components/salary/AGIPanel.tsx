@@ -550,7 +550,7 @@ export function AGIPanel(props: AGIPanelProps) {
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            Anslut till Skatteverket med BankID för att skicka AGI direkt från {`gnubok`}.
+            Anslut till Skatteverket med BankID för att skicka AGI direkt från accounted.
           </p>
           {!readOnly && (
             <Button onClick={handleConnect}>

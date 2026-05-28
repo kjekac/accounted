@@ -6,6 +6,7 @@ import { getActiveCompanyId } from '@/lib/company/context'
 import { getIntent } from '@/lib/agent/intents/registry'
 import { checkAgentRateLimit, agentRateLimitResponseBody } from '@/lib/rate-limits/agent'
 import { runChatTurn, friendlyModelError } from '@/lib/agent/chat/run-turn'
+import { guardSandbox } from '@/lib/sandbox/guard'
 
 // Make sure extensions are loaded — the chat loop dispatches against the
 // agent tool registry which is populated by the mcp-server extension at load.
@@ -104,6 +105,11 @@ export async function POST(request: Request) {
     .eq('user_id', user.id)
     .maybeSingle()
   if (!membership) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  // No Anthropic Bedrock calls in the sandbox — the demo runs entirely on
+  // seed data and the assistant is gated to a "look, don't touch" preview.
+  const blocked = await guardSandbox(supabase, companyId)
+  if (blocked) return blocked
 
   // onboarding.intake completion signal — once the user has actually
   // engaged (typed a real reply, not the auto-fired greeting prompt that

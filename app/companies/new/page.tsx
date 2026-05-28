@@ -3,7 +3,6 @@
 import { useState, useEffect, Suspense } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
-import Image from 'next/image'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { createCompanyFromOnboarding } from '@/lib/company/actions'
@@ -238,14 +237,9 @@ function NewCompanyContent() {
               >
                 <ArrowLeft className="h-4 w-4" />
               </Link>
-              <Image
-                src={branding.logoPath}
-                alt={branding.appName}
-                width={30}
-                height={30}
-                className="invert opacity-90"
-              />
-              <span className="font-display text-base tracking-tight">{branding.appName.toLowerCase()}</span>
+              <span className="font-display text-base tracking-tight" style={{ fontWeight: 700 }}>
+                {branding.appName.toLowerCase()}
+              </span>
             </div>
             <div className="flex items-center gap-1.5">
               {STEP_INFO.map((_, i) => {

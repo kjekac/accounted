@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
-import Image from 'next/image'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -168,14 +167,9 @@ export default function InvitePage() {
         </div>
         <div className="relative z-10 max-w-2xl mx-auto w-full px-6 md:px-10 pt-5 pb-6 md:pt-6 md:pb-8">
           <div className="flex items-center gap-2.5 mb-5 md:mb-6">
-            <Image
-              src={branding.logoPath}
-              alt={branding.appName}
-              width={30}
-              height={30}
-              className="invert opacity-90"
-            />
-            <span className="font-display text-base tracking-tight">{branding.appName.toLowerCase()}</span>
+            <span className="font-display text-base tracking-tight" style={{ fontWeight: 700 }}>
+              {branding.appName.toLowerCase()}
+            </span>
           </div>
           <div className="animate-fade-in">
             <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight leading-[1.1]">

@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useToast } from '@/components/ui/use-toast'
 import { Loader2, Mail, ArrowLeft, KeyRound, ExternalLink } from 'lucide-react'
-import Image from 'next/image'
+import { BrandWordmark } from '@/components/branding/BrandWordmark'
 import { getErrorMessage, type ErrorLocale } from '@/lib/errors/get-error-message'
 import { isBankIdEnabled } from '@/lib/auth/bankid'
 import { BankIdAuth } from '@/components/auth/BankIdAuth'
@@ -376,14 +376,7 @@ function LoginPageContent() {
     <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-background to-primary/[0.03] p-4">
       <div className="w-full max-w-sm animate-slide-up">
         <div className="text-center mb-10">
-          <Image
-            src={branding.logoPath}
-            alt={branding.appName}
-            width={240}
-            height={240}
-            className="mx-auto mb-2"
-            priority
-          />
+          <BrandWordmark size="hero" className="mb-2" />
           <p className="text-muted-foreground text-sm mt-3">
             {tAuth('login_subtitle')}
           </p>

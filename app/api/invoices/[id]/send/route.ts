@@ -15,6 +15,7 @@ import { uploadDocument } from '@/lib/core/documents/document-service'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
+import { guardSandbox } from '@/lib/sandbox/guard'
 import type { Invoice, InvoiceItem, Customer, CompanySettings } from '@/types'
 
 ensureInitialized()
@@ -25,6 +26,11 @@ export const POST = withRouteContext(
     const { id } = await params
     const { user, supabase, companyId, log, requestId } = ctx
     const opLog = log.child({ invoiceId: id })
+
+    // The sandbox must never deliver a real email to a real customer — block
+    // the entire send pipeline (PDF render + Resend send + status flip).
+    const blocked = await guardSandbox(supabase, companyId)
+    if (blocked) return blocked
 
     const emailService = getEmailService()
     if (!emailService.isConfigured()) {

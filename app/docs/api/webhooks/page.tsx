@@ -4,8 +4,8 @@ import { DocsMarkdown } from '@/lib/docs/markdown'
 import { WEBHOOKS_MD } from '@/lib/docs/content/webhooks'
 
 export const metadata: Metadata = {
-  title: 'Webhooks · gnubok API',
-  description: 'Receive HMAC-signed POST notifications when state changes in gnubok. Includes signature verification samples in Node.js and Python.',
+  title: 'Webhooks · accounted API',
+  description: 'Receive HMAC-signed POST notifications when state changes in accounted. Includes signature verification samples in Node.js and Python.',
 }
 
 export default function DocsApiWebhooksPage() {

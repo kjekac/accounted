@@ -29,6 +29,9 @@ const hedvigSerif = Hedvig_Letters_Serif({
   variable: "--font-hedvig-serif",
   subsets: ["latin"],
   display: "swap",
+  // Hedvig Letters Serif on Google Fonts only ships 400; the brand wordmark
+  // requests 700, which browsers synthesize from this file. Keep the load
+  // single-file to stay within the existing display-font budget.
   weight: "400",
 });
 

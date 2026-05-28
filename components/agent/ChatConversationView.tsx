@@ -5,7 +5,9 @@ import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import AgentChat, { normalizeStoredMessages } from './AgentChat'
 import AgentAvatar from './AgentAvatar'
+import SandboxAgentPreview from './SandboxAgentPreview'
 import { useAgentSheet } from './AgentSheetProvider'
+import { useCompanyOptional } from '@/contexts/CompanyContext'
 
 interface Props {
   conversationId: string
@@ -26,6 +28,9 @@ export default function ChatConversationView({
 }: Props) {
   const initialMessages = useMemo(() => normalizeStoredMessages(rawMessages), [rawMessages])
   const { identity } = useAgentSheet()
+  const companyCtx = useCompanyOptional()
+  const isSandbox = companyCtx?.isSandbox ?? false
+  const agentName = identity.displayName?.trim() || null
 
   return (
     <>
@@ -52,14 +57,18 @@ export default function ChatConversationView({
         </div>
       </header>
 
-      <div className="flex-1 min-h-0">
-        <AgentChat
-          intentId={intentId}
-          contextRef={contextRef ?? undefined}
-          initialConversationId={conversationId}
-          initialMessages={initialMessages}
-          scrollerClassName="px-6 py-8"
-        />
+      <div className="flex-1 min-h-0 flex flex-col">
+        {isSandbox ? (
+          <SandboxAgentPreview agentName={agentName} />
+        ) : (
+          <AgentChat
+            intentId={intentId}
+            contextRef={contextRef ?? undefined}
+            initialConversationId={conversationId}
+            initialMessages={initialMessages}
+            scrollerClassName="px-6 py-8"
+          />
+        )}
       </div>
     </>
   )

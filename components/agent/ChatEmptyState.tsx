@@ -1,10 +1,13 @@
 'use client'
 
-import { ArrowUpRight } from 'lucide-react'
+import { ArrowUpRight, Sparkles } from 'lucide-react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { useAgentSheet } from './AgentSheetProvider'
 import AgentAvatar from './AgentAvatar'
+import { useCompanyOptional } from '@/contexts/CompanyContext'
+import { createClient } from '@/lib/supabase/client'
 
 // Tiny client component for /chat empty state. Reads the agent identity from
 // the provider so it can show the user's chosen avatar + name above the
@@ -31,7 +34,45 @@ const SUGGESTIONS: { label: string; prompt: string }[] = [
 
 export default function ChatEmptyState() {
   const { identity } = useAgentSheet()
+  const companyCtx = useCompanyOptional()
+  const router = useRouter()
+  const isSandbox = companyCtx?.isSandbox ?? false
   const name = identity.displayName?.trim() || 'din assistent'
+
+  if (isSandbox) {
+    const handleCreateAccount = async () => {
+      const supabase = createClient()
+      // Sign-out is best-effort — navigate even if Supabase is unreachable
+      // so the button never looks dead.
+      try {
+        await supabase.auth.signOut()
+      } catch {
+        // Intentionally swallowed.
+      }
+      router.push('/register')
+    }
+    return (
+      <div className="hidden md:flex flex-1 flex-col items-center justify-center px-6 py-12 text-center">
+        <AgentAvatar avatarId={identity.avatarId} size="lg" alt={name} className="mb-5" />
+        <h1 className="font-display text-2xl tracking-tight mb-2">Fråga {name}</h1>
+        <div className="rounded-lg border border-border bg-secondary/40 px-5 py-4 max-w-md mb-6 text-left">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Sparkles className="h-4 w-4" />
+            Avstängd i sandlådan
+          </div>
+          <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+            AI-assistenten använder en betald molntjänst och är därför
+            inaktiverad här. I den fullständiga produkten kan {name} kategorisera
+            transaktioner, granska leverantörsfakturor och svara på frågor om
+            din bokföring.
+          </p>
+        </div>
+        <Button size="lg" onClick={handleCreateAccount}>
+          Skapa konto för att använda {name}
+        </Button>
+      </div>
+    )
+  }
 
   // Hidden on mobile — the sidebar IS the page when no conversation is open.
   // On desktop, fills the right pane with a centered prompt.

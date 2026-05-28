@@ -65,6 +65,15 @@ vi.mock('@/lib/bookkeeping/invoice-entries', () => ({
     mockCreateInvoiceJournalEntry(...args),
 }))
 
+// The sandbox guard issues a company_settings query at the top of the route;
+// short-circuit it in tests since the queued mock-supabase is shaped for the
+// route's existing fetch chain, not an extra pre-flight read.
+vi.mock('@/lib/sandbox/guard', () => ({
+  guardSandbox: vi.fn().mockResolvedValue(null),
+  isSandboxCompany: vi.fn().mockResolvedValue(false),
+  sandboxBlockedResponse: vi.fn(),
+}))
+
 import { POST } from '../route'
 
 describe('POST /api/invoices/[id]/send', () => {

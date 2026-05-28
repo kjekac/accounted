@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { fetchExchangeRate } from '@/lib/currency/riksbanken'
+import { guardSandbox } from '@/lib/sandbox/guard'
 import type { Currency, Transaction } from '@/types'
 
 export const POST = withRouteContext(
@@ -9,6 +10,9 @@ export const POST = withRouteContext(
   async (_request, ctx, { params }: { params: Promise<{ id: string }> }) => {
     const { id } = await params
     const { supabase, companyId, log, requestId } = ctx
+
+    const blocked = await guardSandbox(supabase, companyId)
+    if (blocked) return blocked
 
     const { data: transaction, error: fetchError } = await supabase
       .from('transactions')

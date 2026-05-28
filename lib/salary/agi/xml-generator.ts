@@ -1,5 +1,4 @@
 import { decryptPersonnummer } from '../personnummer'
-import { getBranding } from '@/lib/branding/service'
 
 /**
  * AGI XML generator — Arbetsgivardeklaration på individnivå.
@@ -48,6 +47,13 @@ import { getBranding } from '@/lib/branding/service'
 
 const INSTANS_NS = 'http://xmls.skatteverket.se/se/skatteverket/da/instans/schema/1.1'
 const KOMPONENT_NS = 'http://xmls.skatteverket.se/se/skatteverket/da/komponent/schema/1.1'
+
+// Programnamn — software identifier embedded in every AGI submission.
+// Free-text per Skatteverket's schema (no vendor registry), but kept stable
+// across visual rebrands so the value the tax authority sees never churns.
+// Bump only if Skatteverket ever introduces a formal vendor registration
+// and 'accounted' is the registered name there.
+const AGI_PROGRAMNAMN = 'gnubok'
 
 /**
  * One absence event for AGI Frånvarouppgift emission. Loaded from
@@ -368,7 +374,7 @@ export function generateAGIXml(
 
   // ── Avsandare (komponent namespace) ──────────────────────────
   lines.push('  <gem:Avsandare>')
-  lines.push(`    <gem:Programnamn>${escapeXml(getBranding().appName.toLowerCase())}</gem:Programnamn>`)
+  lines.push(`    <gem:Programnamn>${AGI_PROGRAMNAMN}</gem:Programnamn>`)
   lines.push(`    <gem:Organisationsnummer>${orgIdentitet}</gem:Organisationsnummer>`)
   lines.push('    <gem:TekniskKontaktperson>')
   lines.push(`      <gem:Namn>${escapeXml(company.contactName)}</gem:Namn>`)

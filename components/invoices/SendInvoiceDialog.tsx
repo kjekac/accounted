@@ -43,7 +43,7 @@ export default function SendInvoiceDialog({
 }: SendInvoiceDialogProps) {
   const { toast } = useToast()
   const supabase = createClient()
-  const { company } = useCompany()
+  const { company, isSandbox } = useCompany()
   const t = useTranslations('invoice_send_dialog')
 
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -209,6 +209,13 @@ export default function SendInvoiceDialog({
           </div>
         ) : (
           <div className="space-y-4">
+            {isSandbox && mode === 'email' && (
+              <div className="rounded-lg border border-border bg-secondary/40 px-3 py-2.5 text-sm text-muted-foreground">
+                E-postutskick är avstängt i sandlådan. Använd istället
+                &laquo;Markera som skickad&raquo; för att testa det resterande
+                flödet.
+              </div>
+            )}
             {showJournalPreview ? (
               <>
                 <p className="text-sm text-muted-foreground">
@@ -251,8 +258,9 @@ export default function SendInvoiceDialog({
           </Button>
           <Button
             onClick={handleConfirm}
-            disabled={isSubmitting || !isInitialized}
+            disabled={isSubmitting || !isInitialized || (isSandbox && mode === 'email')}
             className="w-full sm:w-auto min-h-11"
+            title={isSandbox && mode === 'email' ? 'E-postutskick är avstängt i sandlådan' : undefined}
           >
             {isSubmitting ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

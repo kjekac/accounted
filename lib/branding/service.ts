@@ -58,15 +58,20 @@ export interface BrandingConfig {
 }
 
 const DEFAULT_BRANDING: BrandingConfig = {
-  appName: 'Gnubok',
+  appName: 'Accounted',
   appDescription: 'Ekonomihantering',
   legalEntity: 'Arcim',
+  // Emails and URLs intentionally keep the gnubok hostname — the rebrand is
+  // visual only; we don't churn the support inbox or app domain alongside it.
   supportEmail: 'support@gnubok.se',
   privacyEmail: 'privacy@gnubok.se',
   securityEmail: 'security@arcim.io',
   authEmailFrom: 'noreply@gnubok.se',
   appUrl: process.env.NEXT_PUBLIC_APP_URL || 'https://app.gnubok.se',
-  logoPath: '/gnubokiceon-removebg-preview.png',
+  // The visible brand mark now renders as text via <BrandWordmark>; this
+  // image path is kept as a fallback for any surface still using <Image>
+  // (e.g. PWA-style metadata that demands a concrete file).
+  logoPath: '/accounted-icon.png',
   faviconPath: '/favicon.ico',
   appleTouchIconPath: '/icons/icon-192.png',
   pwaIconBasePath: '/icons',

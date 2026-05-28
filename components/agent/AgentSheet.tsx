@@ -5,7 +5,9 @@ import { X, Expand } from 'lucide-react'
 import Link from 'next/link'
 import AgentChat from './AgentChat'
 import AgentAvatar from './AgentAvatar'
+import SandboxAgentPreview from './SandboxAgentPreview'
 import { useAgentSheet } from './AgentSheetProvider'
+import { useCompanyOptional } from '@/contexts/CompanyContext'
 
 // Undimmed non-modal side sheet — sits above the page on a hairline border +
 // shadow, but the page underneath stays fully interactive. Plan §3b.
@@ -31,6 +33,8 @@ export default function AgentSheet({
 }: Props) {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const { identity } = useAgentSheet()
+  const companyCtx = useCompanyOptional()
+  const isSandbox = companyCtx?.isSandbox ?? false
   const agentName = identity.displayName?.trim() || null
   const sheetTitle = intentToTitle(intentId, agentName)
 
@@ -60,7 +64,7 @@ export default function AgentSheet({
         <AgentAvatar avatarId={identity.avatarId} size="sm" alt={agentName ?? 'Assistent'} />
         <h2 className="font-display text-lg tracking-tight truncate">{sheetTitle}</h2>
         <div className="ml-auto flex items-center gap-1">
-          {conversationId && (
+          {conversationId && !isSandbox && (
             <Link
               href={`/chat/${conversationId}`}
               onClick={onClose}
@@ -81,13 +85,17 @@ export default function AgentSheet({
         </div>
       </header>
 
-      <AgentChat
-        intentId={intentId}
-        intentArgs={intentArgs}
-        contextRef={contextRef}
-        seedUserMessage={seedUserMessage}
-        onConversationIdChange={(id) => setConversationId(id)}
-      />
+      {isSandbox ? (
+        <SandboxAgentPreview agentName={agentName} />
+      ) : (
+        <AgentChat
+          intentId={intentId}
+          intentArgs={intentArgs}
+          contextRef={contextRef}
+          seedUserMessage={seedUserMessage}
+          onConversationIdChange={(id) => setConversationId(id)}
+        />
+      )}
     </div>
   )
 }

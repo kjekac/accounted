@@ -12,6 +12,7 @@ import { getExtensionNavItems } from '@/lib/extensions/sectors'
 import { CompanyProvider } from '@/contexts/CompanyContext'
 import { getActiveCompanyId } from '@/lib/company/context'
 import { getBranding } from '@/lib/branding/service'
+import { ensureSandboxAgentProfile } from '@/lib/sandbox/ensure-agent'
 import type { EntityType, CompanyRole, Team } from '@/types'
 
 /**
@@ -209,6 +210,23 @@ export default async function DashboardLayout({
 
   const isSandbox = settings?.is_sandbox === true
 
+  // Backfill a verified agent_profile for sandbox sessions that pre-date the
+  // seed change. Without this an old anonymous session shows the "Bygg din
+  // bokföringsassistent" CTA in three places (dashboard hero, NewUserChecklist
+  // step 4, /chat layout redirect) and the user can still kick off a build
+  // flow that the server now 403s. Best-effort; doesn't block the layout
+  // even if the insert fails.
+  let resolvedAgentIdentity = agentProfileIdentity
+  if (isSandbox && !agentProfileIdentity?.verified_at) {
+    await ensureSandboxAgentProfile(supabase, companyId)
+    const { data: refreshed } = await supabase
+      .from('agent_profiles')
+      .select('display_name, avatar_id, verified_at')
+      .eq('company_id', companyId)
+      .maybeSingle()
+    resolvedAgentIdentity = refreshed ?? agentProfileIdentity
+  }
+
   const companyContextValue = {
     company: companyWithName,
     role: memberRow.role as CompanyRole,
@@ -229,9 +247,9 @@ export default async function DashboardLayout({
     <CompanyProvider value={companyContextValue}>
       <AgentSheetProvider
         identity={{
-          displayName: agentProfileIdentity?.display_name ?? null,
-          avatarId: agentProfileIdentity?.avatar_id ?? null,
-          isVerified: Boolean(agentProfileIdentity?.verified_at),
+          displayName: resolvedAgentIdentity?.display_name ?? null,
+          avatarId: resolvedAgentIdentity?.avatar_id ?? null,
+          isVerified: Boolean(resolvedAgentIdentity?.verified_at),
         }}
       >
         <CompanyTabSync />

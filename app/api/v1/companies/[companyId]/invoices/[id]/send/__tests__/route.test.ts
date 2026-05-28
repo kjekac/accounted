@@ -73,6 +73,15 @@ vi.mock('@/lib/invoices/pdf-template', () => ({
   InvoicePDF: vi.fn().mockReturnValue({}),
   brandingFromCompanySettings: vi.fn().mockReturnValue({}),
 }))
+
+// The sandbox guard reads company_settings.is_sandbox at the top of the
+// route; the per-table mock supabase below has no row for that lookup so
+// short-circuit the guard in tests.
+vi.mock('@/lib/sandbox/guard', () => ({
+  guardSandbox: vi.fn().mockResolvedValue(null),
+  isSandboxCompany: vi.fn().mockResolvedValue(false),
+  sandboxBlockedResponse: vi.fn(),
+}))
 import { InvoicePDF } from '@/lib/invoices/pdf-template'
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'

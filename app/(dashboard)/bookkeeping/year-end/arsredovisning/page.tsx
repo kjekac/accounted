@@ -700,7 +700,7 @@ export default function ArsredovisningPage() {
             <strong>Notis om digital inlämning:</strong> Bolagsverket har föreslagit att
             digital inlämning (iXBRL) av årsredovisning för aktiebolag ska bli
             obligatorisk — beslut och ikraftträdande är ännu inte fastställda. Idag är
-            PDF-inlämning fortfarande godkänd. Gnubok stödjer för närvarande endast
+            PDF-inlämning fortfarande godkänd. Accounted stödjer för närvarande endast
             PDF-utkast; iXBRL-generering är planerad till en kommande version.
           </div>
         </CardContent>

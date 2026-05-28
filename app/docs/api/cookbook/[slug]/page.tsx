@@ -13,7 +13,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const entry = findRecipe(slug)
   if (!entry) return { title: 'Not found' }
   return {
-    title: `${entry.title} · gnubok API cookbook`,
+    title: `${entry.title} · accounted API cookbook`,
     description: entry.description,
   }
 }

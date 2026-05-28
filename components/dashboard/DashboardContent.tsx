@@ -59,7 +59,18 @@ export default function DashboardContent({ companyId, summary, onboardingProgres
   const [showAllAlerts, setShowAllAlerts] = useState(false)
   const t = useTranslations('dashboard')
 
-  const needsSetup = onboardingProgress && !onboardingProgress.hasBankConnected && !onboardingProgress.hasSIEImport
+  // The setup gate exists to nudge brand-new users into a data-import step
+  // before they hit the dashboard. Once the assistant is built we treat the
+  // user as past that phase — they've already committed to using the tool —
+  // and let the dashboard render normally. This also keeps the sandbox
+  // (which ships with a pre-built assistant + seeded data but no bank
+  // connection / SIE import) from showing a checklist that re-links to
+  // /onboarding/agent.
+  const needsSetup =
+    !agentBuilt &&
+    onboardingProgress &&
+    !onboardingProgress.hasBankConnected &&
+    !onboardingProgress.hasSIEImport
   const [setupGateActive, setSetupGateActive] = useState(!!needsSetup)
 
   useEffect(() => {
@@ -82,7 +93,10 @@ export default function DashboardContent({ companyId, summary, onboardingProgres
   if (setupGateActive) {
     return (
       <NewUserChecklist
+        hasBookkeepingImported={!!onboardingProgress?.hasSIEImport}
+        hasBankConnected={!!onboardingProgress?.hasBankConnected}
         hasSkatteverketConnected={!!onboardingProgress?.hasSkatteverketConnected}
+        hasAgentBuilt={agentBuilt}
         onFreshStart={() => {
           localStorage.setItem(setupFreshStartKey(companyId), 'true')
           setSetupGateActive(false)

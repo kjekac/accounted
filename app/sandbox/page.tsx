@@ -3,12 +3,12 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
-import { Loader2, Receipt, ArrowLeftRight, BookOpen, BarChart3 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { getBranding } from '@/lib/branding/service'
+import { BrandWordmark } from '@/components/branding/BrandWordmark'
 
 const branding = getBranding()
 
@@ -81,14 +81,7 @@ export default function SandboxPage() {
       <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-background to-primary/[0.03] p-4">
         <div className="w-full max-w-sm animate-slide-up">
           <div className="text-center mb-10">
-            <Image
-              src={branding.logoPath}
-              alt={branding.appName}
-              width={240}
-              height={240}
-              className="mx-auto mb-2"
-              priority
-            />
+            <BrandWordmark size="hero" className="mb-2" />
           </div>
 
           <div className="rounded-xl border bg-card p-6" style={{ boxShadow: 'var(--shadow-md)' }}>
@@ -116,14 +109,7 @@ export default function SandboxPage() {
     <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-background to-primary/[0.03] p-4">
       <div className="w-full max-w-sm animate-slide-up">
         <div className="text-center mb-10">
-          <Image
-            src={branding.logoPath}
-            alt={branding.appName}
-            width={240}
-            height={240}
-            className="mx-auto mb-2"
-            priority
-          />
+          <BrandWordmark size="hero" className="mb-2" />
           <h1 className="text-xl font-medium tracking-tight mt-3">
             Testa {branding.appName.toLowerCase()} utan att registrera dig
           </h1>
@@ -133,23 +119,11 @@ export default function SandboxPage() {
         </div>
 
         <div className="rounded-xl border bg-card p-6" style={{ boxShadow: 'var(--shadow-md)' }}>
-          {/* Feature highlights */}
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            {[
-              { icon: Receipt, label: 'Fakturor' },
-              { icon: ArrowLeftRight, label: 'Transaktioner' },
-              { icon: BookOpen, label: 'Bokföring' },
-              { icon: BarChart3, label: 'Rapporter' },
-            ].map(({ icon: Icon, label }) => (
-              <div
-                key={label}
-                className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2.5"
-              >
-                <Icon className="h-4 w-4 text-primary/70 flex-shrink-0" />
-                <span className="text-sm text-foreground/80">{label}</span>
-              </div>
-            ))}
-          </div>
+          <p className="mb-6 rounded-lg border border-border bg-secondary/40 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+            AI-assistenten och externa tjänster (e-post, bankuppkoppling,
+            valutakurser, Skatteverket) är avstängda i sandlådan — de
+            kräver ett riktigt konto.
+          </p>
 
           <Button
             className="w-full h-11"

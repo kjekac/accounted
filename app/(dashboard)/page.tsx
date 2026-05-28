@@ -5,6 +5,7 @@ import DashboardContent from '@/components/dashboard/DashboardContent'
 import WelcomeGate from '@/components/onboarding/WelcomeGate'
 import { getActiveCompanyId } from '@/lib/company/context'
 import { getDisplayTotal } from '@/lib/invoices/rounding'
+import { ensureSandboxAgentProfile } from '@/lib/sandbox/ensure-agent'
 import type { Deadline, ReceiptQueueSummary, OnboardingProgress } from '@/types'
 
 export const dynamic = 'force-dynamic'
@@ -122,7 +123,22 @@ export default async function DashboardPage() {
     redirect('/onboarding')
   }
 
-  const agentBuilt = Boolean(agentProfile?.verified_at)
+  // Sandbox sessions that pre-date the agent_profile seeding step would
+  // otherwise still see the "Bygg din bokföringsassistent" hero + the
+  // NewUserChecklist's agent step lit up. Backfill here so the next render
+  // sees a verified profile and treats the sandbox as fully set up.
+  let effectiveAgentVerified = agentProfile?.verified_at ?? null
+  if (settings?.is_sandbox === true && !effectiveAgentVerified) {
+    await ensureSandboxAgentProfile(supabase, companyId)
+    const { data: refreshed } = await supabase
+      .from('agent_profiles')
+      .select('verified_at')
+      .eq('company_id', companyId)
+      .maybeSingle()
+    effectiveAgentVerified = refreshed?.verified_at ?? null
+  }
+
+  const agentBuilt = Boolean(effectiveAgentVerified)
 
   // "Has the company already been used?" Any real business data means we must
   // NOT hijack the dashboard with the full-screen onboarding gate — existing

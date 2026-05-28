@@ -38,17 +38,17 @@ describe('branding service', () => {
     registerBrandingService({})
   })
 
-  it('returns gnubok defaults when nothing is overridden', async () => {
+  it('returns accounted defaults when nothing is overridden', async () => {
     const { getBranding } = await import('../service')
     const b = getBranding()
-    expect(b.appName).toBe('Gnubok')
+    expect(b.appName).toBe('Accounted')
     expect(b.appDescription).toBe('Ekonomihantering')
     expect(b.legalEntity).toBe('Arcim')
     expect(b.supportEmail).toBe('support@gnubok.se')
     expect(b.privacyEmail).toBe('privacy@gnubok.se')
     expect(b.securityEmail).toBe('security@arcim.io')
     expect(b.authEmailFrom).toBe('noreply@gnubok.se')
-    expect(b.logoPath).toBe('/gnubokiceon-removebg-preview.png')
+    expect(b.logoPath).toBe('/accounted-icon.png')
     expect(b.faviconPath).toBe('/favicon.ico')
     expect(b.appleTouchIconPath).toBe('/icons/icon-192.png')
     expect(b.pwaIconBasePath).toBe('/icons')
@@ -135,7 +135,7 @@ describe('branding service', () => {
   it('empty string env var does not override', async () => {
     process.env.NEXT_PUBLIC_BRANDING_APP_NAME = ''
     const { getBranding } = await import('../service')
-    expect(getBranding().appName).toBe('Gnubok')
+    expect(getBranding().appName).toBe('Accounted')
   })
 
   it('clearing extension override returns to env/default resolution', async () => {
@@ -143,6 +143,6 @@ describe('branding service', () => {
     registerBrandingService({ appName: 'Holdio' })
     expect(getBranding().appName).toBe('Holdio')
     registerBrandingService({})
-    expect(getBranding().appName).toBe('Gnubok')
+    expect(getBranding().appName).toBe('Accounted')
   })
 })

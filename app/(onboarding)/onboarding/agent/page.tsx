@@ -21,6 +21,17 @@ export default async function AgentOnboardingPage() {
   const companyId = await getActiveCompanyId(supabase, user.id)
   if (!companyId) redirect('/onboarding')
 
+  // Sandbox companies ship with a pre-built verified agent_profile — the
+  // build flow on this page would call TIC and the gated composer stream,
+  // both of which 403. Send them back to the dashboard where the demo
+  // assistant is already visible via the sheet preview.
+  const { data: settingsForSandbox } = await supabase
+    .from('company_settings')
+    .select('is_sandbox')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (settingsForSandbox?.is_sandbox) redirect('/')
+
   // Trigger the TIC live-fetch + cache before the field-resolving query
   // below. ensureTicSnapshot is fast on cache-hit (single SELECT) and
   // best-effort on miss — it never throws. Phase A still runs through the

@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { getActiveCompanyId } from '@/lib/company/context'
+import { ensureSandboxAgentProfile } from '@/lib/sandbox/ensure-agent'
 import ChatSidebar from '@/components/agent/ChatSidebar'
 
 export const dynamic = 'force-dynamic'
@@ -21,11 +22,31 @@ export default async function ChatLayout({ children }: { children: React.ReactNo
   // empty conversations list with no Anna to talk to. The home route at /
   // renders NewUserChecklist for the same state, so we forward there
   // instead of duplicating the welcome screen here.
-  const { data: agent } = await supabase
+  let { data: agent } = await supabase
     .from('agent_profiles')
     .select('verified_at')
     .eq('company_id', companyId)
     .maybeSingle()
+
+  // Sandbox sessions get a pre-built assistant — backfill if a pre-seed
+  // session is missing it so /chat doesn't bounce back to / in a loop.
+  if (!agent?.verified_at) {
+    const { data: settings } = await supabase
+      .from('company_settings')
+      .select('is_sandbox')
+      .eq('company_id', companyId)
+      .maybeSingle()
+    if (settings?.is_sandbox) {
+      await ensureSandboxAgentProfile(supabase, companyId)
+      const refresh = await supabase
+        .from('agent_profiles')
+        .select('verified_at')
+        .eq('company_id', companyId)
+        .maybeSingle()
+      agent = refresh.data
+    }
+  }
+
   if (!agent?.verified_at) redirect('/')
 
   const { data: conversations } = await supabase

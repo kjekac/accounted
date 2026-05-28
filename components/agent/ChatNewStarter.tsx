@@ -4,7 +4,9 @@ import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import AgentChat from './AgentChat'
 import AgentAvatar from './AgentAvatar'
+import SandboxAgentPreview from './SandboxAgentPreview'
 import { useAgentSheet } from './AgentSheetProvider'
+import { useCompanyOptional } from '@/contexts/CompanyContext'
 
 // Inline starter used by suggestion chips and ⌘K. Mirrors ChatIntakeStarter
 // but accepts any intent + seed so we don't fork the intake-specific
@@ -19,6 +21,8 @@ export default function ChatNewStarter({
 }) {
   const router = useRouter()
   const { identity } = useAgentSheet()
+  const companyCtx = useCompanyOptional()
+  const isSandbox = companyCtx?.isSandbox ?? false
   const agentName = identity.displayName?.trim() || 'Din assistent'
   const [swapped, setSwapped] = useState(false)
 
@@ -28,26 +32,32 @@ export default function ChatNewStarter({
         <AgentAvatar avatarId={identity.avatarId} size="sm" alt={agentName} />
         <div className="min-w-0">
           <h1 className="font-display text-lg tracking-tight truncate">{agentName}</h1>
-          <p className="text-xs text-muted-foreground truncate">Ny konversation</p>
+          <p className="text-xs text-muted-foreground truncate">
+            {isSandbox ? 'Förhandsvisning — avstängd i sandlådan' : 'Ny konversation'}
+          </p>
         </div>
       </header>
 
-      <div className="flex-1 min-h-0">
-        <AgentChat
-          intentId={intentId}
-          seedUserMessage={seedUserMessage}
-          initialMessages={[]}
-          initialConversationId={null}
-          onFirstTurnComplete={(id) => {
-            // Wait for the first turn to finish before swapping the URL —
-            // otherwise the unmount aborts the in-flight stream and
-            // /chat/[id] hydrates with only the user message.
-            if (swapped) return
-            setSwapped(true)
-            router.replace(`/chat/${id}`)
-          }}
-          scrollerClassName="px-6 py-8"
-        />
+      <div className="flex-1 min-h-0 flex flex-col">
+        {isSandbox ? (
+          <SandboxAgentPreview agentName={agentName} />
+        ) : (
+          <AgentChat
+            intentId={intentId}
+            seedUserMessage={seedUserMessage}
+            initialMessages={[]}
+            initialConversationId={null}
+            onFirstTurnComplete={(id) => {
+              // Wait for the first turn to finish before swapping the URL —
+              // otherwise the unmount aborts the in-flight stream and
+              // /chat/[id] hydrates with only the user message.
+              if (swapped) return
+              setSwapped(true)
+              router.replace(`/chat/${id}`)
+            }}
+            scrollerClassName="px-6 py-8"
+          />
+        )}
       </div>
     </>
   )

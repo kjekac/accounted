@@ -13,7 +13,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const page = buildResourcePages().find((p) => p.slug === slug)
   if (!page) return { title: 'Not found' }
   return {
-    title: `${page.label} · gnubok API`,
+    title: `${page.label} · accounted API`,
     description: page.description,
   }
 }

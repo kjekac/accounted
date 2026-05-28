@@ -30,8 +30,8 @@ export function DocsLayout({ currentPath, children }: DocsLayoutProps) {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 bg-background/95 backdrop-blur border-b border-border">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link href="/docs/api" className="font-display text-xl tracking-tight">
-            gnubok <span className="text-muted-foreground">/ docs</span>
+          <Link href="/docs/api" className="font-display text-xl tracking-tight" style={{ fontWeight: 700 }}>
+            accounted <span className="text-muted-foreground" style={{ fontWeight: 400 }}>/ docs</span>
           </Link>
           <nav className="flex items-center gap-6 text-sm">
             <Link href="/docs/api/reference" className="text-foreground/80 hover:text-foreground transition-colors">
@@ -96,7 +96,7 @@ export function DocsLayout({ currentPath, children }: DocsLayoutProps) {
 
       <footer className="border-t border-border mt-20">
         <div className="max-w-7xl mx-auto px-6 py-8 text-sm text-muted-foreground flex items-center justify-between">
-          <span>gnubok REST API · Swedish bookkeeping for agents</span>
+          <span>accounted REST API · Swedish bookkeeping for agents</span>
           <span className="font-mono text-xs">AGPL-3.0-or-later</span>
         </div>
       </footer>

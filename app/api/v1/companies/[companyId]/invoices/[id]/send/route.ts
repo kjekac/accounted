@@ -54,6 +54,7 @@ import { createInvoiceJournalEntry } from '@/lib/bookkeeping/invoice-entries'
 import { uploadDocument } from '@/lib/core/documents/document-service'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import { eventBus } from '@/lib/events'
+import { guardSandbox } from '@/lib/sandbox/guard'
 import type { CompanySettings, Customer, EntityType, Invoice, InvoiceItem } from '@/types'
 
 const INVOICE_SEND_RESPONSE_COLUMNS =
@@ -135,6 +136,11 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
         details: { field: 'companyId', message: 'companyId must be a UUID.' },
       })
     }
+
+    // Sandbox demo never sends a real email — guard the whole pipeline
+    // before any number is allocated or PDF is rendered.
+    const blocked = await guardSandbox(ctx.supabase, ctx.companyId!)
+    if (blocked) return blocked
 
     // Step 1: email service configured?
     const emailService = getEmailService()

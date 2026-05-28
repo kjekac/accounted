@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getActiveCompanyId } from '@/lib/company/context'
+import { guardSandbox } from '@/lib/sandbox/guard'
 import { checkAgentRateLimit, agentRateLimitResponseBody } from '@/lib/rate-limits/agent'
 import { gatherComposerInputs, inputsToSourceSignals } from '@/lib/agent/composer/inputs'
 import { selectAtoms } from '@/lib/agent/composer/atom-selection'
@@ -99,6 +100,11 @@ export async function POST(request: Request) {
   if (!membership) {
     return NextResponse.json({ error: 'Not a member of this company' }, { status: 403 })
   }
+
+  // No live composer run for sandbox companies — they ship with a pre-built
+  // verified agent_profile so the chrome is visible without burning Bedrock.
+  const blocked = await guardSandbox(supabase, companyId)
+  if (blocked) return blocked
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {

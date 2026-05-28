@@ -4,8 +4,8 @@ import { DocsMarkdown } from '@/lib/docs/markdown'
 import { buildReferenceOverviewMd } from '@/lib/docs/content/reference'
 
 export const metadata: Metadata = {
-  title: 'API reference · gnubok API',
-  description: 'Every endpoint exposed by the gnubok REST API, grouped by resource.',
+  title: 'API reference · accounted API',
+  description: 'Every endpoint exposed by the accounted REST API, grouped by resource.',
 }
 
 export default function DocsApiReferencePage() {

@@ -1,10 +1,10 @@
 import { API_V1_VERSION } from '@/lib/api/v1/version'
 
-export const LANDING_MD = `# gnubok API
+export const LANDING_MD = `# accounted API
 
 > Swedish double-entry bookkeeping as a public REST API for agents and integrations. API version \`${API_V1_VERSION}\`.
 
-The gnubok API lets you do anything the dashboard can do — create invoices, ingest bank transactions, file VAT declarations, run payroll, and subscribe to webhooks for state changes. Every endpoint is designed for autonomous agents first: machine-readable schemas, dry-run previews, idempotent retries, and inline audit blocks on every write.
+The accounted API lets you do anything the dashboard can do — create invoices, ingest bank transactions, file VAT declarations, run payroll, and subscribe to webhooks for state changes. Every endpoint is designed for autonomous agents first: machine-readable schemas, dry-run previews, idempotent retries, and inline audit blocks on every write.
 
 If you've used [Stripe's API](https://docs.stripe.com/api), the shape will feel familiar — bearer-token auth, dated API versions, webhook signature verification, idempotency keys. The accounting concepts are Swedish (BAS chart, BFL retention, K2/K3, momsdeklaration) but the surface is built for the same kind of integrator.
 
@@ -17,7 +17,7 @@ curl https://gnubok.app/api/v1/companies \\
   -H "Authorization: Bearer gnubok_sk_live_..."
 \`\`\`
 
-Create keys in the gnubok dashboard at **/settings/api**. Two key prefixes are available:
+Create keys in the accounted dashboard at **/settings/api**. Two key prefixes are available:
 
 - \`gnubok_sk_live_*\` — hits real customer data. Use in production.
 - \`gnubok_sk_test_*\` — bound to deterministic sandbox companies. Safe for evals, demos, and agent learning. Same surface, different blast radius.
@@ -105,5 +105,5 @@ For LLM-based agents:
 - **[\`/llms.txt\`](/llms.txt)** — concise agent-discovery index.
 - **[\`/llms-full.txt\`](/llms-full.txt)** — full docs concatenated for ingestion.
 - **[\`/api/v1/openapi.json\`](/api/v1/openapi.json)** — machine-readable OpenAPI 3.1 spec.
-- **[\`/.well-known/skills/index.json\`](/.well-known/skills/index.json)** — gnubok-specific skill catalogue.
+- **[\`/.well-known/skills/index.json\`](/.well-known/skills/index.json)** — accounted-specific skill catalogue.
 `

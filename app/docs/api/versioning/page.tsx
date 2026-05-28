@@ -4,7 +4,7 @@ import { DocsMarkdown } from '@/lib/docs/markdown'
 import { VERSIONING_MD } from '@/lib/docs/content/versioning'
 
 export const metadata: Metadata = {
-  title: 'Versioning · gnubok API',
+  title: 'Versioning · accounted API',
   description: 'How API versions are pinned, upgraded, and deprecated. Plus idempotency, dry-run, and strict-mode write semantics.',
 }
 

@@ -1156,7 +1156,7 @@ function OnboardingCard({
     {
       done: hasAnyItem,
       title: 'Ladda upp eller maila in ett underlag',
-      hint: 'gnubok tolkar fakturan eller kvittot åt dig och fyller i fält automatiskt.',
+      hint: 'accounted tolkar fakturan eller kvittot åt dig och fyller i fält automatiskt.',
     },
     {
       done: hasResolvedItem,
