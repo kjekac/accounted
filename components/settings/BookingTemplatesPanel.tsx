@@ -18,7 +18,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Loader2, Trash2, Plus, ChevronDown, Download, Upload, Building2, Users, Globe } from 'lucide-react'
-import { TEMPLATE_CATEGORY_LABELS } from '@/lib/bookkeeping/template-library'
+import { TEMPLATE_CATEGORY_LABELS, convertLibraryToBookingTemplate } from '@/lib/bookkeeping/template-library'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import type { BookingTemplateLibrary, BookingTemplateCategory, BookingTemplateLibraryLine } from '@/types'
 
@@ -264,38 +264,43 @@ function TemplateSection({
       <div className="space-y-1">
         {templates.map((tt) => {
           const isExpanded = expandedId === tt.id
+          const isConvertible = convertLibraryToBookingTemplate(tt) !== null
           return (
             <div
               key={tt.id}
               className="rounded-lg border"
             >
-              <button
-                type="button"
-                onClick={() => onToggle(isExpanded ? null : tt.id)}
-                className="w-full flex items-center gap-3 p-3 text-left hover:bg-muted/50 transition-colors"
-              >
-                <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${isExpanded ? 'rotate-0' : '-rotate-90'}`} />
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm font-medium">{tt.name}</span>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                      {TEMPLATE_CATEGORY_LABELS[tt.category]}
-                    </Badge>
-                    {tt.entity_type !== 'all' && (
+              <div className="flex items-center gap-3 p-3 hover:bg-muted/50 transition-colors">
+                <button
+                  type="button"
+                  onClick={() => onToggle(isExpanded ? null : tt.id)}
+                  className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                >
+                  <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${isExpanded ? 'rotate-0' : '-rotate-90'}`} />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-medium">{tt.name}</span>
+                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                       <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                        {entityLabels[tt.entity_type]}
+                        {TEMPLATE_CATEGORY_LABELS[tt.category]}
                       </Badge>
-                    )}
+                      {tt.entity_type !== 'all' && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                          {entityLabels[tt.entity_type]}
+                        </Badge>
+                      )}
+                      {!isConvertible && (
+                        <Badge variant="warning" className="text-[10px] px-1.5 py-0">
+                          {t('unconvertible_badge')}
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                </div>
+                </button>
                 {canDelete && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onDelete(tt.id)
-                    }}
+                    onClick={() => onDelete(tt.id)}
                     disabled={deletingId === tt.id}
                     className="h-8 w-8 p-0 shrink-0"
                   >
@@ -306,7 +311,7 @@ function TemplateSection({
                     )}
                   </Button>
                 )}
-              </button>
+              </div>
               {isExpanded && (
                 <div className="px-3 pb-3 pt-0">
                   {tt.description && (
@@ -369,14 +374,56 @@ function CreateTemplateForm({ onCreated, entityLabels }: { onCreated: () => void
     })
   }
 
+  function updateLineType(index: number, newType: BookingTemplateLibraryLine['type']) {
+    setLines((prev) => {
+      const updated = [...prev]
+      const current = updated[index]
+      const next: BookingTemplateLibraryLine = { ...current, type: newType }
+      // Auto-pick a sensible default for the type-specific field so the
+      // converter (and applyTemplate) sees a complete line shape.
+      if (newType === 'vat' && next.vat_rate === undefined) {
+        next.vat_rate = 0.25
+      }
+      updated[index] = next
+      return updated
+    })
+  }
+
+  // Default new lines to a VAT line — the 2-line template starts with one
+  // business + one settlement, and the natural extension is a VAT leg.
+  // Defaulting to 'business' instead would silently break the converter
+  // (which requires exactly one business line) and the template would
+  // disappear from the transaction picker.
   function addLine() {
-    setLines((prev) => [...prev, { account: '', label: '', side: 'debit', type: 'business', ratio: 1 }])
+    setLines((prev) => [...prev, { account: '', label: '', side: 'debit', type: 'vat', vat_rate: 0.25 }])
   }
 
   function removeLine(index: number) {
     if (lines.length <= 2) return
     setLines((prev) => prev.filter((_, i) => i !== index))
   }
+
+  // Real-time check: can this draft be picked from the transaction sheet?
+  // If not, we show a hint — save remains allowed (templates may still be
+  // useful from the journal-entry form).
+  const isConvertible = (() => {
+    const draft: BookingTemplateLibrary = {
+      id: '',
+      company_id: null,
+      team_id: null,
+      created_by: null,
+      name,
+      description,
+      category,
+      entity_type: entityType,
+      lines,
+      is_system: false,
+      is_active: true,
+      created_at: '',
+      updated_at: '',
+    }
+    return convertLibraryToBookingTemplate(draft) !== null
+  })()
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -464,7 +511,7 @@ function CreateTemplateForm({ onCreated, entityLabels }: { onCreated: () => void
                   <SelectItem value="credit">{t('credit_label')}</SelectItem>
                 </SelectContent>
               </Select>
-              <Select value={line.type} onValueChange={(v) => updateLine(i, 'type', v)}>
+              <Select value={line.type} onValueChange={(v) => updateLineType(i, v as BookingTemplateLibraryLine['type'])}>
                 <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="business">{t('type_cost')}</SelectItem>
@@ -472,6 +519,20 @@ function CreateTemplateForm({ onCreated, entityLabels }: { onCreated: () => void
                   <SelectItem value="settlement">{t('type_settlement')}</SelectItem>
                 </SelectContent>
               </Select>
+              {line.type === 'vat' && (
+                <Select
+                  value={String(line.vat_rate ?? 0.25)}
+                  onValueChange={(v) => updateLine(i, 'vat_rate', Number(v))}
+                >
+                  <SelectTrigger className="w-20" aria-label={t('vat_rate_label')}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0.25">{t('vat_rate_25')}</SelectItem>
+                    <SelectItem value="0.12">{t('vat_rate_12')}</SelectItem>
+                    <SelectItem value="0.06">{t('vat_rate_6')}</SelectItem>
+                    <SelectItem value="0">{t('vat_rate_0')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
               <Button
                 type="button"
                 variant="ghost"
@@ -490,6 +551,14 @@ function CreateTemplateForm({ onCreated, entityLabels }: { onCreated: () => void
           </Button>
         </div>
       </div>
+
+      {!isConvertible && (
+        <div className="rounded-lg border border-warning/30 bg-warning/[0.03] px-3 py-2">
+          <p className="text-xs text-warning-foreground leading-snug">
+            {t('unconvertible_hint')}
+          </p>
+        </div>
+      )}
 
       <Button type="submit" disabled={isSubmitting} className="w-full">
         {isSubmitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}

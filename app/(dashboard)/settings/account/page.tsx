@@ -13,6 +13,7 @@ import { CalendarFeedSettings } from '@/components/settings/CalendarFeedSettings
 import { AccountDangerZone } from '@/components/settings/AccountDangerZone'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import { useSettings } from '@/components/settings/useSettings'
+import { clearRecaptIdentity } from '@/lib/recapt'
 import { useToast } from '@/components/ui/use-toast'
 import { SUPPORTED_LOCALES, type Locale } from '@/i18n/config'
 
@@ -32,6 +33,7 @@ export default function AccountSettingsPage() {
   useEffect(() => { setMounted(true) }, [])
 
   async function handleLogout() {
+    clearRecaptIdentity()
     await supabase.auth.signOut()
     router.push('/login')
   }

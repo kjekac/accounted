@@ -69,6 +69,23 @@ async function countPdfPages(buffer: ArrayBuffer): Promise<number | null> {
   }
 }
 
+// Sandbox companies (24h anonymous demo accounts) skip the Bedrock extraction
+// pipeline entirely. The document still uploads, the inbox row still lands,
+// and the user can fill the fields in by hand — but no Claude tokens are
+// spent on a throwaway account. See migration 20260311120000 for the column.
+async function isSandboxCompany(
+  supabase: import('@supabase/supabase-js').SupabaseClient,
+  companyId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('company_settings')
+    .select('is_sandbox')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error || !data) return false
+  return data.is_sandbox === true
+}
+
 // Partial-update schema for the /items/:id/fields PATCH route. Only the
 // scalar fields the UI exposes for inline editing — line items and
 // vatBreakdown stay AI-managed for now and are preserved by the merge.
@@ -195,12 +212,17 @@ async function uploadAndExtract(
     file.type === 'application/pdf' ? await countPdfPages(file.buffer) : null
   const gatedByPageCount =
     pageCount != null && pageCount > MAX_PAGES_FOR_AUTO_EXTRACT
-  const skipExtraction = !!opts.skipExtraction || gatedByPageCount
-  const skipReason: 'too_many_pages' | 'client_opt_out' | null = gatedByPageCount
-    ? 'too_many_pages'
-    : opts.skipExtraction
-      ? 'client_opt_out'
-      : null
+  const sandbox = await isSandboxCompany(supabase, companyId)
+  // Skip-reason priority: sandbox > page-count > client opt-out. Sandbox
+  // wins because it's a hard cost-control rule, not a heuristic.
+  const skipReason: 'too_many_pages' | 'client_opt_out' | 'sandbox' | null = sandbox
+    ? 'sandbox'
+    : gatedByPageCount
+      ? 'too_many_pages'
+      : opts.skipExtraction
+        ? 'client_opt_out'
+        : null
+  const skipExtraction = skipReason !== null
 
   // Bring-your-own-extraction: skip the Bedrock call entirely and seed an
   // empty extraction skeleton. The caller is expected to PUT the parsed
@@ -772,12 +794,20 @@ export const invoiceInboxExtension: Extension = {
 
           // Same page-count gate as /upload (issue #553) — attaching a 6-page
           // sales report to an existing inbox row should not block on Bedrock.
+          // Sandbox companies skip Bedrock unconditionally.
           const pageCount =
             file.type === 'application/pdf' ? await countPdfPages(buffer) : null
           const gatedByPageCount =
             pageCount != null && pageCount > MAX_PAGES_FOR_AUTO_EXTRACT
+          const sandbox = await isSandboxCompany(ctx.supabase, ctx.companyId)
+          const skipReason: 'too_many_pages' | 'sandbox' | null = sandbox
+            ? 'sandbox'
+            : gatedByPageCount
+              ? 'too_many_pages'
+              : null
+          const skipExtraction = skipReason !== null
 
-          const { data: extracted } = gatedByPageCount
+          const { data: extracted } = skipExtraction
             ? { data: emptyResult() }
             : await extractInvoiceFields({
                 buffer: Buffer.from(buffer),
@@ -790,7 +820,7 @@ export const invoiceInboxExtension: Extension = {
             .update({
               document_id: doc.id,
               extracted_data: extracted as unknown as Record<string, unknown>,
-              extraction_skipped: gatedByPageCount,
+              extraction_skipped: skipExtraction,
             })
             .eq('id', id)
             .eq('company_id', ctx.companyId)
@@ -827,8 +857,8 @@ export const invoiceInboxExtension: Extension = {
               document_id: doc.id,
               inbox_item_id: id,
               extracted_data: extracted,
-              extraction_skipped: gatedByPageCount,
-              skip_reason: gatedByPageCount ? 'too_many_pages' : null,
+              extraction_skipped: skipExtraction,
+              skip_reason: skipReason,
               page_count: pageCount,
             },
           })
@@ -1070,6 +1100,13 @@ export const invoiceInboxExtension: Extension = {
           return NextResponse.json(
             { error: 'Ingen bilaga att tolka om.' },
             { status: 400 },
+          )
+        }
+
+        if (await isSandboxCompany(ctx.supabase, ctx.companyId)) {
+          return NextResponse.json(
+            { error: 'AI-tolkning är inte tillgänglig i sandlådan.' },
+            { status: 409 },
           )
         }
 

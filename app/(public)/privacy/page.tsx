@@ -18,7 +18,7 @@ export default function PrivacyPolicyPage() {
             Integritetspolicy
           </h1>
           <p className="text-muted-foreground">
-            Senast uppdaterad: 2026-03-05
+            Senast uppdaterad: 2026-05-28
           </p>
         </div>
 
@@ -123,6 +123,16 @@ export default function PrivacyPolicyPage() {
                     <td className="py-2 pr-4">Transaktionell e-postleverans</td>
                     <td className="py-2 pr-4">USA</td>
                     <td className="py-2">SCCs (standardavtalsklausuler)</td>
+                  </tr>
+                  <tr className="border-b">
+                    <td className="py-2 pr-4 font-medium">Recapt</td>
+                    <td className="py-2 pr-4">
+                      Produktanalys och användarfeedback. Laddas endast för
+                      inloggade användare (ej sandbox/demo). Överförda
+                      uppgifter: användar-ID, e-postadress och företagsnamn.
+                    </td>
+                    <td className="py-2 pr-4">EU</td>
+                    <td className="py-2">SCCs vid eventuella underbiträden utanför EES</td>
                   </tr>
                 </tbody>
               </table>

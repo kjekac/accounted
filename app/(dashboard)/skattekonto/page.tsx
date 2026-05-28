@@ -445,7 +445,7 @@ function BalanceHero({
 
         {saldo.lastSyncedAt && (
           <p className="text-xs text-muted-foreground">
-            Senast synkad{' '}
+            Synkas automatiskt varje natt. Senast synkad{' '}
             <span className="tabular-nums">
               {new Date(saldo.lastSyncedAt).toLocaleString('sv-SE')}
             </span>

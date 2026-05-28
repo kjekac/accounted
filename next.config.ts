@@ -11,9 +11,14 @@ const activepiecesUrl = process.env.ACTIVEPIECES_URL ?? "";
 
 const cspDirectives = [
   "default-src 'self'",
-  `connect-src 'self' ${supabaseUrl} https://*.supabase.co wss://*.supabase.co https://*.enablebanking.com`,
+  // Recapt: scoped to the two specific hosts the SDK actually contacts —
+  // `cdn.recapt.app` for the script bundle and `api.recapt.app` for
+  // ingestion. The previous wildcard (`https://*.recapt.app`) allowed
+  // exfiltration to any subdomain of recapt.app and is intentionally
+  // narrowed.
+  `connect-src 'self' ${supabaseUrl} https://*.supabase.co wss://*.supabase.co https://*.enablebanking.com https://api.recapt.app https://cdn.recapt.app`,
   `style-src 'self' 'unsafe-inline' https://*.enablebanking.com`,
-  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://*.enablebanking.com`,
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://*.enablebanking.com https://cdn.recapt.app`,
   "img-src 'self' data: blob: https:",
   "font-src 'self'",
   "worker-src 'self' blob:",

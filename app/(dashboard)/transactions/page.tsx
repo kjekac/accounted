@@ -24,6 +24,7 @@ import { ChevronDown, Search, Trash2, X } from 'lucide-react'
 import TransactionForm from '@/components/transactions/TransactionForm'
 import BatchCategorySelector from '@/components/transactions/BatchCategorySelector'
 import TransactionStatusBar from '@/components/transactions/TransactionStatusBar'
+import BankSyncStatusChip from '@/components/transactions/BankSyncStatusChip'
 import TransactionInboxCard from '@/components/transactions/TransactionInboxCard'
 import TransactionHistoryList from '@/components/transactions/TransactionHistoryList'
 import InboxZeroState from '@/components/transactions/InboxZeroState'
@@ -1512,6 +1513,8 @@ export default function TransactionsPage() {
         isBatchMode={isBatchMode}
         onToggleBatchMode={() => (isBatchMode ? exitBatchMode() : setIsBatchMode(true))}
       />
+
+      <BankSyncStatusChip />
 
       {/* Search + view dropdown */}
       <div className="flex items-center gap-2">

@@ -1288,7 +1288,14 @@
     "debit_label": "Debet",
     "credit_label": "Kredit",
     "add_line": "Lägg till rad",
-    "create_button": "Skapa mall"
+    "create_button": "Skapa mall",
+    "vat_rate_label": "Momssats",
+    "vat_rate_25": "25 %",
+    "vat_rate_12": "12 %",
+    "vat_rate_6": "6 %",
+    "vat_rate_0": "0 % (export/omvänd/momsfri)",
+    "unconvertible_hint": "Den här mallen kan inte väljas direkt vid bokföring av en transaktion — den används från ett verifikat. För att visas i transaktionslistan krävs exakt en kostnads-/intäktsrad och en betalningsrad på motsatt sida.",
+    "unconvertible_badge": "Endast i verifikat"
   },
   "settings_counterparty_templates": {
     "title": "Bokföringsmallar",
@@ -3167,7 +3174,15 @@
     "deleted_title": "Borttagen",
     "deleted_description": "Transaktionen har tagits bort",
     "delete_failed_description": "Transaktionen kunde inte tas bort. Försök igen.",
-    "review_in_bookkeeping_description": "Granska och bokför verifikatet i Bokföring."
+    "review_in_bookkeeping_description": "Granska och bokför verifikatet i Bokföring.",
+    "bank_sync_attention_one": "1 bankanslutning behöver förnyas",
+    "bank_sync_attention_many": "{count} bankanslutningar behöver förnyas",
+    "bank_sync_auto_nightly": "Synkas automatiskt varje natt",
+    "bank_sync_last_separator": " · senast ",
+    "bank_sync_age_just_now": "just nu",
+    "bank_sync_age_minutes": "{count} min sedan",
+    "bank_sync_age_hours": "{count} tim sedan",
+    "bank_sync_age_days": "{count} d sedan"
   },
   "bookkeeping": {
     "title": "Bokföring",

@@ -35,6 +35,7 @@ import {
 import { getBranding } from '@/lib/branding/service'
 import { ENABLED_EXTENSION_IDS as _ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import { resolveIcon } from '@/lib/extensions/icon-resolver'
+import { clearRecaptIdentity } from '@/lib/recapt'
 import { SupportLink } from '@/components/ui/support-link'
 import {
   DropdownMenu,
@@ -212,6 +213,7 @@ export default function DashboardNav({ companyName: _companyName, entityType, un
   }
 
   const handleLogout = async () => {
+    clearRecaptIdentity()
     await supabase.auth.signOut()
     router.push(isSandbox ? '/sandbox' : '/login')
   }

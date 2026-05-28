@@ -67,4 +67,4 @@ supabase/.temp/
 # out of the box without running the generator.
 supabase/.branches/
 
-scripts\remap-krister-bas96-to-bas2025.ts
+/scripts

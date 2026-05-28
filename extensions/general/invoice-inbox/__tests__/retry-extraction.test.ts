@@ -123,6 +123,7 @@ describe('POST /items/:id/retry-extraction', () => {
       data: { id: 'item-1', document_id: 'doc-1', correlation_id: null, created_supplier_invoice_id: null },
       error: null,
     })
+    enqueue({ data: { is_sandbox: false }, error: null }) // sandbox check
     enqueue({
       data: { storage_path: 'path/to.pdf', mime_type: 'application/pdf', file_name: 'invoice.pdf' },
       error: null,
@@ -150,6 +151,7 @@ describe('POST /items/:id/retry-extraction', () => {
       data: { id: 'item-1', document_id: 'doc-1', correlation_id: null, created_supplier_invoice_id: null },
       error: null,
     })
+    enqueue({ data: { is_sandbox: false }, error: null }) // sandbox check
     enqueue({
       data: { storage_path: 'path/to.pdf', mime_type: 'application/pdf', file_name: 'invoice.pdf' },
       error: null,

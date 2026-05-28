@@ -1288,7 +1288,14 @@
     "debit_label": "Debit",
     "credit_label": "Credit",
     "add_line": "Add line",
-    "create_button": "Create template"
+    "create_button": "Create template",
+    "vat_rate_label": "VAT rate",
+    "vat_rate_25": "25%",
+    "vat_rate_12": "12%",
+    "vat_rate_6": "6%",
+    "vat_rate_0": "0% (export/reverse-charge/exempt)",
+    "unconvertible_hint": "This template can't be picked directly when booking a transaction — it's used from a journal entry. To appear in the transaction list, it needs exactly one cost/revenue line and one settlement line on opposite sides.",
+    "unconvertible_badge": "Journal entries only"
   },
   "settings_counterparty_templates": {
     "title": "Bookkeeping templates",
@@ -3167,7 +3174,15 @@
     "deleted_title": "Deleted",
     "deleted_description": "The transaction has been deleted",
     "delete_failed_description": "The transaction could not be deleted. Please try again.",
-    "review_in_bookkeeping_description": "Review and post the journal entry in Bookkeeping."
+    "review_in_bookkeeping_description": "Review and post the journal entry in Bookkeeping.",
+    "bank_sync_attention_one": "1 bank connection needs renewal",
+    "bank_sync_attention_many": "{count} bank connections need renewal",
+    "bank_sync_auto_nightly": "Synced automatically each night",
+    "bank_sync_last_separator": " · last ",
+    "bank_sync_age_just_now": "just now",
+    "bank_sync_age_minutes": "{count} min ago",
+    "bank_sync_age_hours": "{count} h ago",
+    "bank_sync_age_days": "{count} d ago"
   },
   "bookkeeping": {
     "title": "Bookkeeping",

@@ -1,6 +1,25 @@
 import { describe, it, expect } from 'vitest'
-import { applyTemplate, getTemplateScope, TEMPLATE_CATEGORY_LABELS } from '../template-library'
-import type { BookingTemplateLibraryLine } from '@/types'
+import { applyTemplate, convertLibraryToBookingTemplate, getTemplateScope, LIBRARY_TEMPLATE_PREFIX, TEMPLATE_CATEGORY_LABELS } from '../template-library'
+import type { BookingTemplateLibrary, BookingTemplateLibraryLine } from '@/types'
+
+function makeLibraryTemplate(lines: BookingTemplateLibraryLine[], overrides: Partial<BookingTemplateLibrary> = {}): BookingTemplateLibrary {
+  return {
+    id: 'tpl-1',
+    company_id: 'co-1',
+    team_id: null,
+    created_by: 'user-1',
+    name: 'Test template',
+    description: '',
+    category: 'other',
+    entity_type: 'all',
+    lines,
+    is_system: false,
+    is_active: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
 
 describe('applyTemplate', () => {
   it('creates simple two-line debit/credit entries', () => {
@@ -94,5 +113,91 @@ describe('TEMPLATE_CATEGORY_LABELS', () => {
     expect(Object.keys(TEMPLATE_CATEGORY_LABELS)).toHaveLength(9)
     expect(TEMPLATE_CATEGORY_LABELS.eu_trade).toBe('EU-handel')
     expect(TEMPLATE_CATEGORY_LABELS.tax_account).toBe('Skattekonto')
+  })
+})
+
+describe('convertLibraryToBookingTemplate', () => {
+  it('converts a simple 2-line business + settlement template', () => {
+    const tpl = makeLibraryTemplate([
+      { account: '6072', label: 'Representation', side: 'debit', type: 'business', ratio: 1 },
+      { account: '1930', label: 'Företagskonto', side: 'credit', type: 'settlement', ratio: 1 },
+    ])
+    const result = convertLibraryToBookingTemplate(tpl)
+    expect(result).not.toBeNull()
+    expect(result!.id).toBe(`${LIBRARY_TEMPLATE_PREFIX}tpl-1`)
+    expect(result!.direction).toBe('expense')
+    expect(result!.debit_account).toBe('6072')
+    expect(result!.credit_account).toBe('1930')
+    expect(result!.vat_treatment).toBeNull()
+  })
+
+  it('identifies direction "income" when business line is on credit', () => {
+    const tpl = makeLibraryTemplate([
+      { account: '3001', label: 'Försäljning', side: 'credit', type: 'business', ratio: 1 },
+      { account: '1930', label: 'Företagskonto', side: 'debit', type: 'settlement', ratio: 1 },
+    ])
+    const result = convertLibraryToBookingTemplate(tpl)
+    expect(result).not.toBeNull()
+    expect(result!.direction).toBe('income')
+    expect(result!.debit_account).toBe('1930')
+    expect(result!.credit_account).toBe('3001')
+  })
+
+  it.each([
+    [0.25, 'standard_25'],
+    [0.12, 'reduced_12'],
+    [0.06, 'reduced_6'],
+  ] as const)('extracts VAT treatment for rate %f', (rate, treatment) => {
+    const tpl = makeLibraryTemplate([
+      { account: '4010', label: 'Varor', side: 'debit', type: 'business', ratio: 1 },
+      { account: '2641', label: 'Ingående moms', side: 'debit', type: 'vat', vat_rate: rate },
+      { account: '1930', label: 'Bank', side: 'credit', type: 'settlement', ratio: 1 },
+    ])
+    const result = convertLibraryToBookingTemplate(tpl)
+    expect(result).not.toBeNull()
+    expect(result!.vat_treatment).toBe(treatment)
+    expect(result!.vat_rate).toBe(rate)
+  })
+
+  it('detects reverse charge via 2614 fictitious output VAT', () => {
+    const tpl = makeLibraryTemplate([
+      { account: '4056', label: 'EU-varor', side: 'debit', type: 'business', ratio: 1 },
+      { account: '2614', label: 'Utg. moms omv.', side: 'credit', type: 'vat', vat_rate: 0.25 },
+      { account: '2645', label: 'Ing. moms omv.', side: 'debit', type: 'vat', vat_rate: 0.25 },
+      { account: '1930', label: 'Bank', side: 'credit', type: 'settlement', ratio: 1 },
+    ])
+    const result = convertLibraryToBookingTemplate(tpl)
+    expect(result).not.toBeNull()
+    expect(result!.vat_treatment).toBe('reverse_charge')
+  })
+
+  it('returns null when there are 2 business lines', () => {
+    const tpl = makeLibraryTemplate([
+      { account: '6072', label: 'A', side: 'debit', type: 'business', ratio: 0.5 },
+      { account: '6073', label: 'B', side: 'debit', type: 'business', ratio: 0.5 },
+      { account: '1930', label: 'Bank', side: 'credit', type: 'settlement', ratio: 1 },
+    ])
+    expect(convertLibraryToBookingTemplate(tpl)).toBeNull()
+  })
+
+  it('returns null when there is no settlement line', () => {
+    const tpl = makeLibraryTemplate([
+      { account: '6072', label: 'A', side: 'debit', type: 'business', ratio: 1 },
+      { account: '2641', label: 'Moms', side: 'debit', type: 'vat', vat_rate: 0.25 },
+    ])
+    expect(convertLibraryToBookingTemplate(tpl)).toBeNull()
+  })
+
+  it('returns null when business and settlement are on the same side', () => {
+    const tpl = makeLibraryTemplate([
+      { account: '6072', label: 'A', side: 'debit', type: 'business', ratio: 1 },
+      { account: '1930', label: 'Bank', side: 'debit', type: 'settlement', ratio: 1 },
+    ])
+    expect(convertLibraryToBookingTemplate(tpl)).toBeNull()
+  })
+
+  it('returns null when lines is not an array', () => {
+    const tpl = makeLibraryTemplate([], { lines: null as unknown as BookingTemplateLibraryLine[] })
+    expect(convertLibraryToBookingTemplate(tpl)).toBeNull()
   })
 })
