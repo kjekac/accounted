@@ -1931,6 +1931,141 @@ const MATCH_BATCH: Record<string, StructuredErrorEntry> = {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Bulk-book (bulk_book_transactions RPC): N txs → 1 verifikat
+// ─────────────────────────────────────────────────────────────────
+
+const BULK_BOOK: Record<string, StructuredErrorEntry> = {
+  BULK_BOOK_UNAUTHORIZED: {
+    httpStatus: 403,
+    message_sv: 'Du har inte behörighet att bokföra transaktioner för det här företaget.',
+    message_en: 'You are not authorized to bulk-book transactions for this company.',
+  },
+  BULK_BOOK_NO_TXS: {
+    httpStatus: 400,
+    message_sv: 'Inga transaktioner att bokföra.',
+    message_en: 'No transactions to book.',
+  },
+  BULK_BOOK_TXS_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'En eller flera transaktioner kunde inte hittas i det aktuella företaget.',
+    message_en: 'One or more transactions could not be found in this company.',
+  },
+  BULK_BOOK_TX_ALREADY_BOOKED: {
+    httpStatus: 409,
+    message_sv:
+      'En av de valda transaktionerna är redan bokförd. Avbokföra (storno) den först eller välj bort den.',
+    message_en:
+      'One of the selected transactions is already booked. Reverse the existing journal entry first or deselect it.',
+  },
+  BULK_BOOK_TX_ZERO_AMOUNT: {
+    httpStatus: 400,
+    message_sv: 'Transaktioner med beloppet 0 kan inte ingå i en samlingsbokföring.',
+    message_en: 'Zero-amount transactions cannot be part of a bulk booking.',
+  },
+  BULK_BOOK_DATE_MISMATCH: {
+    httpStatus: 400,
+    message_sv:
+      'Alla transaktioner i en samlingsbokföring måste ha samma datum (BFL 5 kap 6§).',
+    message_en:
+      'All transactions in a bulk booking must share the same date (BFL 5 kap 6§).',
+  },
+  BULK_BOOK_DIRECTION_MISMATCH: {
+    httpStatus: 400,
+    message_sv:
+      'Alla transaktioner måste vara samma riktning (alla intäkter eller alla utgifter).',
+    message_en: 'All transactions must be the same direction (all income or all expense).',
+  },
+  BULK_BOOK_MIXED_CURRENCY: {
+    httpStatus: 400,
+    message_sv:
+      'Samlingsbokföring stödjer endast transaktioner i samma valuta. Välj transaktioner i en valuta åt gången.',
+    message_en:
+      'Bulk booking supports only single-currency batches. Select transactions in one currency at a time.',
+  },
+  BULK_BOOK_INVALID_PAYLOAD: {
+    httpStatus: 400,
+    message_sv:
+      'Ange antingen existing_journal_entry_id (länkning) eller template_id (skapa ny) — inte båda, och inte ingen.',
+    message_en:
+      'Provide either existing_journal_entry_id (link) or template_id (create new) — not both, and not neither.',
+  },
+  BULK_BOOK_TEMPLATE_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Den valda bokföringsmallen kunde inte hittas.',
+    message_en: 'The selected booking template could not be found.',
+  },
+  BULK_BOOK_VOUCHER_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Verifikationen kunde inte hittas.',
+    message_en: 'The target journal entry could not be found.',
+  },
+  BULK_BOOK_VOUCHER_NOT_POSTED: {
+    httpStatus: 409,
+    message_sv: 'Endast bokförda verifikationer kan länkas mot banktransaktioner.',
+    message_en: 'Only posted journal entries can be linked.',
+  },
+  BULK_BOOK_NO_BANK_LINE: {
+    httpStatus: 400,
+    message_sv:
+      'Verifikationen har ingen rad på bankkonto (19xx). Den kan inte länkas mot banktransaktioner.',
+    message_en:
+      'The journal entry has no bank-account (19xx) line and cannot be linked to bank transactions.',
+  },
+  BULK_BOOK_AMOUNT_MISMATCH: {
+    httpStatus: 400,
+    message_sv:
+      'Summan av transaktionerna stämmer inte med bankradens nettobelopp på verifikationen.',
+    message_en:
+      'The sum of the selected transactions does not match the bank-line net amount on the journal entry.',
+  },
+  BULK_BOOK_NO_LINES: {
+    httpStatus: 400,
+    message_sv: 'Verifikationen måste innehålla minst två rader (debit och kredit).',
+    message_en: 'The journal entry must contain at least two lines (debit and credit).',
+  },
+  BULK_BOOK_UNBALANCED: {
+    httpStatus: 400,
+    message_sv: 'Verifikationen balanserar inte — summa debet måste lika summa kredit.',
+    message_en: 'The journal entry does not balance — debits must equal credits.',
+  },
+  BULK_BOOK_NEGATIVE_LINE: {
+    httpStatus: 400,
+    message_sv: 'Verifikationsrader kan inte ha negativa belopp.',
+    message_en: 'Journal entry lines cannot have negative amounts.',
+  },
+  BULK_BOOK_BOTH_SIDES_NONZERO: {
+    httpStatus: 400,
+    message_sv: 'En verifikationsrad kan inte ha både debet och kredit nollskilda.',
+    message_en: 'A journal entry line cannot have both debit and credit non-zero.',
+  },
+  BULK_BOOK_MISSING_DESCRIPTION: {
+    httpStatus: 400,
+    message_sv: 'Beskrivning krävs för en ny samlingsverifikation.',
+    message_en: 'Description is required when creating a new combined journal entry.',
+  },
+  BULK_BOOK_NO_FISCAL_PERIOD: {
+    httpStatus: 400,
+    message_sv:
+      'Det finns ingen öppen räkenskapsperiod för transaktionsdatumet. Skapa perioden först.',
+    message_en:
+      'No fiscal period exists for the transaction date. Create the period first.',
+  },
+  BULK_BOOK_PERIOD_LOCKED: {
+    httpStatus: 409,
+    message_sv:
+      'Räkenskapsperioden för transaktionsdatumet är stängd. Öppna perioden eller välj ett annat datum.',
+    message_en:
+      'The fiscal period for the transaction date is closed/locked.',
+  },
+  BULK_BOOK_RPC_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Databasfel under samlingsbokföring. Försök igen.',
+    message_en: 'Database error during bulk booking. Please retry.',
+    retryable: true,
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Combined registry
 // ─────────────────────────────────────────────────────────────────
 
@@ -1943,6 +2078,7 @@ const REGISTRY: Record<string, StructuredErrorEntry> = {
   ...LINK_INVOICE_VOUCHER,
   ...LINK_SI_VOUCHER,
   ...MATCH_BATCH,
+  ...BULK_BOOK,
   ...MATCH_SI,
   ...INVOICE,
   ...SUPPLIER_INVOICE,

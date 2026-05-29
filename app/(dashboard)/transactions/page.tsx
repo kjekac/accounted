@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
@@ -20,7 +20,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from '@/components/ui/dropdown-menu'
-import { ChevronDown, Search, Trash2, X } from 'lucide-react'
+import { ChevronDown, Layers, Search, Trash2, X } from 'lucide-react'
 import TransactionForm from '@/components/transactions/TransactionForm'
 import BatchCategorySelector from '@/components/transactions/BatchCategorySelector'
 import TransactionStatusBar from '@/components/transactions/TransactionStatusBar'
@@ -34,6 +34,7 @@ import InvoiceMatchDialog from '@/components/transactions/InvoiceMatchDialog'
 import InvoicePicker from '@/components/transactions/InvoicePicker'
 import SupplierInvoicePicker from '@/components/transactions/SupplierInvoicePicker'
 import MatchAllocationDialog from '@/components/transactions/MatchAllocationDialog'
+import BulkBookDialog from '@/components/transactions/BulkBookDialog'
 import TransactionBookingDialog from '@/components/transactions/TransactionBookingDialog'
 import QuickReviewDialog from '@/components/transactions/QuickReviewDialog'
 
@@ -123,6 +124,7 @@ export default function TransactionsPage() {
   const [supplierInvoicePickerTransaction, setSupplierInvoicePickerTransaction] = useState<TransactionWithInvoice | null>(null)
   const [splitMatchOpen, setSplitMatchOpen] = useState(false)
   const [splitMatchTransaction, setSplitMatchTransaction] = useState<TransactionWithInvoice | null>(null)
+  const [bulkBookOpen, setBulkBookOpen] = useState(false)
   const [isMatchingSupplierFromPicker, setIsMatchingSupplierFromPicker] = useState(false)
   const [isMatchingFromPicker, setIsMatchingFromPicker] = useState(false)
 
@@ -1190,6 +1192,44 @@ export default function TransactionsPage() {
     setSplitMatchOpen(true)
   }
 
+  // Selected-tx derivation for bulk-book eligibility.
+  // The action bar shows "Bokför i klump" only when ≥2 txs are selected,
+  // share the same date, and same direction (all income or all expense) —
+  // matches the RPC's same-day + same-direction invariants so the user
+  // doesn't submit a guaranteed-fail batch.
+  const selectedTransactions = useMemo(
+    () => transactions.filter((t) => selectedIds.has(t.id)),
+    [transactions, selectedIds],
+  )
+  const bulkBookEligible = useMemo(() => {
+    if (selectedTransactions.length < 2) return false
+    const first = selectedTransactions[0]!
+    return selectedTransactions.every(
+      (t) => t.date === first.date && (t.amount > 0) === (first.amount > 0),
+    )
+  }, [selectedTransactions])
+
+  async function handleBulkBookSuccess() {
+    // Animate every selected tx out of the inbox, then refetch and clear
+    // the selection state. Mirrors the per-tx match success animation.
+    const ids = Array.from(selectedIds)
+    setExitingIds((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) next.add(id)
+      return next
+    })
+    await fetchTransactions()
+    setSelectedIds(new Set())
+    setIsBatchMode(false)
+    setTimeout(() => {
+      setExitingIds((prev) => {
+        const next = new Set(prev)
+        for (const id of ids) next.delete(id)
+        return next
+      })
+    }, 350)
+  }
+
   async function handleSplitMatchSuccess() {
     if (!splitMatchTransaction) return
     const txId = splitMatchTransaction.id
@@ -1799,6 +1839,23 @@ export default function TransactionsPage() {
                 <Trash2 className="mr-1 h-3 w-3" />
                 Ta bort
               </Button>
+              {/* Bulk-book (samlingsverifikation) — only when ≥2 selected on
+                  the same date + same direction. Disabled state explains why
+                  via title. */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBulkBookOpen(true)}
+                disabled={!bulkBookEligible}
+                title={
+                  !bulkBookEligible
+                    ? 'Välj minst två transaktioner från samma datum och samma riktning'
+                    : 'Skapa en samlingsverifikation för de valda transaktionerna'
+                }
+              >
+                <Layers className="mr-1 h-3 w-3" />
+                Bokför i klump
+              </Button>
               <Button size="sm" onClick={() => setShowBatchSelector(true)}>
                 Bokför
               </Button>
@@ -1833,6 +1890,13 @@ export default function TransactionsPage() {
         }}
         transaction={splitMatchTransaction}
         onSuccess={handleSplitMatchSuccess}
+      />
+
+      <BulkBookDialog
+        open={bulkBookOpen}
+        onOpenChange={setBulkBookOpen}
+        transactions={selectedTransactions}
+        onSuccess={handleBulkBookSuccess}
       />
 
       <TransactionBookingDialog

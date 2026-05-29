@@ -519,6 +519,62 @@ export const LinkSupplierInvoiceToVoucherSchema = z.object({
 })
 
 /**
+ * Bulk-book N bank transactions on the same date into one combined verifikat
+ * (samlingsverifikation per BFL 5 kap 6§). Two flows multiplexed by which
+ * field is set:
+ *
+ *   - `existing_journal_entry_id`: link the txs to an already-posted voucher
+ *     (no new JE created). The voucher's 19xx net must equal the tx sum.
+ *
+ *   - `template_id` + `mode` + `entry_description`: build a new verifikat
+ *     by applying the booking template to each tx. The route does the ratio
+ *     expansion (one_line_per_tx OR sum_per_account) and passes the final
+ *     lines to the RPC.
+ *
+ * Exactly one of the two paths must be set — enforced by superRefine.
+ */
+export const BulkBookSchema = z
+  .object({
+    tx_ids: z
+      .array(uuid)
+      .min(1, 'At least one transaction is required')
+      .max(200, 'At most 200 transactions per batch'),
+    existing_journal_entry_id: uuid.optional(),
+    template_id: uuid.optional(),
+    mode: z.enum(['one_line_per_tx', 'sum_per_account']).optional(),
+    entry_description: z.string().min(1).max(500).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasExisting = !!data.existing_journal_entry_id
+    const hasTemplate = !!data.template_id
+    if (hasExisting === hasTemplate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Provide either existing_journal_entry_id (link) or template_id (create new) — not both, and not neither',
+        path: ['existing_journal_entry_id'],
+      })
+      return
+    }
+    if (hasTemplate) {
+      if (!data.mode) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'mode is required when template_id is set',
+          path: ['mode'],
+        })
+      }
+      if (!data.entry_description) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'entry_description is required when template_id is set',
+          path: ['entry_description'],
+        })
+      }
+    }
+  })
+
+/**
  * Allocate one bank transaction across N customer OR N supplier invoices.
  * Backed by the match_batch_allocate PL/pgSQL RPC, which builds a single
  * combined verifikat (samlingsverifikation) and inserts N payment rows.
