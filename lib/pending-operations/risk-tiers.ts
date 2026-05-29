@@ -61,6 +61,9 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   // but not the irreversible tier that year-end close / period lock occupy.
   post_annual_depreciation: 'medium',
   import_sie: 'high',
+  // Hard-deletes the import's journal entries + resets voucher sequences.
+  // Same destructive reach as replace_sie_import; never auto-commit.
+  undo_sie_import: 'high',
   explain_voucher_gap: 'medium',
   uncategorize_transaction: 'medium',
   approve_supplier_invoice: 'high',

@@ -9,7 +9,7 @@ import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
-import { ArrowLeftRight, ArrowRightLeft, FileText, ArrowLeft, Landmark, Loader2, Info, ChevronRight, FileSpreadsheet, Download } from 'lucide-react'
+import { ArrowLeftRight, ArrowRightLeft, FileText, ArrowLeft, Landmark, Loader2, Info, ChevronRight, FileSpreadsheet, Download, AlertTriangle } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -73,6 +73,7 @@ import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-exten
 import dynamic from 'next/dynamic'
 import { FiscalYearSelector } from '@/components/common/FiscalYearSelector'
 import CloudBackupCard from '@/extensions/general/cloud-backup/components/CloudBackupCard'
+import BankSyncStatusChip from '@/components/transactions/BankSyncStatusChip'
 
 const MigrationWizard = dynamic(
   () => import('@/components/extensions/general/ArcimMigrationWorkspace'),
@@ -98,6 +99,8 @@ const BANK_STEP_LABELS: Record<BankFileStep, string> = {
 
 function BankFileImportWizard() {
   const { toast } = useToast()
+  const tTx = useTranslations('transactions')
+  const { company } = useCompany()
 
   const [bankStep, setBankStep] = useState<BankFileStep>('upload')
   const [bankIsLoading, setBankIsLoading] = useState(false)
@@ -113,6 +116,28 @@ function BankFileImportWizard() {
 
   // Import result
   const [ingestResult, setIngestResult] = useState<IngestResult | null>(null)
+
+  // Active PSD2 connections — drives an overlap warning so users don't
+  // accidentally upload a CSV covering periods we already sync nightly.
+  const [activePsd2Banks, setActivePsd2Banks] = useState<string[]>([])
+  useEffect(() => {
+    if (!company?.id) return
+    let cancelled = false
+    const supabase = createClient()
+    supabase
+      .from('bank_connections')
+      .select('bank_name')
+      .eq('company_id', company.id)
+      .eq('status', 'active')
+      .then(({ data }) => {
+        if (cancelled) return
+        const names = Array.from(new Set((data ?? []).map((r) => r.bank_name).filter(Boolean)))
+        setActivePsd2Banks(names)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [company?.id])
 
   const steps = parseResult?.format === 'generic_csv' ? BANK_STEPS_WITH_MAPPING : BANK_STEPS
   const currentStepIndex = steps.indexOf(bankStep)
@@ -239,6 +264,25 @@ function BankFileImportWizard() {
 
   return (
     <div className="space-y-6">
+      {/* Status chip for at-a-glance "auto-sync is healthy / stale / needs attention" */}
+      <BankSyncStatusChip />
+
+      {/* Overlap warning — active PSD2 means file import will likely create
+          duplicates of transactions the nightly sync already covers. */}
+      {activePsd2Banks.length > 0 && (
+        <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/5 p-4">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+          <div className="flex-1 text-sm">
+            <p className="font-medium">
+              {tTx('import_psd2_active_warning_title', { bankName: activePsd2Banks.join(', ') })}
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              {tTx('import_psd2_active_warning_body')}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Progress */}
       <Card>
         <CardContent className="pt-6">

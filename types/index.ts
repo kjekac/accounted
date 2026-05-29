@@ -256,6 +256,10 @@ export interface CompanySettings {
    */
   default_voucher_series_per_source_type: Partial<Record<JournalEntrySourceType, string>>
 
+  // Most recently picked BAS account for supplier invoice payments — used to
+  // default the mark-paid dialog so repeat payments don't force re-picking.
+  last_supplier_payment_account: string | null
+
   // Invoice PDF settings
   ore_rounding: boolean
   invoice_show_ocr: boolean
@@ -439,6 +443,11 @@ export interface Transaction {
 
   // Reconciliation
   reconciliation_method: ReconciliationMethod | null
+
+  // User has chosen to suppress this transaction from the bank reconciliation
+  // view without booking it. See migration
+  // 20260529140000_transactions_is_ignored.sql for the rationale.
+  is_ignored: boolean
 
   // Import tracking
   import_source: string | null
@@ -1520,6 +1529,9 @@ export type PendingOperationType =
   | 'run_currency_revaluation'
   // Stream 1 Phase 1: SIE import (export is read-only)
   | 'import_sie'
+  // SIE undo: hard-deletes the import's journal entries and releases the
+  // (company_id, file_hash) slot. Recovery for botched imports.
+  | 'undo_sie_import'
   // Stream 1 Phase 1: voucher gap explanations
   | 'explain_voucher_gap'
   // Stream 1 Phase 1: transaction reversal
@@ -2869,7 +2881,7 @@ export type SalaryLineItemType =
   | 'gross_deduction_pension' | 'gross_deduction_other'
   | 'benefit_car' | 'benefit_housing' | 'benefit_meals' | 'benefit_wellness' | 'benefit_bike' | 'benefit_other'
   | 'sick_karens' | 'sick_day2_14' | 'sick_day15_plus'
-  | 'vab' | 'parental_leave' | 'vacation' | 'semesterersattning'
+  | 'vab' | 'parental_leave' | 'unpaid_leave' | 'vacation' | 'semesterersattning'
   | 'traktamente_taxfree' | 'traktamente_taxable'
   | 'mileage_taxfree' | 'mileage_taxable'
   | 'net_deduction_advance' | 'net_deduction_union' | 'net_deduction_benefit_payment'

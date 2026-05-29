@@ -15,7 +15,7 @@ import {
   createSupplierInvoicePaymentEntry,
   createSupplierInvoiceCashEntry,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
-import { reverseEntry } from '@/lib/bookkeeping/engine'
+import { reverseEntry, createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { logMatchEvent } from '@/lib/invoices/match-log'
@@ -103,7 +103,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
         },
       })
     }
-    const { supplier_invoice_id } = parsed.data
+    const { supplier_invoice_id, lines: customLines } = parsed.data
     const txLog = ctx.log.child({ transactionId: txId, supplierInvoiceId: supplier_invoice_id })
 
     const { data: transaction, error: fetchTxErr } = await ctx.supabase
@@ -209,7 +209,13 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       .single()
     const accountingMethod = settings?.accounting_method || 'accrual'
 
-    if (accountingMethod === 'cash' && exchangeRateDifference !== 0) {
+    // Route on the supplier invoice's actual booking state. An invoice
+    // booked at receipt (registration_journal_entry_id set) must clear
+    // 2440 regardless of the company's current setting.
+    const siAlreadyBooked = !!(invoice as { registration_journal_entry_id?: string | null }).registration_journal_entry_id
+    const useCashEntry = !siAlreadyBooked && accountingMethod === 'cash'
+
+    if (useCashEntry && exchangeRateDifference !== 0) {
       return v1ErrorResponseFromCode('MATCH_SI_CASH_FX_UNSUPPORTED', txLog, {
         requestId: ctx.requestId,
         details: {
@@ -224,7 +230,36 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     // payment JE can't be created. See the parallel comment in match-invoice.
     let journalEntryId: string | null = null
     try {
-      if (accountingMethod === 'cash') {
+      if (customLines) {
+        const totalDebit = customLines.reduce((s, l) => s + l.debit_amount, 0)
+        const totalCredit = customLines.reduce((s, l) => s + l.credit_amount, 0)
+        if (Math.round((totalDebit - totalCredit) * 100) !== 0 || totalDebit <= 0) {
+          return v1ErrorResponseFromCode('INVOICE_PAID_LINES_UNBALANCED', txLog, {
+            requestId: ctx.requestId,
+            details: { totalDebit, totalCredit },
+          })
+        }
+        const fiscalPeriodId = await findFiscalPeriod(ctx.supabase, ctx.companyId!, transaction.date)
+        if (!fiscalPeriodId) {
+          return v1ErrorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
+            requestId: ctx.requestId,
+            details: { payment_date: transaction.date },
+          })
+        }
+        const sourceType = useCashEntry ? 'supplier_invoice_cash_payment' : 'supplier_invoice_paid'
+        const desc = invoice.supplier?.name
+          ? `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}, ${invoice.supplier.name}`
+          : `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}`
+        const je = await createJournalEntry(ctx.supabase, ctx.companyId!, ctx.userId, {
+          fiscal_period_id: fiscalPeriodId,
+          entry_date: transaction.date,
+          description: desc,
+          source_type: sourceType,
+          source_id: invoice.id,
+          lines: customLines,
+        })
+        if (je) journalEntryId = je.id
+      } else if (useCashEntry) {
         const je = await createSupplierInvoiceCashEntry(
           ctx.supabase,
           ctx.companyId!,

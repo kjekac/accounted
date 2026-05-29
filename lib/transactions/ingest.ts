@@ -16,13 +16,25 @@ interface ExistingTransactionMaps {
   /** Booked transactions (any source) — consumed by any incoming raw transaction. */
   booked: Map<string, number>
   /**
-   * Unbooked enable_banking transactions — only consumed when the incoming raw
-   * transaction is also from enable_banking. This catches reconnect duplicates
-   * (external_id changed but the same tx already exists from a prior sync)
-   * without producing false positives for unrelated CSV imports that happen to
-   * share a date/amount with a pending bank-synced row.
+   * Unbooked enable_banking transactions — consumed by any incoming raw
+   * transaction regardless of source. Catches two cases: PSD2 reconnect
+   * duplicates (external_id regenerated, same tx already pending) AND
+   * CSV imports overlapping an active PSD2 sync (same Lunar/etc tx arriving
+   * twice, once via PSD2 and once via file upload).
    */
   unbookedEnableBanking: Map<string, number>
+}
+
+/**
+ * Stable content-dedup key. Includes a normalized description prefix so the
+ * two-tuple (date, amount) doesn't false-positive across unrelated transfers
+ * that happen to share a date and amount. Lunar's CSV "Text" column and
+ * PSD2's `description || counterparty_name` (see enable-banking/lib/sync.ts)
+ * agree well enough in practice for the same underlying transaction.
+ */
+function contentDedupKey(date: string, amount: number | string, description: string | null | undefined): string {
+  const descPrefix = (description || '').toLowerCase().trim().slice(0, 24)
+  return `${date}|${amount}|${descPrefix}`
 }
 
 async function buildExistingTransactionMaps(
@@ -41,7 +53,7 @@ async function buildExistingTransactionMaps(
   try {
     const { data: bookedRows } = await supabase
       .from('transactions')
-      .select('date, amount')
+      .select('date, amount, description')
       .eq('company_id', companyId)
       .not('journal_entry_id', 'is', null)
       .gte('date', dateFrom)
@@ -49,7 +61,7 @@ async function buildExistingTransactionMaps(
 
     if (bookedRows) {
       for (const tx of bookedRows) {
-        const key = `${tx.date}|${tx.amount}`
+        const key = contentDedupKey(tx.date, tx.amount, tx.description)
         booked.set(key, (booked.get(key) || 0) + 1)
       }
     }
@@ -60,7 +72,7 @@ async function buildExistingTransactionMaps(
   try {
     const { data: unbookedBank } = await supabase
       .from('transactions')
-      .select('date, amount')
+      .select('date, amount, description')
       .eq('company_id', companyId)
       .is('journal_entry_id', null)
       .eq('import_source', 'enable_banking')
@@ -69,7 +81,7 @@ async function buildExistingTransactionMaps(
 
     if (unbookedBank) {
       for (const tx of unbookedBank) {
-        const key = `${tx.date}|${tx.amount}`
+        const key = contentDedupKey(tx.date, tx.amount, tx.description)
         unbookedEnableBanking.set(key, (unbookedEnableBanking.get(key) || 0) + 1)
       }
     }
@@ -85,8 +97,12 @@ async function buildExistingTransactionMaps(
  *
  * Handles:
  * 1. Deduplication via external_id
- * 1b. Content-based dedup via date+amount against already-booked transactions
- *     (catches cross-source duplicates, e.g. CSV import then PSD2 sync)
+ * 1b. Content-based dedup (date+amount+description prefix) against already-booked
+ *     transactions — catches cross-source duplicates, e.g. PSD2 row gets booked
+ *     before the user later re-imports the same period via CSV.
+ * 1c. Content-based dedup against unbooked enable_banking rows — catches PSD2
+ *     reconnect duplicates AND CSV imports overlapping an active PSD2 sync (the
+ *     description-prefix component makes this safe to apply across sources).
  * 2. Insert into transactions table
  * 3. OCR/reference-based invoice matching (highest confidence)
  * 4. Amount+customer fallback invoice matching
@@ -112,10 +128,11 @@ export async function ingestTransactions(
     transaction_ids: [],
   }
 
-  // Pre-fetch existing transactions for content-based dedup (date+amount).
-  // Booked rows (any source) catch cross-source duplicates; unbooked
-  // enable_banking rows catch reconnect duplicates but are only consumed
-  // by incoming enable_banking rows to avoid blocking unrelated CSV imports.
+  // Pre-fetch existing transactions for content-based dedup
+  // (date+amount+description prefix). Booked rows catch cross-source
+  // duplicates after they've been booked; unbooked enable_banking rows
+  // catch the more common case where a PSD2 row is still pending in the
+  // inbox when the user re-imports the same period via CSV.
   const existingMaps = await buildExistingTransactionMaps(supabase, companyId, rawTransactions)
 
   // When rawInsertOnly is set (viewer imports), skip pre-fetching supplier
@@ -206,8 +223,8 @@ export async function ingestTransactions(
     }
 
     // 1b. Content-based dedup: skip if an already-booked transaction
-    // exists with the same date and amount (cross-source duplicate).
-    const contentKey = `${raw.date}|${raw.amount}`
+    // exists with the same date, amount, and description prefix.
+    const contentKey = contentDedupKey(raw.date, raw.amount, raw.description)
     const bookedCount = existingMaps.booked.get(contentKey) || 0
     if (bookedCount > 0) {
       existingMaps.booked.set(contentKey, bookedCount - 1)
@@ -215,16 +232,16 @@ export async function ingestTransactions(
       continue
     }
 
-    // 1c. Reconnect dedup: only enable_banking rows consume slots from the
-    // unbooked-enable_banking map, so a CSV row with the same date/amount as
-    // a pending bank-synced row is not incorrectly dropped as a duplicate.
-    if (raw.import_source === 'enable_banking') {
-      const unbookedEbCount = existingMaps.unbookedEnableBanking.get(contentKey) || 0
-      if (unbookedEbCount > 0) {
-        existingMaps.unbookedEnableBanking.set(contentKey, unbookedEbCount - 1)
-        result.duplicates++
-        continue
-      }
+    // 1c. Overlap dedup: skip if an unbooked enable_banking row already
+    // exists with the same (date, amount, description prefix). Applies to
+    // any incoming source — PSD2 reconnects, CSV imports over an active
+    // PSD2 sync, etc. Description prefix prevents unrelated transfers from
+    // colliding on (date, amount) alone.
+    const unbookedEbCount = existingMaps.unbookedEnableBanking.get(contentKey) || 0
+    if (unbookedEbCount > 0) {
+      existingMaps.unbookedEnableBanking.set(contentKey, unbookedEbCount - 1)
+      result.duplicates++
+      continue
     }
 
     // 2. Insert new transaction (with SEK conversion for foreign currencies)

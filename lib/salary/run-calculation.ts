@@ -43,6 +43,7 @@ const DERIVED_ABSENCE_TYPES: SalaryLineItemType[] = [
   'sick_day15_plus',
   'vab',
   'parental_leave',
+  'unpaid_leave',
 ]
 
 /**
@@ -598,6 +599,10 @@ export async function runSalaryCalculation(
         vaxaStodStart: emp.vaxa_stod_start,
         vaxaStodEnd: emp.vaxa_stod_end,
         lineItems,
+        periodStart,
+        periodEnd,
+        employmentStart: emp.employment_start,
+        employmentEnd: emp.employment_end,
       },
       config,
       taxRates.map((r) => ({

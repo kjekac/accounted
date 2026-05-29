@@ -88,6 +88,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [oreRounding, setOreRounding] = useState<boolean>(true)
+  const [vatRegistered, setVatRegistered] = useState<boolean>(true)
 
   const statusLabel = (status: InvoiceStatus): string => t(`status_${status}`)
   const reminderLevelLabel = (level: 1 | 2 | 3): string => t(`reminder_level_${level}`)
@@ -126,14 +127,20 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
 
     setInvoice(data as InvoiceWithRelations)
 
-    // Fetch the öresavrundning setting so the detail view matches the PDF.
+    // Fetch the öresavrundning + VAT-registration settings so the detail view
+    // matches the PDF (pdf-template.tsx:792 hides org_number / personnummer
+    // for private customers, and :876 suppresses the moms row when the seller
+    // is not VAT-registered and the invoice carries no VAT).
     if (data.company_id) {
       const { data: settings } = await supabase
         .from('company_settings')
-        .select('ore_rounding')
+        .select('ore_rounding, vat_registered')
         .eq('company_id', data.company_id)
         .maybeSingle()
       setOreRounding(settings?.ore_rounding ?? true)
+      if (typeof settings?.vat_registered === 'boolean') {
+        setVatRegistered(settings.vat_registered)
+      }
     }
 
     // Fetch reminders for this invoice
@@ -481,10 +488,10 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           <CardContent>
             <div className="space-y-2">
               <p className="font-medium text-lg">{customer.name}</p>
-              {customer.org_number && (
+              {customer.customer_type !== 'individual' && customer.org_number && (
                 <p className="text-muted-foreground">{t('org_number_label', { value: customer.org_number })}</p>
               )}
-              {customer.vat_number && (
+              {customer.customer_type !== 'individual' && customer.vat_number && (
                 <p className="text-muted-foreground">{t('vat_number_label', { value: customer.vat_number })}</p>
               )}
               <div className="flex flex-wrap gap-4 pt-2 text-sm text-muted-foreground">
@@ -577,6 +584,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                     .sort(([a], [b]) => b - a)
 
                   if (entries.length === 0) {
+                    if (vatRegistered === false && invoice.vat_amount === 0) {
+                      return null
+                    }
                     return (
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">{t('vat_label')}</span>

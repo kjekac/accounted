@@ -402,6 +402,19 @@ export const MarkSupplierInvoicePaidSchema = z.object({
   exchange_rate_difference: z.number().optional(),
   notes: z.string().optional(),
   force: z.boolean().optional(),
+  // Which BAS account to credit for the payment. Defaults to 1930 to preserve
+  // the historical behaviour for MCP / agent callers that don't supply it.
+  payment_account: accountNumber.optional(),
+  // Optional user-edited journal entry rows. When present they override the
+  // default 2440-clearing / cash booking. Server validates balance and posts
+  // via createJournalEntry directly. source_type still derives from the
+  // routing decision so downstream payment-sync keeps working.
+  lines: z.array(z.object({
+    account_number: accountNumber,
+    debit_amount: nonNegativeAmount.default(0),
+    credit_amount: nonNegativeAmount.default(0),
+    line_description: z.string().optional(),
+  })).min(2).optional(),
 })
 
 export const UpdateSupplierInvoiceSchema = z.object({
@@ -492,6 +505,17 @@ export const MatchInvoiceSchema = z
     // specific, user-seen duplicate so an automation can't sweep through
     // force=true to bypass the guard without ever consulting the candidate.
     expected_journal_entry_id: uuid.optional(),
+    // Optional user-edited journal entry lines. When present they override
+    // the default clearing/cash booking — the route validates balance and
+    // posts via createJournalEntry directly. Source_type is still set from
+    // the routing decision (invoice_paid vs invoice_cash_payment) so
+    // downstream payment-sync continues to work.
+    lines: z.array(z.object({
+      account_number: accountNumber,
+      debit_amount: nonNegativeAmount.default(0),
+      credit_amount: nonNegativeAmount.default(0),
+      line_description: z.string().optional(),
+    })).min(2).optional(),
   })
   .refine((v) => !v.force || !!v.expected_journal_entry_id, {
     message: 'expected_journal_entry_id is required when force=true',
@@ -639,6 +663,15 @@ export const CreateTransactionFromDocumentSchema = z.object({
 
 export const MatchSupplierInvoiceSchema = z.object({
   supplier_invoice_id: uuid,
+  // Same purpose as MatchInvoiceSchema.lines — user-edited rows override
+  // the default 2440-clearing / cash booking. Route validates balance and
+  // posts via createJournalEntry; source_type still derives from routing.
+  lines: z.array(z.object({
+    account_number: accountNumber,
+    debit_amount: nonNegativeAmount.default(0),
+    credit_amount: nonNegativeAmount.default(0),
+    line_description: z.string().optional(),
+  })).min(2).optional(),
 })
 
 
@@ -1314,6 +1347,7 @@ export const AbsenceTypeSchema = z.enum([
   'pregnancy',
   'care_relative',
   'study',
+  'unpaid_leave',
   'other_leave',
 ])
 

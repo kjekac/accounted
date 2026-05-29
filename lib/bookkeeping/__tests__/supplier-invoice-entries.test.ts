@@ -877,6 +877,43 @@ describe('createSupplierInvoicePaymentEntry', () => {
     expect(input.description).toBe('Utbetalning leverantörsfaktura LF-200, Leverantör AB (ankomst 10)')
   })
 
+  it('credits the provided paymentAccount instead of 1930', async () => {
+    const invoice = makeSupplierInvoice()
+
+    await createSupplierInvoicePaymentEntry(
+      null as never, 'company-1', 'user-1', invoice, 10000, '2024-07-01',
+      undefined, undefined, '1940'
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    expect(findByAccount(input.lines, '1930')).toHaveLength(0)
+    expect(findByAccount(input.lines, '1940')[0].credit_amount).toBe(10000)
+  })
+
+  it('falls back to 1930 when paymentAccount is undefined', async () => {
+    const invoice = makeSupplierInvoice()
+
+    await createSupplierInvoicePaymentEntry(
+      null as never, 'company-1', 'user-1', invoice, 10000, '2024-07-01'
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    expect(findByAccount(input.lines, '1930')[0].credit_amount).toBe(10000)
+  })
+
+  it('uses paymentAccount on the FX-difference branch too', async () => {
+    const invoice = makeSupplierInvoice({ total: 11500, currency: 'EUR' })
+
+    await createSupplierInvoicePaymentEntry(
+      null as never, 'company-1', 'user-1', invoice, 11500, '2024-07-15',
+      500, undefined, '2018'
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    expect(findByAccount(input.lines, '1930')).toHaveLength(0)
+    expect(findByAccount(input.lines, '2018')[0].credit_amount).toBe(11000)
+  })
+
   it('uses paymentDate not invoice_date as entry_date', async () => {
     const invoice = makeSupplierInvoice({ invoice_date: '2024-06-01' })
 
@@ -933,6 +970,23 @@ describe('createSupplierInvoiceCashEntry', () => {
     expect(credit1930).toHaveLength(1)
     expect(credit1930[0].credit_amount).toBe(10000)
 
+    assertBalanced(input)
+  })
+
+  it('credits the provided paymentAccount instead of 1930', async () => {
+    const invoice = makeSupplierInvoice({
+      subtotal: 8000, vat_amount: 2000, total: 10000,
+    })
+    const items = [makeItem({ line_total: 8000, account_number: '6200', vat_rate: 0.25 })]
+
+    await createSupplierInvoiceCashEntry(
+      null as never, 'company-1', 'user-1', invoice, items, '2024-07-01', 'swedish_business',
+      undefined, '2018'
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    expect(findByAccount(input.lines, '1930')).toHaveLength(0)
+    expect(findByAccount(input.lines, '2018')[0].credit_amount).toBe(10000)
     assertBalanced(input)
   })
 

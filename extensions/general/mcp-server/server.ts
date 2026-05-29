@@ -6847,6 +6847,38 @@ export const tools: McpTool[] = [
       const ibCurrent = parsed.openingBalances.filter((b) => b.yearIndex === 0)
       const ibTotal = Math.round(ibCurrent.reduce((s, b) => s + b.amount, 0) * 100) / 100
 
+      // Mapping-coverage check. The executor's per-voucher loop silently
+      // skips any line whose account is not in `mappings`, so an empty or
+      // non-overlapping mapping set produces a committed import with
+      // journal_entries_created=0 that then claims the (company_id,
+      // file_hash) slot in the partial unique index and blocks retry.
+      // Refuse to stage when the mapping wouldn't cover a single account
+      // present in the file.
+      const importOB = Boolean(args.import_opening_balances)
+      const sourceAccountsInFile = new Set<string>()
+      for (const v of parsed.vouchers) for (const l of v.lines) sourceAccountsInFile.add(l.account)
+      if (importOB) for (const b of ibCurrent) sourceAccountsInFile.add(b.account)
+      const mappedSources = new Set(
+        (mappings as Array<{ sourceAccount?: unknown; targetAccount?: unknown }>)
+          .filter((m) => typeof m?.targetAccount === 'string' && m.targetAccount.length > 0 && typeof m?.sourceAccount === 'string')
+          .map((m) => m.sourceAccount as string),
+      )
+      const coveredAccounts = [...sourceAccountsInFile].filter((a) => mappedSources.has(a))
+      const accountsMapped = { covered: coveredAccounts.length, total: sourceAccountsInFile.size }
+      const wouldSkipAllVouchers = sourceAccountsInFile.size > 0 && coveredAccounts.length === 0
+
+      if (wouldSkipAllVouchers) {
+        const sample = [...sourceAccountsInFile].slice(0, 8).join(', ')
+        throw new Error(
+          `Kontomappningarna täcker inga konton i SIE-filen — alla ` +
+            `${parsed.stats.totalVouchers} verifikationer skulle hoppas över ` +
+            `och importen skulle skapa 0 verifikat. Filen innehåller ` +
+            `${sourceAccountsInFile.size} unika källkonton (t.ex. ${sample}). ` +
+            `Bifoga "mappings" där sourceAccount matchar #KONTO-numren i filen ` +
+            `och targetAccount är ett giltigt BAS-konto.`,
+        )
+      }
+
       return stagePendingOperation(supabase, companyId, userId, 'import_sie',
         `SIE-import: ${filename}`,
         {
@@ -6862,6 +6894,8 @@ export const tools: McpTool[] = [
           filename,
           file_size_bytes: fileContent.length,
           mappings_count: mappings.length,
+          accounts_mapped: accountsMapped,
+          would_skip_all_vouchers: wouldSkipAllVouchers,
           company_name: parsed.header.companyName,
           org_number: parsed.header.orgNumber,
           fiscal_year: { start: parsed.stats.fiscalYearStart, end: parsed.stats.fiscalYearEnd },
@@ -6880,6 +6914,104 @@ export const tools: McpTool[] = [
           description: 'After commit, verify the imported balances with gnubok_get_trial_balance and check continuity via the IB/UB of adjacent periods.',
           tool: 'gnubok_get_trial_balance',
         }
+      )
+    },
+  },
+
+  {
+    name: 'gnubok_undo_sie_import',
+    description: 'Stage undo of a completed SIE import: hard-deletes its entries (transactions + opening balance), detaches docs, resets voucher_sequences, marks the row \'undone\' so the file can be re-imported. Use after a botched import. Period must be open. HIGH risk.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        import_id: { type: 'string', description: 'UUID of the sie_imports row to undo. Must be status=\'completed\'.' },
+        reason: { type: 'string', maxLength: 500, description: 'Optional human-readable reason — shown in pending_operations review.' },
+      },
+      required: ['import_id'],
+    },
+    outputSchema: STAGED_OPERATION_SCHEMA,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    async execute(args, companyId, userId, supabase, actor) {
+      const importId = args.import_id as string
+      const reason = typeof args.reason === 'string' ? args.reason : undefined
+
+      if (!importId) throw new Error('import_id is required')
+      if (reason !== undefined && reason.length > 500) {
+        throw new Error('reason must be 500 characters or fewer')
+      }
+
+      // Pre-flight mirrors undoSIEImport: confirm row exists, belongs to
+      // this company, is in 'completed' status, and (if linked) the fiscal
+      // period is open + unlocked. Surfacing rejection at stage-time keeps
+      // the agent honest about what the approver is being asked to confirm.
+      type ImportRow = {
+        id: string
+        filename: string
+        fiscal_year_start: string | null
+        fiscal_year_end: string | null
+        transactions_count: number | null
+        opening_balance_entry_id: string | null
+        status: string
+        fiscal_period_id: string | null
+        imported_at: string | null
+      }
+      const { data, error: lookupErr } = await supabase
+        .from('sie_imports')
+        .select('id, filename, fiscal_year_start, fiscal_year_end, transactions_count, opening_balance_entry_id, status, fiscal_period_id, imported_at')
+        .eq('id', importId)
+        .eq('company_id', companyId)
+        .maybeSingle()
+      const importRow = data as ImportRow | null
+
+      if (lookupErr) {
+        throw new Error(`Kunde inte slå upp SIE-import ${importId}: ${lookupErr.message}`)
+      }
+      if (!importRow) {
+        throw new Error(`SIE-import hittades inte: ${importId}`)
+      }
+      if (importRow.status !== 'completed') {
+        throw new Error(`Bara slutförda importer kan ångras (nuvarande status: ${importRow.status}).`)
+      }
+
+      let fiscalPeriodName: string | null = null
+      if (importRow.fiscal_period_id) {
+        const { data: period } = await supabase
+          .from('fiscal_periods')
+          .select('name, is_closed, locked_at')
+          .eq('id', importRow.fiscal_period_id)
+          .eq('company_id', companyId)
+          .maybeSingle()
+        if (period?.is_closed || period?.locked_at) {
+          throw new Error(
+            `Räkenskapsåret "${period.name ?? 'okänt'}" är låst eller stängt. ` +
+            `Öppna perioden innan du ångrar importen.`,
+          )
+        }
+        fiscalPeriodName = (period as { name?: string } | null)?.name ?? null
+      }
+
+      return stagePendingOperation(supabase, companyId, userId, 'undo_sie_import',
+        `Ångra SIE-import: ${importRow.filename}`,
+        { import_id: importId },
+        {
+          import: {
+            id: importRow.id,
+            filename: importRow.filename,
+            fiscal_year: { start: importRow.fiscal_year_start, end: importRow.fiscal_year_end },
+            fiscal_period_name: fiscalPeriodName,
+            transactions_count: importRow.transactions_count ?? 0,
+            has_opening_balance_entry: Boolean(importRow.opening_balance_entry_id),
+            imported_at: importRow.imported_at,
+          },
+          reason: reason ?? null,
+          will: 'hard-delete the import\'s journal entries (transactions + opening balance), detach user-attached documents, reset voucher_sequences, and mark the sie_imports row as \'undone\' so the file can be re-imported',
+        },
+        actor,
+        {
+          description: 'After commit, re-stage the SIE import with corrected mappings via gnubok_import_sie.',
+          tool: 'gnubok_import_sie',
+        },
       )
     },
   },

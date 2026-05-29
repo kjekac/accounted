@@ -202,8 +202,10 @@ export async function createSupplierInvoicePaymentEntry(
   paymentAmount: number,
   paymentDate: string,
   exchangeRateDifference?: number,
-  supplierName?: string
+  supplierName?: string,
+  paymentAccount?: string
 ): Promise<JournalEntry | null> {
+  const creditAccount = paymentAccount || '1930'
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
   if (!fiscalPeriodId) {
     log.warn('No open fiscal period found for payment date:', paymentDate)
@@ -228,7 +230,7 @@ export async function createSupplierInvoicePaymentEntry(
 
     // Credit: Bank at actual SEK paid
     lines.push({
-      account_number: '1930',
+      account_number: creditAccount,
       debit_amount: 0,
       credit_amount: Math.round(actualSekPaid * 100) / 100,
       line_description: desc,
@@ -262,7 +264,7 @@ export async function createSupplierInvoicePaymentEntry(
     })
 
     lines.push({
-      account_number: '1930',
+      account_number: creditAccount,
       debit_amount: 0,
       credit_amount: Math.round(paymentAmount * 100) / 100,
       line_description: desc,
@@ -297,8 +299,10 @@ export async function createSupplierInvoiceCashEntry(
   items: SupplierInvoiceItem[],
   paymentDate: string,
   supplierType: string,
-  supplierName?: string
+  supplierName?: string,
+  paymentAccount?: string
 ): Promise<JournalEntry | null> {
+  const creditAccount = paymentAccount || '1930'
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
   if (!fiscalPeriodId) {
     log.warn('No open fiscal period found for payment date:', paymentDate)
@@ -370,12 +374,12 @@ export async function createSupplierInvoiceCashEntry(
     }
   }
 
-  // Credit: Företagskonto — balance guarantee: ensures sum(debits) === sum(credits)
+  // Credit: payment account — balance guarantee: ensures sum(debits) === sum(credits)
   // For reverse charge, intermediate credits (2614/2624/2634) already exist, so we subtract them
   const totalDebits = lines.reduce((sum, l) => sum + l.debit_amount, 0)
   const totalCredits = lines.reduce((sum, l) => sum + l.credit_amount, 0)
   lines.push({
-    account_number: '1930',
+    account_number: creditAccount,
     debit_amount: 0,
     credit_amount: Math.round((totalDebits - totalCredits) * 100) / 100,
     line_description: desc,

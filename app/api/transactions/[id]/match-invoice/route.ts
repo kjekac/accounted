@@ -3,7 +3,7 @@ import {
   createInvoicePaymentJournalEntry,
   createInvoiceCashEntry,
 } from '@/lib/bookkeeping/invoice-entries'
-import { reverseEntry } from '@/lib/bookkeeping/engine'
+import { reverseEntry, createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
 import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { withRouteContext } from '@/lib/api/with-route-context'
@@ -41,7 +41,7 @@ export const POST = withRouteContext(
       operation: 'transaction.match_invoice',
     })
     if (!validation.success) return validation.response
-    const { invoice_id, force, expected_journal_entry_id } = validation.data
+    const { invoice_id, force, expected_journal_entry_id, lines: customLines } = validation.data
 
     const txLog = log.child({ transactionId, invoiceId: invoice_id })
 
@@ -251,21 +251,66 @@ export const POST = withRouteContext(
     const accountingMethod = settings?.accounting_method || 'accrual'
     const entityType = (settings?.entity_type as EntityType) || 'enskild_firma'
 
+    // Drive the JE shape from the INVOICE'S booking state, not from the
+    // company's current accounting_method setting. If the invoice was already
+    // booked at send (Dr 1510 / Cr 30xx + VAT) we MUST clear 1510 here —
+    // otherwise the receivable stays orphaned and 30xx + VAT get double-
+    // counted. This happens when a company sent invoices under accrual,
+    // then flipped to kontantmetoden before payment arrived.
+    // Only when the invoice carries no prior JE (pure kontantmetoden, no
+    // receivable on the books) do we recognise revenue + VAT here.
+    const invoiceAlreadyBooked = !!(invoice as { journal_entry_id?: string | null }).journal_entry_id
+    const useCashEntry = !invoiceAlreadyBooked && accountingMethod === 'cash' && isFullyPaid
+
     let journalEntryId: string | null = null
     let journalEntryError: string | null = null
 
     try {
-      if (accountingMethod === 'cash' && isFullyPaid) {
+      if (customLines) {
+        // User-edited rows from the match dialog. Validate balance, then
+        // post via createJournalEntry directly. source_type still derives
+        // from the routing decision so downstream payment-sync (which keys
+        // off invoice_paid / invoice_cash_payment) keeps working.
+        const totalDebit = customLines.reduce((s, l) => s + l.debit_amount, 0)
+        const totalCredit = customLines.reduce((s, l) => s + l.credit_amount, 0)
+        if (Math.round((totalDebit - totalCredit) * 100) !== 0 || totalDebit <= 0) {
+          return errorResponseFromCode('INVOICE_PAID_LINES_UNBALANCED', txLog, {
+            requestId,
+            details: { totalDebit, totalCredit },
+          })
+        }
+        const fiscalPeriodId = await findFiscalPeriod(supabase, companyId!, transaction.date)
+        if (!fiscalPeriodId) {
+          return errorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
+            requestId,
+            details: { paymentDate: transaction.date },
+          })
+        }
+        const sourceType = useCashEntry ? 'invoice_cash_payment' : 'invoice_paid'
+        const desc = invoice.customer?.name
+          ? `Inbetalning kundfaktura ${invoice.invoice_number}, ${invoice.customer.name}`
+          : `Inbetalning kundfaktura ${invoice.invoice_number}`
+        const journalEntry = await createJournalEntry(supabase, companyId!, user.id, {
+          fiscal_period_id: fiscalPeriodId,
+          entry_date: transaction.date,
+          description: desc,
+          source_type: sourceType,
+          source_id: invoice.id,
+          lines: customLines,
+        })
+        journalEntryId = journalEntry?.id ?? null
+      } else if (useCashEntry) {
         const journalEntry = await createInvoiceCashEntry(
           supabase, companyId, user.id, invoice as Invoice, transaction.date,
           entityType, invoice.customer?.name,
         )
         journalEntryId = journalEntry?.id ?? null
       } else {
-        // Accrual or cash partial: clearing entry against 1510. The cash-method
-        // partial path is intentional — under kontantmetoden 1510 has no prior
-        // balance, so this leaves a credit on 1510 that gets resolved when the
-        // final payment lands and createInvoiceCashEntry runs.
+        // Clearing entry against 1510. Covers accrual, cash-with-prior-JE
+        // (mid-stream switch), and cash partial. The cash partial path is
+        // intentional — under kontantmetoden 1510 has no prior balance, so
+        // partials leave a credit on 1510 that gets resolved on final
+        // payment when createInvoiceCashEntry would normally run.
         const journalEntry = await createInvoicePaymentJournalEntry(
           supabase, companyId, user.id, invoice as Invoice, transaction.date,
           undefined, invoice.customer?.name, paidAmount,
@@ -356,7 +401,11 @@ export const POST = withRouteContext(
       return errorResponseFromCode('MATCH_INVOICE_ALREADY_PAID', txLog, { requestId })
     }
 
-    const paymentNotes = (accountingMethod === 'cash' && !isFullyPaid)
+    // The "intäkt bokförs vid slutbetalning" note only applies to genuine
+    // kontantmetoden partials — invoices that were never booked. When the
+    // invoice was booked under accrual, the clearing entry already handles
+    // the partial cleanly and the note would be misleading.
+    const paymentNotes = (!invoiceAlreadyBooked && accountingMethod === 'cash' && !isFullyPaid)
       ? 'Kontantmetoden: intäkt bokförs vid slutbetalning'
       : null
 

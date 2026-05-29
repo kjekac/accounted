@@ -42,7 +42,7 @@ import {
 import { linkInvoiceToVoucher } from '@/lib/invoices/voucher-matching'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
 import { parseSIEFile } from '@/lib/import/sie-parser'
-import { executeSIEImport } from '@/lib/import/sie-import'
+import { executeSIEImport, undoSIEImport } from '@/lib/import/sie-import'
 import type { AccountMapping } from '@/lib/import/types'
 import { AccountsNotInChartError, isBookkeepingError, ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { getEmailService } from '@/lib/email/service'
@@ -661,15 +661,21 @@ async function commitMarkInvoicePaid(
   const isRealInvoice = !invoice.document_type || invoice.document_type === 'invoice'
   let journalEntryId: string | null = null
 
+  // Route on invoice state, not the company's current accounting_method —
+  // an invoice booked at send under accrual must clear 1510 here even if
+  // the company has since switched to kontantmetoden.
+  const invoiceAlreadyBooked = !!(invoice as { journal_entry_id?: string | null }).journal_entry_id
+  const useCashEntry = !invoiceAlreadyBooked && accountingMethod === 'cash'
+
   if (isRealInvoice) {
-    if (accountingMethod === 'accrual') {
-      const je = await createInvoicePaymentJournalEntry(
-        supabase, companyId, userId, invoice as Invoice, paymentDate, undefined, invoice.customer?.name
+    if (useCashEntry) {
+      const je = await createInvoiceCashEntry(
+        supabase, companyId, userId, invoice as Invoice, paymentDate, entityType, invoice.customer?.name
       )
       journalEntryId = je?.id ?? null
     } else {
-      const je = await createInvoiceCashEntry(
-        supabase, companyId, userId, invoice as Invoice, paymentDate, entityType, invoice.customer?.name
+      const je = await createInvoicePaymentJournalEntry(
+        supabase, companyId, userId, invoice as Invoice, paymentDate, undefined, invoice.customer?.name
       )
       journalEntryId = je?.id ?? null
     }
@@ -910,9 +916,14 @@ async function commitMatchTransactionInvoice(
   const accountingMethod = settings?.accounting_method || 'accrual'
   const entityType = (settings?.entity_type as EntityType) || 'enskild_firma'
 
+  // Route on invoice state, not the company's current setting. Mirror of
+  // the match-invoice route fix — see that handler for the full rationale.
+  const invoiceAlreadyBooked = !!(invoice as { journal_entry_id?: string | null }).journal_entry_id
+  const useCashEntry = !invoiceAlreadyBooked && accountingMethod === 'cash' && isFullyPaid
+
   let journalEntryId: string | null = null
   try {
-    if (accountingMethod === 'cash' && isFullyPaid) {
+    if (useCashEntry) {
       const je = await createInvoiceCashEntry(
         supabase, companyId, userId, invoice as Invoice, transaction.date, entityType, invoice.customer?.name
       )
@@ -2155,6 +2166,30 @@ async function commitImportSie(
   }
 }
 
+async function commitUndoSieImport(
+  supabase: SupabaseClient,
+  companyId: string,
+  params: Record<string, unknown>,
+): Promise<ExecutorResult> {
+  const importId = params.import_id as string
+
+  if (!importId) {
+    return { error: 'import_id is required', status: 400 }
+  }
+
+  const result = await undoSIEImport(supabase, companyId, importId)
+  if (!result.success) {
+    return { error: result.error ?? 'SIE undo failed', status: 400 }
+  }
+
+  return {
+    data: {
+      import_id: importId,
+      deleted_entries: result.deletedEntries,
+    },
+  }
+}
+
 // ── Phase 4: arbitrary-line bookkeeping primitives ───────────────
 
 /**
@@ -2699,6 +2734,9 @@ export async function commitPendingOperation(
         break
       case 'import_sie':
         result = await commitImportSie(supabase, userId, companyId, pendingOp.params)
+        break
+      case 'undo_sie_import':
+        result = await commitUndoSieImport(supabase, companyId, pendingOp.params)
         break
       case 'create_voucher':
         result = await commitCreateVoucher(supabase, userId, companyId, pendingOp.params, opts)

@@ -3,6 +3,7 @@ import {
   createSupplierInvoicePaymentEntry,
   createSupplierInvoiceCashEntry,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
+import { createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { withRouteContext } from '@/lib/api/with-route-context'
@@ -32,7 +33,7 @@ export const POST = withRouteContext(
       operation: 'transaction.match_supplier_invoice',
     })
     if (!validation.success) return validation.response
-    const { supplier_invoice_id } = validation.data
+    const { supplier_invoice_id, lines: customLines } = validation.data
 
     const txLog = log.child({ transactionId, supplierInvoiceId: supplier_invoice_id })
 
@@ -163,13 +164,22 @@ export const POST = withRouteContext(
 
     const accountingMethod = settings?.accounting_method || 'accrual'
 
+    // Route on the supplier invoice's actual booking state — if 2440 was
+    // posted at receipt (accrual), the match must clear 2440 regardless of
+    // the company's current setting. Only true kontantmetoden invoices
+    // (no registration JE) book expense + input VAT here.
+    const siAlreadyBooked = !!(invoice as { registration_journal_entry_id?: string | null }).registration_journal_entry_id
+    const useCashEntry = !siAlreadyBooked && accountingMethod === 'cash'
+
     // Cash method (kontantmetoden) collapses registration + payment into a
     // single entry that credits 1930 at sum(expenses_SEK). It has no
     // exchange_rate_difference path — if the actual bank SEK differs from
     // the invoice's booked SEK, the 1930 credit won't match the bank
     // transaction and we'd silently leave a reconciliation gap. Block the
     // combination and ask the user to switch to accrual or do a manual JE.
-    if (accountingMethod === 'cash' && exchangeRateDifference !== 0) {
+    // Only applies to true cash-method invoices — accrual-booked invoices
+    // never hit the cash branch.
+    if (useCashEntry && exchangeRateDifference !== 0) {
       return errorResponseFromCode('MATCH_SI_CASH_FX_UNSUPPORTED', txLog, {
         requestId,
         details: {
@@ -184,7 +194,36 @@ export const POST = withRouteContext(
     let journalEntryError: string | null = null
 
     try {
-      if (accountingMethod === 'cash') {
+      if (customLines) {
+        const totalDebit = customLines.reduce((s, l) => s + l.debit_amount, 0)
+        const totalCredit = customLines.reduce((s, l) => s + l.credit_amount, 0)
+        if (Math.round((totalDebit - totalCredit) * 100) !== 0 || totalDebit <= 0) {
+          return errorResponseFromCode('INVOICE_PAID_LINES_UNBALANCED', txLog, {
+            requestId,
+            details: { totalDebit, totalCredit },
+          })
+        }
+        const fiscalPeriodId = await findFiscalPeriod(supabase, companyId!, transaction.date)
+        if (!fiscalPeriodId) {
+          return errorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
+            requestId,
+            details: { paymentDate: transaction.date },
+          })
+        }
+        const sourceType = useCashEntry ? 'supplier_invoice_cash_payment' : 'supplier_invoice_paid'
+        const desc = invoice.supplier?.name
+          ? `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}, ${invoice.supplier.name}`
+          : `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}`
+        const journalEntry = await createJournalEntry(supabase, companyId!, user.id, {
+          fiscal_period_id: fiscalPeriodId,
+          entry_date: transaction.date,
+          description: desc,
+          source_type: sourceType,
+          source_id: invoice.id,
+          lines: customLines,
+        })
+        if (journalEntry) journalEntryId = journalEntry.id
+      } else if (useCashEntry) {
         const journalEntry = await createSupplierInvoiceCashEntry(
           supabase, companyId, user.id, invoice as SupplierInvoice,
           (invoice.items || []) as SupplierInvoiceItem[],

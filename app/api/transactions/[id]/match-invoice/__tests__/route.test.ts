@@ -393,6 +393,56 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     expect(body.remaining_amount).toBe(7500)
   })
 
+  it('cash method ignores cash entry when invoice was already booked (accrual→cash migration)', async () => {
+    // Regression: customer sent invoices under accrual (1510 was debited on
+    // send), then switched to kontantmetoden before the bank receipt arrived.
+    // Old logic posted createInvoiceCashEntry — orphaning 1510 and double-
+    // counting revenue + VAT. Fix: route on invoice.journal_entry_id, not on
+    // the current accounting_method setting.
+    const tx = makeTransaction({ id: 'tx-1', amount: 12500, invoice_id: null, date: '2024-06-15' })
+    const invoice = {
+      ...makeInvoice({
+        id: VALID_UUID,
+        status: 'sent',
+        total: 12500,
+        remaining_amount: 12500,
+        paid_amount: 0,
+      }),
+      // journal_entry_id lives on the DB column but not the TS Invoice type;
+      // attach via spread so the test row mirrors a real accrual-booked
+      // invoice the matcher will read.
+      journal_entry_id: 'je-send-on-accrual',
+    }
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: invoice, error: null })
+    enqueue({ data: [], error: null }) // hard-duplicate check
+    enqueue({ data: { accounting_method: 'cash', entity_type: 'enskild_firma' }, error: null })
+
+    mockCreateInvoicePaymentJournalEntry.mockResolvedValue({ id: 'je-clearing' })
+
+    // The PDF re-attach block runs because invoice.journal_entry_id is set;
+    // returning null skips the attach without aborting the match.
+    enqueue({ data: null, error: null }) // document_attachments lookup
+    enqueue({ data: [{ id: VALID_UUID }], error: null }) // update invoice
+    enqueue({ data: null, error: null }) // insert invoice_payments
+    enqueue({ data: null, error: null }) // update transaction
+    enqueue({ data: null, error: null }) // logMatchEvent
+
+    const request = createMockRequest('/api/transactions/tx-1/match-invoice', {
+      method: 'POST',
+      body: { invoice_id: VALID_UUID },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ invoice_status: string }>(response)
+
+    expect(status).toBe(200)
+    expect(body.invoice_status).toBe('paid')
+    // Must clear 1510, not re-recognise revenue + VAT
+    expect(mockCreateInvoicePaymentJournalEntry).toHaveBeenCalled()
+    expect(mockCreateInvoiceCashEntry).not.toHaveBeenCalled()
+  })
+
   it('returns 400 MATCH_AMOUNT_EXCEEDS_REMAINING when tx amount exceeds invoice remaining', async () => {
     // Tx is +12 000 SEK, invoice has 5 000 SEK remaining. Legacy code path
     // would push paid_amount past invoice.total; the new guard rejects so

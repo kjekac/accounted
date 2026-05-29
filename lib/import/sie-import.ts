@@ -1641,7 +1641,7 @@ async function createPendingImportRecord(
 /**
  * Phase 2: Finalize the import record with results and archive the SIE file.
  */
-async function finalizeImportRecord(
+export async function finalizeImportRecord(
   supabase: SupabaseClient,
   importId: string,
   companyId: string,
@@ -1649,6 +1649,28 @@ async function finalizeImportRecord(
   fileContent: string,
   documentation?: MigrationDocumentation
 ): Promise<void> {
+  // Safety net: if the import ran without errors but didn't actually create
+  // any journal entries (no OB entry, no vouchers), refuse to mark it as
+  // 'completed'. A 'completed' row with transactions_count=0 would claim
+  // the (company_id, file_hash) slot in the partial unique index and the
+  // overlapping-period check would block any retry. Flipping to 'failed'
+  // (which the partial index already excludes) keeps the slot free so the
+  // caller can re-import the same file once the mapping is fixed.
+  const noEntriesCreated =
+    result.success &&
+    result.journalEntriesCreated === 0 &&
+    !result.openingBalanceEntryId
+  if (noEntriesCreated) {
+    result.success = false
+    if (result.errors.length === 0) {
+      result.errors.push(
+        'Importen skapade 0 verifikationer — markerar som misslyckad så filen ' +
+        'kan importeras om utan replace/undo. Granska varningarna för att se ' +
+        'vilka konton som behöver mappas.',
+      )
+    }
+  }
+
   const status = result.success ? 'completed' : 'failed'
 
   await supabase
@@ -1795,6 +1817,35 @@ export async function executeSIEImport(
     if (unmapped.length > 0) {
       result.errors.push(
         `${unmapped.length} accounts are not mapped: ${unmapped.map((m) => m.sourceAccount).join(', ')}`
+      )
+      return result
+    }
+
+    // Defense in depth: refuse to enter executeSIEImport when the mapping
+    // doesn't cover a single account present in the file. Without this guard
+    // a stale MCP client (or the HTTP execute route) could still drive
+    // importVouchers to silently skip every voucher and write a 0-entry
+    // 'completed' sie_imports row that holds the unique-index slot. Mirrors
+    // the stage-time check in gnubok_import_sie.
+    const sourceAccountsInFile = new Set<string>()
+    for (const v of parsed.vouchers) for (const l of v.lines) sourceAccountsInFile.add(l.account)
+    if (options.importOpeningBalances) {
+      for (const b of parsed.openingBalances.filter((b) => b.yearIndex === 0)) {
+        sourceAccountsInFile.add(b.account)
+      }
+    }
+    const mappedSources = new Set(
+      mappings.filter((m) => m.targetAccount).map((m) => m.sourceAccount),
+    )
+    const hasOverlap = [...sourceAccountsInFile].some((a) => mappedSources.has(a))
+    if (sourceAccountsInFile.size > 0 && !hasOverlap) {
+      const sample = [...sourceAccountsInFile].slice(0, 8).join(', ')
+      result.errors.push(
+        `Kontomappningarna täcker inga konton i SIE-filen. ` +
+        `Filen innehåller ${sourceAccountsInFile.size} unika källkonton ` +
+        `(t.ex. ${sample}), men inget av dem finns i mappings.sourceAccount. ` +
+        `Importen avbryts innan en sie_imports-rad skapas så att du kan ` +
+        `försöka igen med korrekta mappningar.`,
       )
       return result
     }

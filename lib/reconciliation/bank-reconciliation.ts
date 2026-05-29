@@ -180,6 +180,7 @@ export async function runReconciliation(
     .select('*')
     .eq('company_id', companyId)
     .is('journal_entry_id', null)
+    .eq('is_ignored', false)
     .eq('currency', currency)
 
   if (dateFrom) query = query.gte('date', dateFrom)
@@ -262,10 +263,13 @@ export async function getReconciliationStatus(
   bankAccount = '1930',
   currency: string = 'SEK',
 ): Promise<ReconciliationStatus> {
-  // Get all transactions in range
+  // Get all transactions in range. Ignored rows are pulled too so the totals
+  // card still reflects what the bank actually moved, but they're excluded
+  // from the "unmatched" count below — the user has explicitly said they
+  // don't want them surfacing as something to reconcile.
   let txQuery = supabase
     .from('transactions')
-    .select('amount, journal_entry_id, reconciliation_method')
+    .select('amount, journal_entry_id, reconciliation_method, is_ignored')
     .eq('company_id', companyId)
     .eq('currency', currency)
 
@@ -328,7 +332,7 @@ export async function getReconciliationStatus(
   ).length
 
   const unmatchedTransactionCount = (transactions || []).filter(
-    (tx) => tx.journal_entry_id === null
+    (tx) => tx.journal_entry_id === null && tx.is_ignored !== true
   ).length
 
   // Unlinked GL lines count (RPC excludes source_type='opening_balance' since

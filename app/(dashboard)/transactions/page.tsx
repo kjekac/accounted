@@ -25,6 +25,8 @@ import TransactionForm from '@/components/transactions/TransactionForm'
 import BatchCategorySelector from '@/components/transactions/BatchCategorySelector'
 import TransactionStatusBar from '@/components/transactions/TransactionStatusBar'
 import BankSyncStatusChip from '@/components/transactions/BankSyncStatusChip'
+import BankSyncNowButton from '@/components/transactions/BankSyncNowButton'
+import BankSyncSinceLastVisit from '@/components/transactions/BankSyncSinceLastVisit'
 import TransactionInboxCard from '@/components/transactions/TransactionInboxCard'
 import TransactionHistoryList from '@/components/transactions/TransactionHistoryList'
 import InboxZeroState from '@/components/transactions/InboxZeroState'
@@ -434,8 +436,8 @@ export default function TransactionsPage() {
 
       if (cancelled) return
 
-      if (entityRes?.entity_type) {
-        setEntityType(entityRes.entity_type)
+      if (entityRes?.data?.entity_type) {
+        setEntityType(entityRes.data.entity_type)
       }
     }
 
@@ -855,7 +857,16 @@ export default function TransactionsPage() {
     }
   }
 
-  async function handleConfirmInvoiceMatch(opts?: { force?: boolean; expected_journal_entry_id?: string }) {
+  async function handleConfirmInvoiceMatch(opts?: {
+    force?: boolean
+    expected_journal_entry_id?: string
+    lines?: Array<{
+      account_number: string
+      debit_amount: number
+      credit_amount: number
+      line_description?: string
+    }>
+  }) {
     if (!selectedTransaction) return
     const isSupplier = !!selectedTransaction.potential_supplier_invoice
     const isCustomer = !!selectedTransaction.potential_invoice
@@ -879,6 +890,12 @@ export default function TransactionsPage() {
         if (opts.expected_journal_entry_id) {
           body.expected_journal_entry_id = opts.expected_journal_entry_id
         }
+      }
+      // User-edited journal entry rows from the match dialog. Forwarded
+      // verbatim; the server validates balance and posts via
+      // createJournalEntry directly. Default routing applies when omitted.
+      if (opts?.lines && opts.lines.length >= 2) {
+        body.lines = opts.lines
       }
 
       const response = await fetch(url, {
@@ -1054,127 +1071,29 @@ export default function TransactionsPage() {
     }
   }
 
-  async function handleSelectInvoiceFromPicker(invoice: Invoice & { customer?: Customer }) {
+  function handleSelectInvoiceFromPicker(invoice: Invoice & { customer?: Customer }) {
     if (!invoicePickerTransaction) return
+    // Don't POST directly from the picker. Route through the confirm dialog
+    // so the user sees the JE preview (Debet 1930 / Kredit 1510, or the cash
+    // variant) before the booking is created. Same UX as the auto-suggested
+    // path. Closes the picker and opens the match dialog with the picked
+    // invoice attached as potential_invoice.
     const tx = invoicePickerTransaction
-    setIsMatchingFromPicker(true)
-    try {
-      const response = await fetch(`/api/transactions/${tx.id}/match-invoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ invoice_id: invoice.id }),
-      })
-      const result = await response.json()
-      if (!response.ok) {
-        toast({
-          title: 'Fakturamatchning misslyckades',
-          description: getErrorMessage(result, { context: 'transaction' }),
-          variant: 'destructive',
-        })
-        setIsMatchingFromPicker(false)
-        return
-      }
-
-      toast({
-        title: 'Faktura matchad',
-        description: `Faktura ${invoice.invoice_number ?? ''} markerad som betald`,
-      })
-
-      setInvoicePickerOpen(false)
-      setInvoicePickerTransaction(null)
-      setExitingIds((prev) => new Set(prev).add(tx.id))
-      setTotalUncategorizedCount((prev) => Math.max(0, (prev ?? 1) - 1))
-      setTimeout(() => {
-        setTransactions((prev) =>
-          prev.map((t) =>
-            t.id === tx.id
-              ? {
-                  ...t,
-                  invoice_id: invoice.id,
-                  potential_invoice_id: null,
-                  potential_invoice: undefined,
-                  is_business: true,
-                  category: (result.category ?? 'income_services') as TransactionCategory,
-                  journal_entry_id: result.journal_entry_id,
-                }
-              : t
-          )
-        )
-        setExitingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(tx.id)
-          return next
-        })
-        setIsMatchingFromPicker(false)
-      }, 350)
-    } catch {
-      toast({
-        title: 'Matchning misslyckades',
-        description: t('match_failed_with_invoice'),
-        variant: 'destructive',
-      })
-      setIsMatchingFromPicker(false)
-    }
+    setInvoicePickerOpen(false)
+    setInvoicePickerTransaction(null)
+    setSelectedTransaction({ ...tx, potential_invoice: invoice })
+    setMatchDialogOpen(true)
   }
 
-  async function handleSelectSupplierInvoiceFromPicker(invoice: SupplierInvoice & { supplier?: Supplier }) {
+  function handleSelectSupplierInvoiceFromPicker(invoice: SupplierInvoice & { supplier?: Supplier }) {
     if (!supplierInvoicePickerTransaction) return
+    // Route through the confirm dialog so the supplier-side JE preview
+    // (Debet 2440 / Kredit 1930, or kontant-variant) is shown before commit.
     const tx = supplierInvoicePickerTransaction
-    setIsMatchingSupplierFromPicker(true)
-    try {
-      const response = await fetch(`/api/transactions/${tx.id}/match-supplier-invoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ supplier_invoice_id: invoice.id }),
-      })
-      const result = await response.json()
-      if (!response.ok) {
-        toast({
-          title: 'Matchning misslyckades',
-          description: getErrorMessage(result, { context: 'transaction' }),
-          variant: 'destructive',
-        })
-        setIsMatchingSupplierFromPicker(false)
-        return
-      }
-
-      toast({
-        title: 'Leverantörsfaktura matchad',
-        description: `Faktura ${invoice.supplier_invoice_number ?? ''} markerad som betald`,
-      })
-
-      setSupplierInvoicePickerOpen(false)
-      setSupplierInvoicePickerTransaction(null)
-      setExitingIds((prev) => new Set(prev).add(tx.id))
-      setTotalUncategorizedCount((prev) => Math.max(0, (prev ?? 1) - 1))
-      setTimeout(() => {
-        setTransactions((prev) =>
-          prev.map((t) =>
-            t.id === tx.id
-              ? {
-                  ...t,
-                  supplier_invoice_id: invoice.id,
-                  is_business: true,
-                  journal_entry_id: result.journal_entry_id ?? t.journal_entry_id,
-                }
-              : t
-          )
-        )
-        setExitingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(tx.id)
-          return next
-        })
-        setIsMatchingSupplierFromPicker(false)
-      }, 350)
-    } catch {
-      toast({
-        title: 'Matchning misslyckades',
-        description: 'Transaktionen kunde inte matchas med leverantörsfakturan. Försök igen.',
-        variant: 'destructive',
-      })
-      setIsMatchingSupplierFromPicker(false)
-    }
+    setSupplierInvoicePickerOpen(false)
+    setSupplierInvoicePickerTransaction(null)
+    setSelectedTransaction({ ...tx, potential_supplier_invoice: invoice })
+    setMatchDialogOpen(true)
   }
 
   function openInvoiceMatchPicker(transaction: TransactionWithInvoice) {
@@ -1666,7 +1585,11 @@ export default function TransactionsPage() {
         onToggleBatchMode={() => (isBatchMode ? exitBatchMode() : setIsBatchMode(true))}
       />
 
-      <BankSyncStatusChip />
+      <div className="flex flex-wrap items-center gap-2">
+        <BankSyncStatusChip />
+        <BankSyncNowButton />
+      </div>
+      <BankSyncSinceLastVisit />
 
       {/* Search + view dropdown */}
       <div className="flex items-center gap-2">

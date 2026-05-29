@@ -5,6 +5,7 @@ import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import { validateBody } from '@/lib/api/validate'
 import { SalaryEmployeeOverrideSchema } from '@/lib/api/schemas'
+import { decryptPersonnummer, maskPersonnummer } from '@/lib/salary/personnummer'
 
 ensureInitialized()
 
@@ -35,7 +36,20 @@ export async function GET(
     return NextResponse.json({ error: 'Anställd hittades inte i lönekörningen' }, { status: 404 })
   }
 
-  return NextResponse.json({ data })
+  // Strip the encrypted personnummer ciphertext before sending to the browser
+  // — replace it with the YYYYMMDD-XXXX masked form so the page can render
+  // identity without exposing the suffix or the raw cipher blob.
+  const masked = {
+    ...data,
+    employee: data.employee
+      ? {
+          ...data.employee,
+          personnummer: maskPersonnummer(decryptPersonnummer(data.employee.personnummer)),
+        }
+      : data.employee,
+  }
+
+  return NextResponse.json({ data: masked })
 }
 
 /**

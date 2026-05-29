@@ -45,6 +45,11 @@ const UNBALANCED_SIE = [
   '}',
 ].join('\n')
 
+const COVER_VALID_SIE = [
+  { sourceAccount: '6110', sourceName: 'Kontorsmaterial', targetAccount: '6110', targetName: 'Kontorsmaterial', confidence: 1, matchType: 'exact', isOverride: false },
+  { sourceAccount: '1930', sourceName: 'Företagskonto', targetAccount: '1930', targetName: 'Företagskonto', confidence: 1, matchType: 'exact', isOverride: false },
+]
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
@@ -55,7 +60,7 @@ describe('gnubok_import_sie — stage-time validation', () => {
     enqueue({ data: { id: 'op-sie' }, error: null }) // pending_operations insert
 
     const result = (await importSie.execute(
-      { file_content: VALID_SIE, filename: 'bok.se', mappings: [] },
+      { file_content: VALID_SIE, filename: 'bok.se', mappings: COVER_VALID_SIE },
       'company-1',
       'user-1',
       supabase as never,
@@ -70,6 +75,8 @@ describe('gnubok_import_sie — stage-time validation', () => {
     expect(result.preview.account_count).toBe(3)
     expect(result.preview.fiscal_year).toMatchObject({ start: '2024-01-01', end: '2024-12-31' })
     expect(result.preview.opening_balance).toMatchObject({ total: 0, is_balanced: true })
+    expect(result.preview.accounts_mapped).toMatchObject({ covered: 2, total: 2 })
+    expect(result.preview.would_skip_all_vouchers).toBe(false)
   })
 
   it('rejects an unbalanced file at stage time (no blind staging)', async () => {
@@ -77,7 +84,7 @@ describe('gnubok_import_sie — stage-time validation', () => {
 
     await expect(
       importSie.execute(
-        { file_content: UNBALANCED_SIE, filename: 'trasig.se', mappings: [] },
+        { file_content: UNBALANCED_SIE, filename: 'trasig.se', mappings: COVER_VALID_SIE },
         'company-1',
         'user-1',
         supabase as never,
@@ -97,5 +104,76 @@ describe('gnubok_import_sie — stage-time validation', () => {
         { type: 'api_key' },
       ),
     ).rejects.toThrow(/file_content/)
+  })
+
+  // Lookma AB regression (support case 2026-05-28): staging with mappings=[]
+  // committed a 0-entry 'completed' sie_imports row that then blocked retry.
+  // The fix refuses to stage when the mappings can't cover the file.
+  it('rejects when mappings is empty and the file has vouchers', async () => {
+    const { supabase } = createQueuedMockSupabase()
+    await expect(
+      importSie.execute(
+        { file_content: VALID_SIE, filename: 'lookma.se', mappings: [] },
+        'company-1',
+        'user-1',
+        supabase as never,
+        { type: 'api_key' },
+      ),
+    ).rejects.toThrow(/täcker inga konton|skulle hoppas över/i)
+  })
+
+  it('rejects when mappings don\'t overlap the file\'s accounts', async () => {
+    const { supabase } = createQueuedMockSupabase()
+    const wrongMappings = [
+      { sourceAccount: '9999', sourceName: 'Fantasi', targetAccount: '9999', targetName: 'Fantasi', confidence: 1, matchType: 'exact', isOverride: false },
+    ]
+    await expect(
+      importSie.execute(
+        { file_content: VALID_SIE, filename: 'wrong.se', mappings: wrongMappings },
+        'company-1',
+        'user-1',
+        supabase as never,
+        { type: 'api_key' },
+      ),
+    ).rejects.toThrow(/täcker inga konton/i)
+  })
+
+  it('rejects when targetAccount is null on every mapping (Lookma shape)', async () => {
+    const { supabase } = createQueuedMockSupabase()
+    // The original Lookma agent sent #KONTO rows formatted as mapping objects
+    // but with no targetAccount resolved. Coverage check ignores those.
+    const halfBakedMappings = [
+      { sourceAccount: '6110', sourceName: 'Kontorsmaterial', targetAccount: null, targetName: '', confidence: 0, matchType: 'manual', isOverride: false },
+      { sourceAccount: '1930', sourceName: 'Företagskonto', targetAccount: null, targetName: '', confidence: 0, matchType: 'manual', isOverride: false },
+    ]
+    await expect(
+      importSie.execute(
+        { file_content: VALID_SIE, filename: 'half.se', mappings: halfBakedMappings },
+        'company-1',
+        'user-1',
+        supabase as never,
+        { type: 'api_key' },
+      ),
+    ).rejects.toThrow(/täcker inga konton/i)
+  })
+
+  it('stages when partial overlap exists (1 of 2 accounts mapped)', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-sie-partial' }, error: null })
+
+    const partial = [
+      { sourceAccount: '6110', sourceName: 'Kontorsmaterial', targetAccount: '6110', targetName: 'Kontorsmaterial', confidence: 1, matchType: 'exact', isOverride: false },
+    ]
+    const result = (await importSie.execute(
+      { file_content: VALID_SIE, filename: 'bok.se', mappings: partial },
+      'company-1',
+      'user-1',
+      supabase as never,
+      { type: 'api_key' },
+    )) as { staged: boolean; preview: Record<string, unknown> }
+
+    expect(result.staged).toBe(true)
+    expect(result.preview.accounts_mapped).toMatchObject({ covered: 1, total: 2 })
+    expect(result.preview.would_skip_all_vouchers).toBe(false)
   })
 })

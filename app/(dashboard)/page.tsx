@@ -108,8 +108,8 @@ export default async function DashboardPage() {
     supabase.from('document_attachments').select('journal_entry_id').eq('company_id', companyId).eq('is_current_version', true).not('journal_entry_id', 'is', null),
     supabase.from('receipts').select('created_at').eq('company_id', companyId).eq('status', 'confirmed').order('created_at', { ascending: false }).limit(30),
     supabase.from('sie_imports').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'completed'),
-    supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('company_id', companyId).is('journal_entry_id', null).not('is_business', 'eq', false).lt('date', new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]),
-    supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('company_id', companyId).is('is_business', null),
+    supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('company_id', companyId).is('journal_entry_id', null).eq('is_ignored', false).is('is_business', null).lt('date', new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]),
+    supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('is_ignored', false).is('is_business', null),
     // Skatteverket tokens are user-scoped (one BankID identity per user) but
     // carry the active company_id; either filter would work — we use user_id
     // because that's what the token-store reads/writes against.

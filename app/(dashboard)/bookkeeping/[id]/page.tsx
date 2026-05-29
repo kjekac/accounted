@@ -178,10 +178,11 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
   const foreignTotal = hasForeignCurrency ? Math.abs(Number(foreignLines[0].amount_in_currency) || 0) : 0
   const foreignExchangeRate = hasForeignCurrency ? (Number(foreignLines[0].exchange_rate) || null) : null
 
-  const canCorrect =
-    entry.status === 'posted' &&
-    entry.source_type !== 'storno' &&
-    entry.source_type !== 'correction'
+  // A correction is itself a regular posted verifikation and can be corrected
+  // again (BFL 5 kap. 5 § — the chain just grows). Storno entries are pure
+  // reversals and cannot be corrected directly; the user walks to the latest
+  // correction (or the original) and corrects that one.
+  const canCorrect = entry.status === 'posted' && entry.source_type !== 'storno'
 
   // Include current entry in the chain for the visualization
   const fullChain = [entry, ...chain]

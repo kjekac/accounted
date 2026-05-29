@@ -178,6 +178,83 @@ describe('ingestTransactions', () => {
   })
 
   // -----------------------------------------------------------------------
+  // 2b. CSV row dedupes against uncategorized enable_banking row when
+  //     date+amount+description prefix match (Lunar CSV vs Lunar PSD2 case).
+  // -----------------------------------------------------------------------
+  it('dedupes CSV row against unbooked enable_banking row with matching description', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const raw = makeRaw({
+      date: '2024-06-15',
+      amount: -250.0,
+      description: 'ICA Maxi Solna',
+      external_id: 'lunar_csvhash123',
+      import_source: 'csv_lunar',
+    })
+
+    // Booked transaction map query — none
+    enqueue({ data: [], error: null })
+    // Unbooked bank-synced transaction map query — one PSD2 row with matching content
+    enqueue({
+      data: [{ date: '2024-06-15', amount: -250.0, description: 'ICA Maxi Solna' }],
+      error: null,
+    })
+    // Supplier invoices fetch
+    enqueue({ data: [], error: null })
+    // Batch external_id dedup query — external_id differs, so no match
+    enqueue({ data: [], error: null })
+    // No insert expected — row should be deduplicated at content layer
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw])
+
+    expect(result.duplicates).toBe(1)
+    expect(result.imported).toBe(0)
+    expect(result.transaction_ids).toEqual([])
+  })
+
+  // -----------------------------------------------------------------------
+  // 2c. No false positive: same date+amount but different description does
+  //     NOT trigger content dedup — guards against the historical concern
+  //     about unrelated transfers colliding on (date, amount) alone.
+  // -----------------------------------------------------------------------
+  it('does not dedupe when date+amount match but description differs', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const raw = makeRaw({
+      date: '2024-06-15',
+      amount: -250.0,
+      description: 'Coop Stockholm',
+      external_id: 'lunar_csvhash456',
+      import_source: 'csv_lunar',
+    })
+    const inserted = makeTransaction({
+      id: 'tx-no-collision',
+      external_id: raw.external_id,
+      amount: -250.0,
+    })
+
+    // Booked transaction map query — none
+    enqueue({ data: [], error: null })
+    // Unbooked bank-synced transaction map query — a PSD2 row with same date/amount but DIFFERENT description
+    enqueue({
+      data: [{ date: '2024-06-15', amount: -250.0, description: 'ICA Maxi Solna' }],
+      error: null,
+    })
+    // Supplier invoices fetch
+    enqueue({ data: [], error: null })
+    // Batch external_id dedup query — no match
+    enqueue({ data: [], error: null })
+    // Insert succeeds — the new row is not a duplicate
+    enqueue({ data: inserted, error: null })
+
+    mockEvaluateMappingRules.mockResolvedValue(makeMappingResult({ confidence: 0.5 }))
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw])
+
+    expect(result.imported).toBe(1)
+    expect(result.duplicates).toBe(0)
+    expect(result.transaction_ids).toEqual(['tx-no-collision'])
+  })
+
+  // -----------------------------------------------------------------------
   // 3. Counts errors when insert fails
   // -----------------------------------------------------------------------
   it('counts errors when insert fails', async () => {
@@ -657,7 +734,7 @@ describe('ingestTransactions', () => {
   // -----------------------------------------------------------------------
   // Content-based dedup: cross-source duplicate detection
   // -----------------------------------------------------------------------
-  it('skips transactions that match already-booked ones by date+amount', async () => {
+  it('skips transactions that match already-booked ones by date+amount+description', async () => {
     const { supabase, enqueue } = createQueueMockSupabase()
     const raw = makeRaw({
       external_id: 'psd2_conn123_tx456',
@@ -665,9 +742,9 @@ describe('ingestTransactions', () => {
       amount: -250,
     })
 
-    // Booked transaction map returns a booked tx with same date+amount
+    // Booked transaction map returns a booked tx with same date+amount+description
     enqueue({
-      data: [{ date: '2024-06-15', amount: -250 }],
+      data: [{ date: '2024-06-15', amount: -250, description: raw.description }],
       error: null,
     })
     // Unbooked bank-synced transaction map query
@@ -694,7 +771,7 @@ describe('ingestTransactions', () => {
 
     // Booked transaction map: same date but different amount
     enqueue({
-      data: [{ date: '2024-06-15', amount: -250 }],
+      data: [{ date: '2024-06-15', amount: -250, description: raw.description }],
       error: null,
     })
     // Unbooked bank-synced transaction map query
@@ -724,12 +801,12 @@ describe('ingestTransactions', () => {
 
     const inserted = makeTransaction({ id: 'tx-new', amount: -100 })
 
-    // Booked map: 2 existing booked transactions with same date+amount
+    // Booked map: 2 existing booked transactions with same date+amount+description
     // So 2 of the 3 incoming should be skipped, 1 should be imported
     enqueue({
       data: [
-        { date: '2024-06-15', amount: -100 },
-        { date: '2024-06-15', amount: -100 },
+        { date: '2024-06-15', amount: -100, description: raw1.description },
+        { date: '2024-06-15', amount: -100, description: raw1.description },
       ],
       error: null,
     })

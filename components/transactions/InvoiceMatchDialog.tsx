@@ -1,12 +1,15 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
-import { formatCurrency, formatDate } from '@/lib/utils'
-import { CheckCircle2, AlertTriangle } from 'lucide-react'
+import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
+import { formatCurrency, formatDate, cn } from '@/lib/utils'
+import { CheckCircle2, AlertTriangle, Trash2, Plus, Pencil } from 'lucide-react'
 import type { TransactionWithInvoice } from './transaction-types'
+import type { BASAccount } from '@/types'
 
 interface DuplicateCandidate {
   journal_entry_id: string
@@ -18,13 +21,70 @@ interface DuplicateCandidate {
   reason: 'exact_amount_same_date' | 'exact_amount_within_window'
 }
 
+interface PreviewLine {
+  account_number: string
+  debit_amount: number
+  credit_amount: number
+  description: string
+}
+
+interface MatchPreview {
+  entry_type: 'clearing' | 'cash'
+  lines: PreviewLine[]
+  invoice_already_booked: boolean
+  accounting_method: 'accrual' | 'cash'
+  is_fully_paid: boolean
+}
+
+// String-typed working copy of a line. The amount is a single value plus a
+// side (debit / credit) — modeling a verifikationsrad as one positive number
+// with a direction matches how Swedish accountants think and tightens the
+// failure modes (you can't accidentally fill both sides). Conversion back
+// to the server's { debit_amount, credit_amount } shape happens at submit.
+interface EditableLine {
+  account_number: string
+  side: 'debit' | 'credit'
+  amount: string
+  description: string
+}
+
+export interface ConfirmOpts {
+  force?: boolean
+  expected_journal_entry_id?: string
+  lines?: Array<{
+    account_number: string
+    debit_amount: number
+    credit_amount: number
+    line_description?: string
+  }>
+}
+
 interface InvoiceMatchDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   transaction: TransactionWithInvoice | null
   isConfirming: boolean
-  onConfirm: (opts?: { force?: boolean; expected_journal_entry_id?: string }) => void
+  onConfirm: (opts?: ConfirmOpts) => void
   onLinkToExisting?: (journalEntryId: string) => void
+}
+
+function previewToEditable(line: PreviewLine): EditableLine {
+  const isDebit = line.debit_amount > 0
+  return {
+    account_number: line.account_number,
+    side: isDebit ? 'debit' : 'credit',
+    amount: String(isDebit ? line.debit_amount : line.credit_amount),
+    description: line.description,
+  }
+}
+
+function parseAmount(s: string): number {
+  const n = Number(s.replace(',', '.'))
+  return Number.isFinite(n) ? n : 0
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
 }
 
 export default function InvoiceMatchDialog({
@@ -40,12 +100,79 @@ export default function InvoiceMatchDialog({
   const isCustomerInvoice = !!transaction?.potential_invoice
   const transactionId = transaction?.id ?? null
 
-  // Customer-side only: pre-flight check for a manual verifikation that
-  // already books this receipt. Supplier-side duplicate-payment surfacing
-  // is handled by the mark-paid guard on the supplier-invoice side; here
-  // we only need the customer flow for the reported issue.
   const [candidate, setCandidate] = useState<DuplicateCandidate | null>(null)
   const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false)
+
+  const invoiceId = transaction?.potential_invoice?.id ?? null
+  const supplierInvoiceId = transaction?.potential_supplier_invoice?.id ?? null
+  const [preview, setPreview] = useState<MatchPreview | null>(null)
+  const [previewFailed, setPreviewFailed] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editLines, setEditLines] = useState<EditableLine[]>([])
+  // BAS accounts power the AccountCombobox suggestions in edit mode. Loaded
+  // once on dialog open; same endpoint that PaymentBookingDialog uses.
+  const [accounts, setAccounts] = useState<BASAccount[]>([])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/bookkeeping/accounts')
+        if (!res.ok) return
+        const data = await res.json()
+        if (!cancelled) setAccounts((data?.data as BASAccount[]) ?? [])
+      } catch {
+        // Non-fatal: combobox just shows no suggestions, user can still
+        // type the number manually.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !transactionId) {
+      setPreview(null)
+      setPreviewFailed(false)
+      setIsEditing(false)
+      setEditLines([])
+      return
+    }
+    let cancelled = false
+    const previewUrl = isCustomerInvoice && invoiceId
+      ? `/api/transactions/${transactionId}/match-invoice/preview?invoice_id=${invoiceId}`
+      : isSupplierInvoice && supplierInvoiceId
+        ? `/api/transactions/${transactionId}/match-supplier-invoice/preview?supplier_invoice_id=${supplierInvoiceId}`
+        : null
+    if (!previewUrl) {
+      setPreview(null)
+      setPreviewFailed(false)
+      return
+    }
+    async function loadPreview() {
+      setPreviewFailed(false)
+      try {
+        const res = await fetch(previewUrl!)
+        if (!res.ok) {
+          if (!cancelled) setPreviewFailed(true)
+          return
+        }
+        const data = (await res.json()) as MatchPreview
+        if (!cancelled) {
+          setPreview(data)
+          setEditLines(data.lines.map(previewToEditable))
+        }
+      } catch {
+        if (!cancelled) setPreviewFailed(true)
+      }
+    }
+    loadPreview()
+    return () => {
+      cancelled = true
+    }
+  }, [open, transactionId, isCustomerInvoice, isSupplierInvoice, invoiceId, supplierInvoiceId])
 
   useEffect(() => {
     if (!open || !transactionId || !isCustomerInvoice || !onLinkToExisting) {
@@ -72,10 +199,59 @@ export default function InvoiceMatchDialog({
     }
   }, [open, transactionId, isCustomerInvoice, onLinkToExisting])
 
-  // The invoice candidate the dialog is about, normalized to a single shape.
-  // Supplier invoices show the negative-amount paid-out match; customer
-  // invoices show the positive-amount paid-in match. Each side carries its
-  // own follow-up action language.
+  // Live balance + validity. The dialog disables Confirm while edit mode is
+  // active and the entry is invalid; an out-of-balance entry can't be sent.
+  const editValidation = useMemo(() => {
+    if (!isEditing) return { isBalanced: true, isValid: true, diff: 0, totalDebit: 0, totalCredit: 0, accountInvalid: false }
+    const totalDebit = round2(
+      editLines.filter((l) => l.side === 'debit').reduce((s, l) => s + parseAmount(l.amount), 0),
+    )
+    const totalCredit = round2(
+      editLines.filter((l) => l.side === 'credit').reduce((s, l) => s + parseAmount(l.amount), 0),
+    )
+    const isBalanced = totalDebit === totalCredit && totalDebit > 0
+    const accountInvalid = editLines.some((l) => !/^\d{4}$/.test(l.account_number.trim()))
+    return {
+      isBalanced,
+      accountInvalid,
+      isValid: isBalanced && !accountInvalid,
+      diff: round2(totalDebit - totalCredit),
+      totalDebit,
+      totalCredit,
+    }
+  }, [isEditing, editLines])
+
+  const handleConfirm = (opts?: { force?: boolean; expected_journal_entry_id?: string }) => {
+    const linesPayload = isEditing && preview && editValidation.isValid
+      ? editLines.map((l) => {
+          const amount = round2(parseAmount(l.amount))
+          return {
+            account_number: l.account_number.trim(),
+            debit_amount: l.side === 'debit' ? amount : 0,
+            credit_amount: l.side === 'credit' ? amount : 0,
+            line_description: l.description?.trim() || undefined,
+          }
+        })
+      : undefined
+    onConfirm({ ...(opts ?? {}), ...(linesPayload ? { lines: linesPayload } : {}) })
+  }
+
+  const resetEdits = () => {
+    if (preview) setEditLines(preview.lines.map(previewToEditable))
+  }
+
+  const addEditLine = () => {
+    setEditLines((prev) => [...prev, { account_number: '', side: 'debit', amount: '', description: '' }])
+  }
+
+  const removeEditLine = (i: number) => {
+    setEditLines((prev) => prev.filter((_, idx) => idx !== i))
+  }
+
+  const updateEditLine = (i: number, patch: Partial<EditableLine>) => {
+    setEditLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)))
+  }
+
   const matchTitle = isSupplierInvoice ? t('title_supplier') : t('title_customer')
   const matchDescription = isSupplierInvoice
     ? t('description_supplier')
@@ -83,7 +259,7 @@ export default function InvoiceMatchDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>{matchTitle}</DialogTitle>
           <DialogDescription>{matchDescription}</DialogDescription>
@@ -111,13 +287,6 @@ export default function InvoiceMatchDialog({
                           })}
                     </p>
                     {candidate.description && (
-                      // Truncate to a short head before render. The
-                      // description is free-text and may carry a customer
-                      // name or note that's not strictly required to
-                      // identify the verifikation (voucher_label + amount +
-                      // date already do that). Cap length to keep the
-                      // dialog tight and limit incidental PII surfacing
-                      // in the rendered DOM. GDPR Art.5(1)(c).
                       <p className="text-xs text-muted-foreground truncate">
                         {candidate.description.length > 80
                           ? `${candidate.description.slice(0, 80).trimEnd()}…`
@@ -141,11 +310,8 @@ export default function InvoiceMatchDialog({
                       variant="outline"
                       size="sm"
                       onClick={() =>
-                        onConfirm({
+                        handleConfirm({
                           force: true,
-                          // Echo the candidate the user reviewed back to
-                          // the server so the bypass is bound to this
-                          // specific duplicate. See match-invoice route.
                           expected_journal_entry_id: candidate.journal_entry_id,
                         })
                       }
@@ -256,6 +422,166 @@ export default function InvoiceMatchDialog({
               )
             })()}
 
+            {/* Bookkeeping preview — editable. Read-only by default; user
+                clicks "Redigera" to switch the rows to inputs. */}
+            {(preview || previewFailed) && (
+              <div className="rounded-lg border p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">{t('booking_title')}</p>
+                  {preview && (
+                    <div className="flex gap-2">
+                      {isEditing && (
+                        <Button variant="ghost" size="sm" onClick={resetEdits} disabled={isConfirming}>
+                          {t('booking_reset')}
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsEditing((v) => !v)}
+                        disabled={isConfirming}
+                      >
+                        {isEditing ? t('booking_done_editing') : (
+                          <>
+                            <Pencil className="h-3 w-3 mr-1" />
+                            {t('booking_edit')}
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                {previewFailed && !preview && (
+                  <p className="text-sm text-muted-foreground">{t('booking_unavailable')}</p>
+                )}
+
+                {preview && !isEditing && (
+                  <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 gap-y-1 text-sm tabular-nums">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      {t('booking_account')}
+                    </div>
+                    <div />
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground text-right">
+                      {t('booking_debit')}
+                    </div>
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground text-right">
+                      {t('booking_credit')}
+                    </div>
+                    {preview.lines.map((line, i) => (
+                      <div key={i} className="contents">
+                        <div className="font-medium">{line.account_number}</div>
+                        <div className="text-muted-foreground truncate">{line.description}</div>
+                        <div className="text-right">
+                          {line.debit_amount > 0
+                            ? formatCurrency(line.debit_amount, transaction.currency)
+                            : ''}
+                        </div>
+                        <div className="text-right">
+                          {line.credit_amount > 0
+                            ? formatCurrency(line.credit_amount, transaction.currency)
+                            : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {preview && isEditing && (
+                  <div className="space-y-2">
+                    {editLines.map((line, i) => (
+                      <div
+                        key={i}
+                        className="grid grid-cols-[minmax(180px,1.6fr)_minmax(0,1fr)_140px_110px_28px] gap-2 items-center"
+                      >
+                        <AccountCombobox
+                          value={line.account_number}
+                          accounts={accounts}
+                          onChange={(acc) => updateEditLine(i, { account_number: acc })}
+                        />
+                        <Input
+                          value={line.description}
+                          onChange={(e) => updateEditLine(i, { description: e.target.value })}
+                          placeholder={t('booking_description_placeholder')}
+                        />
+                        {/* Side toggle — segmented control. Clicking either
+                            button picks that side; the amount stays the
+                            same. */}
+                        <div className="inline-flex rounded-md border bg-background overflow-hidden h-9">
+                          <button
+                            type="button"
+                            onClick={() => updateEditLine(i, { side: 'debit' })}
+                            className={cn(
+                              'flex-1 px-2 text-xs font-medium transition-colors',
+                              line.side === 'debit'
+                                ? 'bg-secondary text-foreground'
+                                : 'text-muted-foreground hover:bg-secondary/60',
+                            )}
+                            aria-pressed={line.side === 'debit'}
+                          >
+                            {t('booking_debit')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => updateEditLine(i, { side: 'credit' })}
+                            className={cn(
+                              'flex-1 px-2 text-xs font-medium border-l transition-colors',
+                              line.side === 'credit'
+                                ? 'bg-secondary text-foreground'
+                                : 'text-muted-foreground hover:bg-secondary/60',
+                            )}
+                            aria-pressed={line.side === 'credit'}
+                          >
+                            {t('booking_credit')}
+                          </button>
+                        </div>
+                        <Input
+                          inputMode="decimal"
+                          value={line.amount}
+                          onChange={(e) => updateEditLine(i, { amount: e.target.value })}
+                          className="text-right tabular-nums"
+                          placeholder="0"
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => removeEditLine(i)}
+                          disabled={editLines.length <= 2}
+                          aria-label={t('booking_remove_line')}
+                          className="h-8 w-8"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+
+                    <div className="flex items-center justify-between pt-1">
+                      <Button variant="ghost" size="sm" onClick={addEditLine}>
+                        <Plus className="h-3 w-3 mr-1" />
+                        {t('booking_add_line')}
+                      </Button>
+                      <div className="text-xs tabular-nums text-muted-foreground">
+                        {t('booking_debit')} {formatCurrency(editValidation.totalDebit, transaction.currency)}
+                        {' / '}
+                        {t('booking_credit')} {formatCurrency(editValidation.totalCredit, transaction.currency)}
+                      </div>
+                    </div>
+
+                    {!editValidation.isBalanced && (
+                      <p className="text-xs text-destructive">
+                        {t('booking_unbalanced', {
+                          diff: formatCurrency(Math.abs(editValidation.diff), transaction.currency),
+                        })}
+                      </p>
+                    )}
+                    {editValidation.accountInvalid && (
+                      <p className="text-xs text-destructive">{t('booking_account_invalid')}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* What will happen */}
             <div className="rounded-lg bg-muted/50 p-4 space-y-2">
               <p className="text-sm font-medium">{t('on_confirm_title')}</p>
@@ -272,7 +598,10 @@ export default function InvoiceMatchDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isConfirming}>
             {t('cancel')}
           </Button>
-          <Button onClick={() => onConfirm()} disabled={isConfirming || isCheckingDuplicate}>
+          <Button
+            onClick={() => handleConfirm()}
+            disabled={isConfirming || isCheckingDuplicate || (isEditing && !editValidation.isValid)}
+          >
             {isConfirming ? t('confirming') : t('confirm_match')}
           </Button>
         </DialogFooter>

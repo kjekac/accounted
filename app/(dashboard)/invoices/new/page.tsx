@@ -1274,6 +1274,7 @@ export default function NewInvoicePage() {
             notes={pendingData?.notes}
             numberPreview={numberPreview}
             oreRounding={oreRounding}
+            vatRegistered={vatRegistered}
           />
         </ConfirmationDialog>
       )}

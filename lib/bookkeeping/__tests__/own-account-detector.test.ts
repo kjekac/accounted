@@ -29,6 +29,7 @@ function makeTx(overrides: Partial<Transaction> = {}): Transaction {
     receipt_id: null,
     document_id: null,
     reconciliation_method: null,
+    is_ignored: false,
     import_source: 'enable_banking',
     reference: null,
     counterparty_iban: 'SE9550000000054910000003',

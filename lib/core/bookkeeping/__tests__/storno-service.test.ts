@@ -276,6 +276,55 @@ describe('correctEntry', () => {
     expect(result.corrected).toBeDefined()
   })
 
+  it('accepts a source_type=correction entry as the original (chained correction, BFL 5 kap. 5 §)', async () => {
+    // The user just corrected entry A → got correction C. They now want to
+    // correct C. Service must not care about source_type of the original —
+    // status='posted' is the only constraint.
+    const correctionAsOriginal = makeJournalEntry({
+      id: 'correction-1',
+      status: 'posted',
+      source_type: 'correction',
+      correction_of_id: 'orig-A',
+      description: 'Rättelse: Test purchase',
+      fiscal_period_id: 'fp-1',
+      voucher_series: 'A',
+      lines: [
+        makeJournalEntryLine({ account_number: '5420', debit_amount: 1200, credit_amount: 0 }),
+        makeJournalEntryLine({ account_number: '1930', debit_amount: 0, credit_amount: 1200 }),
+      ],
+    })
+    const secondReversal = makeJournalEntry({ id: 'reversal-2', reverses_id: 'correction-1' })
+    const secondCorrection = makeJournalEntry({
+      id: 'correction-2',
+      correction_of_id: 'correction-1',
+      source_type: 'correction',
+    })
+
+    results = [
+      { data: correctionAsOriginal, error: null },                            // 0: fetch original (the prior correction)
+      { data: secondReversal, error: null },                                  // 1: insert reversal
+      { data: null, error: null },                                            // 2: insert reversal lines
+      { data: null, error: null },                                            // 3: post reversal
+      { data: [{ id: 'acc-5430', account_number: '5430' }, { id: 'acc-1930', account_number: '1930' }], error: null }, // 4: accounts
+      { data: secondCorrection, error: null },                                // 5: insert corrected
+      { data: null, error: null },                                            // 6: insert corrected lines
+      { data: null, error: null },                                            // 7: post corrected
+      { data: [{ id: 'correction-1' }], error: null },                        // 8: CAS update
+      { data: { ...secondReversal, lines: [] }, error: null },                // 9: fetch final reversal
+      { data: { ...secondCorrection, lines: [] }, error: null },              // 10: fetch final corrected
+    ]
+
+    const supabase = makeClient()
+    const result = await correctEntry(supabase as never, 'company-1', 'user-1', 'correction-1', [
+      { account_number: '5430', debit_amount: 1500, credit_amount: 0 },
+      { account_number: '1930', debit_amount: 0, credit_amount: 1500 },
+    ])
+
+    expect(result.reversal.reverses_id).toBe('correction-1')
+    expect(result.corrected.correction_of_id).toBe('correction-1')
+    expect(result.corrected.source_type).toBe('correction')
+  })
+
   it('emits journal_entry.corrected event', async () => {
     setupResults()
 

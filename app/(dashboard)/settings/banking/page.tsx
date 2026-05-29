@@ -10,6 +10,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { AlertTriangle, CreditCard, ExternalLink } from 'lucide-react'
 import { getSettingsPanel } from '@/lib/extensions/settings-panel-registry'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
+import BankSyncStatusChip from '@/components/transactions/BankSyncStatusChip'
 
 const BankingPanel = getSettingsPanel('enable-banking')
 
@@ -144,7 +145,10 @@ export default function BankingSettingsPage() {
       )}
 
       {hasBankingExtension && BankingPanel ? (
-        <BankingPanel />
+        <>
+          <BankSyncStatusChip />
+          <BankingPanel />
+        </>
       ) : (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
