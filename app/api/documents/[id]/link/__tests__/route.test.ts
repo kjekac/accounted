@@ -74,6 +74,7 @@ describe('POST /api/documents/[id]/link', () => {
   })
 
   it('links the document and stamps the inbox item when inbox_item_id is given', async () => {
+    enqueue({ data: { id: 'je-1' } }) // journal entry company check
     enqueue({ data: { id: 'doc-1', journal_entry_id: 'je-1', file_name: 'x.pdf' } }) // link update
     enqueue({ data: null }) // inbox stamp update
 
@@ -90,6 +91,7 @@ describe('POST /api/documents/[id]/link', () => {
   })
 
   it('does not touch the inbox when no inbox_item_id is given', async () => {
+    enqueue({ data: { id: 'je-1' } }) // journal entry company check
     enqueue({ data: { id: 'doc-1', journal_entry_id: 'je-1', file_name: 'x.pdf' } }) // link update
 
     const res = await POST(
@@ -103,6 +105,7 @@ describe('POST /api/documents/[id]/link', () => {
   })
 
   it('maps a period-lock trigger error to PERIOD_LOCKED', async () => {
+    enqueue({ data: { id: 'je-1' } }) // journal entry company check
     enqueue({
       data: null,
       error: { message: 'new row violates ... locked/closed fiscal period' },
@@ -118,6 +121,7 @@ describe('POST /api/documents/[id]/link', () => {
   })
 
   it('maps an already-linked error to DOC_LINK_ALREADY_LINKED', async () => {
+    enqueue({ data: { id: 'je-1' } }) // journal entry company check
     enqueue({
       data: null,
       error: { message: 'document already linked to another entry' },
@@ -128,5 +132,19 @@ describe('POST /api/documents/[id]/link', () => {
     )
     const { body } = await parseJsonResponse<{ error: { code: string } }>(res)
     expect(body.error.code).toBe('DOC_LINK_ALREADY_LINKED')
+  })
+
+  it('rejects a journal entry outside the active company with DOC_LINK_ENTRY_NOT_FOUND', async () => {
+    // The company-scoped lookup finds no row — same result whether the id is
+    // bogus or belongs to another tenant. The document must never be updated.
+    enqueue({ data: null }) // journal entry company check → no match
+    const res = await POST(
+      makeReq({ journal_entry_id: 'je-other-company' }),
+      createMockRouteParams({ id: 'doc-1' }),
+    )
+    const { body } = await parseJsonResponse<{ error: { code: string } }>(res)
+    expect(body.error.code).toBe('DOC_LINK_ENTRY_NOT_FOUND')
+    expect(mockSupabase.from).not.toHaveBeenCalledWith('document_attachments')
+    expect(mockSupabase.from).not.toHaveBeenCalledWith('invoice_inbox_items')
   })
 })

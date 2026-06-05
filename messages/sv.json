@@ -1694,6 +1694,8 @@
     "description": "Skapa en verifikation för transaktionen",
     "doc_label": "Underlag (valfritt)",
     "doc_attached_count": "{count} bifogade",
+    "doc_pick_existing": "Välj befintligt underlag",
+    "doc_picked_remove": "Ta bort underlag",
     "doc_link_failed_title": "Underlag kunde inte bifogas",
     "doc_link_failed_description": "{count} fil(er) kunde inte länkas till verifikationen. Försök igen via bokföringssidan.",
     "bank_line_description": "Företagskonto"

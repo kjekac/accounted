@@ -20,19 +20,25 @@ import { FileText, ImageIcon, Loader2, Search, Inbox, Eye } from 'lucide-react'
 
 // InboxDocumentPicker
 //
-// Opens from JournalEntryAttachments ("Välj från inkorgen"). Lists invoice-inbox
-// documents that have not yet been consumed (no supplier invoice, no journal
-// entry, not matched to a transaction, document not already linked) so the user
-// can attach one as underlag to the current verifikat. Picking one links the
-// document to the journal entry AND stamps the inbox item so it drops out of the
-// active inbox — see app/api/documents/[id]/link/route.ts.
+// Lists invoice-inbox documents that have not yet been consumed (no supplier
+// invoice, no journal entry, not matched to a transaction, document not
+// already linked) so the user can attach one as underlag to a verifikat.
+//
+// Two modes:
+// - Link mode (JournalEntryAttachments, "Välj från inkorgen"): `journalEntryId`
+//   is set and picking a document immediately links it to the journal entry AND
+//   stamps the inbox item so it drops out of the active inbox — see
+//   app/api/documents/[id]/link/route.ts.
+// - Select mode (TransactionBookingDialog, "Välj befintligt underlag"): the
+//   journal entry does not exist yet, so `onSelect` is provided instead and the
+//   pick is reported to the parent, which links after the entry is created.
 //
 // Each row carries a preview button (eye) that opens a quick dialog rendering
 // the document inline, so the user can confirm the right file before attaching.
 // Attaching is the row's primary click (fast path) and is also offered from
 // inside the preview dialog (preview → confirm).
 
-interface AvailableInboxDoc {
+export interface AvailableInboxDoc {
   inbox_item_id: string
   document_id: string
   file_name: string
@@ -49,9 +55,12 @@ interface AvailableInboxDoc {
 interface Props {
   open: boolean
   onClose: () => void
-  journalEntryId: string
-  /** Called after a successful link so the parent can refresh its document list. */
-  onLinked: () => void
+  /** Link mode: the journal entry to link the picked document to. */
+  journalEntryId?: string
+  /** Link mode: called after a successful link so the parent can refresh its document list. */
+  onLinked?: () => void
+  /** Select mode: report the picked document to the parent instead of linking. */
+  onSelect?: (doc: AvailableInboxDoc) => void
 }
 
 function isImageType(type: string | null): boolean {
@@ -69,7 +78,7 @@ function DocIcon({ mime }: { mime: string | null }) {
   return <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
 }
 
-export default function InboxDocumentPicker({ open, onClose, journalEntryId, onLinked }: Props) {
+export default function InboxDocumentPicker({ open, onClose, journalEntryId, onLinked, onSelect }: Props) {
   const t = useTranslations('journal_attachments')
   const { toast } = useToast()
 
@@ -113,6 +122,18 @@ export default function InboxDocumentPicker({ open, onClose, journalEntryId, onL
   }, [items, search])
 
   async function handlePick(item: AvailableInboxDoc) {
+    // Select mode: the journal entry doesn't exist yet — hand the pick to the
+    // parent and let it link after creation. Clear the preview first: the
+    // preview dialog's open state is `previewItem !== null`, so leaving it set
+    // would strand a floating preview after the picker closes (the component
+    // stays mounted; the on-open reset only runs on the next open).
+    if (onSelect) {
+      setPreviewItem(null)
+      onSelect(item)
+      onClose()
+      return
+    }
+    if (!journalEntryId) return
     setLinkingId(item.document_id)
     try {
       const res = await fetch(`/api/documents/${item.document_id}/link`, {
@@ -133,7 +154,8 @@ export default function InboxDocumentPicker({ open, onClose, journalEntryId, onL
         return
       }
       toast({ title: t('picker_linked') })
-      onLinked()
+      setPreviewItem(null)
+      onLinked?.()
       onClose()
     } catch {
       toast({ title: t('picker_link_failed'), variant: 'destructive' })

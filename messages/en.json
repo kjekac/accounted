@@ -1694,6 +1694,8 @@
     "description": "Create a journal entry for the transaction",
     "doc_label": "Receipt (optional)",
     "doc_attached_count": "{count} attached",
+    "doc_pick_existing": "Choose existing document",
+    "doc_picked_remove": "Remove document",
     "doc_link_failed_title": "Receipt could not be attached",
     "doc_link_failed_description": "{count} file(s) could not be linked to the journal entry. Try again from the bookkeeping page.",
     "bank_line_description": "Business account"

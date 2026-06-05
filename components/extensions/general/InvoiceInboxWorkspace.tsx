@@ -1630,13 +1630,12 @@ function FieldsRail({
         ) : (
           <>
             {/* Unmatched state: the canonical next step is to find the bank
-                transaction this underlag belongs to. "Skapa leverantörs-
-                faktura" stays as an escape hatch for users who want
-                supplier-invoice tracking (accrual flow). The old "Bokför
-                direkt" escape hatch was removed — its label was unclear
-                and the deterministic-book-without-bank-tx use case is
-                covered by "Matcha mot transaktion" → "Bokför manuellt"
-                (matched state). */}
+                transaction this underlag belongs to. "Bokför manuellt" opens
+                BookDirectlyDialog without a transaction — for underlag with
+                no bank movement (cash expenses, private outlays); the dialog
+                still offers optional transaction selection inside. "Skapa
+                leverantörsfaktura" stays as an escape hatch for users who
+                want supplier-invoice tracking (accrual flow). */}
             <Button
               variant="default"
               size="sm"
@@ -1644,6 +1643,14 @@ function FieldsRail({
               onClick={onMatchTransaction}
             >
               Matcha mot transaktion
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={onBookDirect}
+            >
+              Bokför manuellt
             </Button>
             <Link href={`/supplier-invoices/new?inbox_item_id=${item.id}`} className="block">
               <Button variant="outline" size="sm" className="w-full">
