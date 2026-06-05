@@ -36,7 +36,8 @@ const PERSISTED_EVENT_TYPES: CoreEventType[] = [
   'supplier_invoice.match_confirmed',
   'supplier_invoice.confirmed',
   // MCP telemetry — every tool invocation, tools/list call, and resources/read.
-  // Lightweight metadata only; 30-day TTL on event_log bounds the volume.
+  // Lightweight metadata only. mcp.*/agent.* rows are retained 180 days by the
+  // cleanup cron (error-rate trends need more than the 30-day delivery window).
   'mcp.tool_called',
   'mcp.tools_list_called',
   'mcp.resource_read',
@@ -46,6 +47,10 @@ const PERSISTED_EVENT_TYPES: CoreEventType[] = [
   'mcp.workflow_started',
   'mcp.workflow_completed',
   'mcp.next_hint_followed',
+  // Every successful gnubok_load_skill, all tiers — which atoms agents
+  // actually load. Joined against mcp.tool_called error rates to measure
+  // whether a loaded atom helps or hurts.
+  'mcp.skill_loaded',
   // Agent self-reported feedback — surfaces "this tool was missing", "this
   // description was wrong", etc. Quarterly review → roadmap.
   'agent.feedback',

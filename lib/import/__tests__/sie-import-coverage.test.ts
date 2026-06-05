@@ -232,3 +232,108 @@ describe('finalizeImportRecord — 0-entry downgrade', () => {
     expect(result.success).toBe(true)
   })
 })
+
+describe('executeSIEImport — coverage check with derived IB (issue #675)', () => {
+  // SIE type 1/2-style file: no vouchers, no #IB 0 — only #UB -1. The
+  // current-year IB must be derived from #UB -1, and the derived accounts
+  // must feed the coverage guard (before the fix this set was empty, so the
+  // guard never inspected UB-1-only files at all).
+  function makeUb1OnlyFile(): ParsedSIEFile {
+    return makeParsedFile({
+      openingBalances: [],
+      closingBalances: [
+        { yearIndex: -1, account: '1930', amount: 37400.78 },
+        { yearIndex: -1, account: '2010', amount: -37400.78 },
+      ],
+      vouchers: [],
+      stats: {
+        totalAccounts: 2,
+        totalVouchers: 0,
+        totalTransactionLines: 0,
+        fiscalYearStart: '2024-01-01',
+        fiscalYearEnd: '2024-12-31',
+      },
+    })
+  }
+
+  it('refuses when mappings cover none of the derived IB accounts', async () => {
+    const { supabase } = createQueuedMockSupabase()
+
+    const result = await executeSIEImport(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      makeUb1OnlyFile(),
+      [makeMapping('9999', '9999')],
+      {
+        filename: 'ub1-only.se',
+        fileContent: '#dummy',
+        createFiscalPeriod: false,
+        importOpeningBalances: true,
+        importTransactions: true,
+      },
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.importId).toBeNull()
+    expect(result.errors.join(' ')).toMatch(/täcker inga konton/i)
+  })
+
+  it('passes the coverage guard when mappings cover the derived IB accounts', async () => {
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    // Past the guard the flow proceeds: dup check → stale cleanup → pending
+    // record insert → chart fetch → period-dup check → find fiscal period
+    // (null → clean stop with a NON-coverage error, which is all this test
+    // needs to prove).
+    enqueueMany([
+      { data: null }, // checkDuplicateImport
+      { data: null }, // cleanupStaleImportRecords delete
+      { data: { id: 'imp-1' } }, // createPendingImportRecord insert
+      { data: [] }, // syncMappedAccounts chart fetch
+      { data: null }, // chart insert (missing accounts)
+      { data: null }, // checkDuplicatePeriodImport
+      { data: null }, // find existing fiscal period → stops here
+    ])
+
+    const result = await executeSIEImport(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      makeUb1OnlyFile(),
+      [makeMapping('1930', '1930'), makeMapping('2010', '2010')],
+      {
+        filename: 'ub1-only.se',
+        fileContent: '#dummy',
+        createFiscalPeriod: false,
+        importOpeningBalances: true,
+        importTransactions: true,
+      },
+    )
+
+    expect(result.errors.join(' ')).not.toMatch(/täcker inga konton/i)
+    expect(result.errors.join(' ')).toMatch(/No matching fiscal period found/i)
+  })
+
+  it('skips the IB accounts in the guard when importOpeningBalances is false', async () => {
+    const { supabase } = createQueuedMockSupabase()
+
+    const result = await executeSIEImport(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      makeUb1OnlyFile(),
+      [makeMapping('9999', '9999')],
+      {
+        filename: 'ub1-only.se',
+        fileContent: '#dummy',
+        createFiscalPeriod: false,
+        importOpeningBalances: false,
+        importTransactions: true,
+      },
+    )
+
+    // No vouchers + IB import disabled → sourceAccountsInFile is empty and
+    // the guard does not fire (existing semantics preserved).
+    expect(result.errors.join(' ')).not.toMatch(/täcker inga konton/i)
+  })
+})

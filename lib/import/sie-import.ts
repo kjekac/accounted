@@ -19,7 +19,17 @@ import type {
 import type { CreateJournalEntryLineInput } from '@/types'
 import { mappingsToMap, getMappingStats } from './account-mapper'
 import { syncMappedAccounts } from './account-sync'
-import { calculateFileHash } from './sie-parser'
+import {
+  calculateFileHash,
+  getEffectiveOpeningBalances,
+  isBalanceSheetAccount,
+  OPENING_BALANCE_DESCRIPTION_RE,
+  SHARE_CAPITAL_DESCRIPTION_RE,
+} from './sie-parser'
+
+// Re-export from the parser (moved there to avoid an import cycle —
+// getEffectiveOpeningBalances needs it) so existing importers keep working.
+export { isBalanceSheetAccount } from './sie-parser'
 import { getBASReference } from '@/lib/bookkeeping/bas-reference'
 import { classifyAccount } from '@/lib/bookkeeping/account-classifier'
 import { computeSRUCode } from '@/lib/bookkeeping/bas-data/sru-mapping'
@@ -43,8 +53,12 @@ export function generateImportPreview(
   parsed: ParsedSIEFile,
   mappings: AccountMapping[]
 ): ImportPreview {
-  // Calculate opening balance totals
-  const currentYearBalances = parsed.openingBalances.filter((b) => b.yearIndex === 0)
+  // Calculate opening balance totals from the effective set — for files
+  // without #IB 0 this is the IB derived from #UB -1 (issue #675), so the
+  // preview (and the IB toggle in ImportReviewStep, keyed off
+  // openingBalanceTotal > 0) reflects what the import will actually book.
+  const { balances: currentYearBalances, derivedFromPriorYearUB } =
+    getEffectiveOpeningBalances(parsed)
   let totalDebit = 0
   let totalCredit = 0
 
@@ -79,7 +93,17 @@ export function generateImportPreview(
       lowConfidence: mappingStats.lowConfidence,
     },
     excludedSystemAccounts: [],
-    issues: parsed.issues,
+    issues: derivedFromPriorYearUB
+      ? [
+          ...parsed.issues,
+          {
+            severity: 'info',
+            line: 0,
+            message:
+              'Ingående balanser härleds från föregående års utgående balans (#UB -1) — filen saknar #IB-poster för aktuellt räkenskapsår.',
+          },
+        ]
+      : parsed.issues,
   }
 }
 
@@ -464,7 +488,8 @@ export function validateIBBalance(
   fileImbalance: number
   excludedAccountsTotal: number
 } {
-  const currentYearBalances = parsed.openingBalances.filter((b) => b.yearIndex === 0)
+  // Effective set: explicit #IB 0, or IB derived from #UB -1 (issue #675).
+  const currentYearBalances = getEffectiveOpeningBalances(parsed).balances
 
   // First: check the raw file-level IB balance (all accounts, before mapping)
   const rawTotal = currentYearBalances.reduce((sum, b) => sum + b.amount, 0)
@@ -525,7 +550,9 @@ async function createOpeningBalanceEntry(
   accountMap: Map<string, string>,
   roundingAdjustment: number
 ): Promise<string | null> {
-  const currentYearBalances = parsed.openingBalances.filter((b) => b.yearIndex === 0)
+  // Effective set: explicit #IB 0, or IB derived from #UB -1 (issue #675).
+  const { balances: currentYearBalances, derivedFromPriorYearUB } =
+    getEffectiveOpeningBalances(parsed)
 
   if (currentYearBalances.length === 0) {
     return null
@@ -583,7 +610,11 @@ async function createOpeningBalanceEntry(
   const entry = await createJournalEntry(supabase, companyId, userId, {
     fiscal_period_id: fiscalPeriodId,
     entry_date: entryDate,
-    description: 'Ingående balanser från SIE-import',
+    // When derived, say so on the voucher itself — permanent documentation
+    // of where the amounts came from (BFNAR 2013:2 behandlingshistorik).
+    description: derivedFromPriorYearUB
+      ? 'Ingående balanser från SIE-import (härledda från föregående års utgående balans)'
+      : 'Ingående balanser från SIE-import',
     source_type: 'opening_balance',
     voucher_series: 'A',
     lines,
@@ -912,17 +943,25 @@ export async function importVouchers(
   const preparedVouchers: PreparedVoucher[] = []
 
   // A SIE file represents the opening balance either as #IB records (handled
-  // separately by createOpeningBalanceEntry → source_type='opening_balance') or,
-  // in some source systems, as an ordinary #VER dated on the fiscal-year start.
-  // When there are NO current-year #IB records, detect a clearly-labelled IB
-  // voucher and tag it opening_balance so bank reconciliation excludes it from
-  // the period movement (otherwise it lands as 'import' and surfaces as a phantom
+  // separately by createOpeningBalanceEntry → source_type='opening_balance'),
+  // as IB derived from #UB -1 when #IB 0 is missing (issue #675, also via
+  // createOpeningBalanceEntry) or, in some source systems, as an ordinary #VER
+  // dated on the fiscal-year start. When there is NO current-year IB from
+  // either of the first two paths, detect a clearly-labelled IB voucher and
+  // tag it opening_balance so bank reconciliation excludes it from the period
+  // movement (otherwise it lands as 'import' and surfaces as a phantom
   // difference equal to the IB). Deliberately conservative — requires the IB
   // wording AND a balance-sheet-only voucher on FY start, and never a
   // share-capital deposit. A missed IB still falls back to the manual "Märk som
   // ingående balans" action in Bankavstämning, so we never risk hiding a real
   // bank movement by over-classifying.
-  const hasCurrentYearIb = parsed.openingBalances.some((b) => b.yearIndex === 0)
+  //
+  // Using the effective set keeps this gate consistent with the helper's
+  // precedence: when an OB-voucher candidate exists the helper yields no
+  // balances (the voucher serves as IB and gets tagged here); when IB was
+  // derived from #UB -1 the gate is closed so the same amounts can never be
+  // booked twice.
+  const hasCurrentYearIb = getEffectiveOpeningBalances(parsed).balances.length > 0
   const fyStart = parsed.stats.fiscalYearStart
 
   for (const voucher of parsed.vouchers) {
@@ -1062,8 +1101,8 @@ export async function importVouchers(
       !!fyStart && fyStart.slice(0, 10) === voucherDateStr &&
       lines.length > 0 &&
       lines.every((l) => isBalanceSheetAccount(l.account_number)) &&
-      /ing[åa]ende balans|ing[åa]ende saldo|opening balance/i.test(voucher.description || '') &&
-      !/aktiekapital/i.test(voucher.description || '')
+      OPENING_BALANCE_DESCRIPTION_RE.test(voucher.description || '') &&
+      !SHARE_CAPITAL_DESCRIPTION_RE.test(voucher.description || '')
 
     preparedVouchers.push({
       sourceId: voucherId,
@@ -1355,14 +1394,6 @@ export async function importVouchers(
 }
 
 /**
- * Determine if an account is balance sheet (class 1-2) or P&L (class 3-8)
- */
-export function isBalanceSheetAccount(accountNumber: string): boolean {
-  const firstDigit = parseInt(accountNumber.charAt(0), 10)
-  return firstDigit >= 1 && firstDigit <= 2
-}
-
-/**
  * Compute per-series voucher number ranges from the voucher number mapping.
  * SIE imports can span multiple series (B, C, V, ...), each with its own
  * independent target-number range, so the documentation records one range
@@ -1427,8 +1458,11 @@ async function createMigrationAdjustmentEntry(
   // For P&L accounts (class 3-8): expectedMovement = RES (ignore IB/UB)
   const expectedMovements = new Map<string, number>()
 
-  // Process IB — only for balance sheet accounts
-  for (const ib of parsed.openingBalances.filter((b) => b.yearIndex === 0)) {
+  // Process IB — only for balance sheet accounts. Effective set: explicit
+  // #IB 0, or IB derived from #UB -1 (issue #675) — so the expected BS
+  // movement is UB(0) − UB(-1), the correct one-year movement, instead of
+  // treating the whole opening balance as unexplained movement.
+  for (const ib of getEffectiveOpeningBalances(parsed).balances) {
     const target = accountMap.get(ib.account)
     if (!target) continue
     if (!isBalanceSheetAccount(target)) {
@@ -1866,7 +1900,9 @@ export async function executeSIEImport(
     const sourceAccountsInFile = new Set<string>()
     for (const v of parsed.vouchers) for (const l of v.lines) sourceAccountsInFile.add(l.account)
     if (options.importOpeningBalances) {
-      for (const b of parsed.openingBalances.filter((b) => b.yearIndex === 0)) {
+      // Effective set: also covers UB-1-only files (issue #675), whose
+      // derived IB accounts would otherwise bypass this guard entirely.
+      for (const b of getEffectiveOpeningBalances(parsed).balances) {
         sourceAccountsInFile.add(b.account)
       }
     }
@@ -2065,7 +2101,12 @@ export async function executeSIEImport(
     // In both cases, the correct treatment is to book the diff to 2099 with
     // explicit documentation. We never reject based on IB imbalance — the
     // original goal was to stop SILENT equity alteration, not prevent it.
-    if (options.importOpeningBalances && parsed.openingBalances.length > 0 && result.fiscalPeriodId) {
+    //
+    // Gate on the EFFECTIVE set: for files without #IB 0, the IB derived
+    // from #UB -1 (issue #675) must still open this block — gating on raw
+    // parsed.openingBalances would silently skip the derived IB entirely.
+    const effectiveIB = getEffectiveOpeningBalances(parsed)
+    if (options.importOpeningBalances && effectiveIB.balances.length > 0 && result.fiscalPeriodId) {
       // Check if opening balances already exist for this period
       const { data: period } = await supabase
         .from('fiscal_periods')
@@ -2097,6 +2138,13 @@ export async function executeSIEImport(
         const ibValidation = validateIBBalance(parsed, accountMap)
 
         if (ibValidation.lines.length > 0) {
+          if (effectiveIB.derivedFromPriorYearUB) {
+            result.warnings.push(
+              'SIE-filen saknar ingående balanser (#IB) för räkenskapsåret. ' +
+              'Ingående balanser härleddes från föregående års utgående balanser (#UB -1) enligt kontinuitetsprincipen.'
+            )
+          }
+
           const absAdj = Math.abs(ibValidation.roundingAdjustment)
 
           if (absAdj > 0.01) {

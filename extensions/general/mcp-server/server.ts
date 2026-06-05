@@ -1678,6 +1678,12 @@ export const tools: McpTool[] = [
         const available = all.map((s) => s.slug).join(', ')
         throw new Error(`Skill not found: "${slug}". Available skills: ${available}`)
       }
+      // Every load, every tier — records which skill/atom bodies agents
+      // actually pull (mcp.skill_loaded). Without this, "which atom was
+      // loaded" is unanswerable and atom effectiveness can't be measured.
+      if (actor) {
+        emitSkillLoaded({ slug: skill.slug, tier: skill.tier, actor, userId, companyId })
+      }
       // Workflow-tier skills are the closed-form processes (month-end-close,
       // year-end-close, payroll-monthly). Loading one is a strong signal the
       // agent is starting that workflow — emit so we can track completion
@@ -7516,7 +7522,7 @@ export const tools: McpTool[] = [
       // entries, what balances) and a broken/unbalanced file is rejected HERE,
       // not after they approve a blind byte count. commitImportSie re-parses on
       // commit (defense-in-depth — the staged string could be tampered).
-      const { parseSIEFile, validateSIEFile } = await import('@/lib/import/sie-parser')
+      const { parseSIEFile, validateSIEFile, getEffectiveOpeningBalances } = await import('@/lib/import/sie-parser')
       let parsed
       try {
         parsed = parseSIEFile(fileContent)
@@ -7528,7 +7534,10 @@ export const tools: McpTool[] = [
         throw new Error(`SIE-filen är ogiltig och importeras inte: ${validation.errors.join('; ')}`)
       }
 
-      const ibCurrent = parsed.openingBalances.filter((b) => b.yearIndex === 0)
+      // Effective set: explicit #IB 0, or IB derived from #UB -1 when the
+      // source system exports none (issue #675) — so the approver sees the
+      // real IB total and UB-1-only files pass the coverage check below.
+      const ibCurrent = getEffectiveOpeningBalances(parsed).balances
       const ibTotal = Math.round(ibCurrent.reduce((s, b) => s + b.amount, 0) * 100) / 100
 
       // Mapping-coverage check. The executor's per-voucher loop silently
@@ -8591,12 +8600,34 @@ export const tools: McpTool[] = [
         log.warn('Failed to resolve user email for MCP approval', { userId, err })
       }
 
+      // commit_method provenance (agent_first_vision.md §8 P0-1): MCP
+      // approvals are relayed through an agent credential — record that in
+      // the immutable layer instead of claiming 'user_accept'. The positive
+      // acknowledgment (confirmed=true for high risk) is agent-attested, not
+      // a first-party human session; an auditor reading the GL can now tell
+      // the difference (BFNAR 2013:2 kap 8 behandlingshistorik).
+      //
+      // ALL MCP traffic authenticates as an api_key actor — the claude.ai
+      // OAuth connector's access_token is itself a minted gnubok_sk_ key
+      // (app/api/mcp-oauth/token/route.ts), indistinguishable from the
+      // bridge at this layer — so 'api_key' is the truthful value for every
+      // path through this handler. 'agent' (also in the CHECK) is reserved
+      // for first-party agent surfaces (e.g. in-app agent chat) once they
+      // commit through this layer with a distinguishable actor type.
+      //
+      // Note: commitPendingOperation currently threads commitMethod into the
+      // journal only for create_voucher ops (pre-existing); other operation
+      // types keep their per-handler defaults, with this approval's actor
+      // recorded in processing_history below either way.
+      const commitMethod =
+        actor?.type === 'api_key' ? ('api_key' as const) : ('user_accept' as const)
+
       const result = await commitPendingOperation(
         supabase,
         userId,
         companyId,
         operation,
-        { commitMethod: 'user_accept', ...(userEmail ? { userEmail } : {}) }
+        { commitMethod, ...(userEmail ? { userEmail } : {}) }
       )
 
       // Audit the MCP-initiated approval. Failure must not break the user
@@ -8613,7 +8644,7 @@ export const tools: McpTool[] = [
             operation_type: operation.operation_type,
             risk_level: operation.risk_level,
             outcome: result.status,
-            commit_method: 'user_accept',
+            commit_method: commitMethod,
             channel: 'mcp',
             confirmed: args.confirmed === true,
           },
@@ -8902,6 +8933,7 @@ function emitToolCallTelemetry(payload: {
   isError: boolean
   errorCode: string | null
   errorKind: 'execution' | 'scope_denied' | 'unknown_tool' | null
+  errorMessage: string | null
   requestId: string | number | null
   userId: string
   companyId: string
@@ -8920,6 +8952,10 @@ function emitToolCallTelemetry(payload: {
         isError: payload.isError,
         errorCode: payload.errorCode,
         errorKind: payload.errorKind,
+        // Truncated: domain error messages are short, but unknown-tool /
+        // validation messages can embed long lists. 500 chars is plenty for
+        // clustering failures into gotchas without bloating event_log rows.
+        errorMessage: payload.errorMessage ? payload.errorMessage.slice(0, 500) : null,
         requestId: payload.requestId,
         userId: payload.userId,
         companyId: payload.companyId,
@@ -9057,6 +9093,36 @@ function checkAndEmitNextHintFollowed(
       },
     })
     .catch((err) => console.error('[mcp] next_hint_followed emit failed:', err))
+}
+
+/**
+ * Fire-and-forget telemetry for every successful gnubok_load_skill, all tiers.
+ * Unlike mcp.workflow_started (workflow tier only), this records WHICH skill
+ * or atom body the agent pulled — the denominator for correlating a loaded
+ * atom with downstream tool-error rates.
+ */
+function emitSkillLoaded(payload: {
+  slug: string
+  tier: 'workflow' | 'horizontal' | 'vertical' | 'modifier'
+  actor: ActorContext
+  userId: string
+  companyId: string
+}): void {
+  void eventBus
+    .emit({
+      type: 'mcp.skill_loaded',
+      payload: {
+        slug: payload.slug,
+        tier: payload.tier,
+        sessionId: payload.actor.sessionId ?? null,
+        actorType: payload.actor.type,
+        actorId: payload.actor.id ?? null,
+        actorLabel: payload.actor.label ?? null,
+        userId: payload.userId,
+        companyId: payload.companyId,
+      },
+    })
+    .catch((err) => console.error('[mcp] skill_loaded emit failed:', err))
 }
 
 /** Fire-and-forget telemetry for workflow lifecycle. */
@@ -9259,6 +9325,10 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           isError: true,
           errorCode: 'UNKNOWN_TOOL',
           errorKind: 'unknown_tool',
+          // Just the requested name — the full available-tools list returned
+          // to the client would blow the truncation budget without adding
+          // analytical signal.
+          errorMessage: `Unknown tool: "${toolName}"`,
           requestId: id ?? null,
           userId,
           companyId,
@@ -9285,6 +9355,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           isError: true,
           errorCode: scopeError.error.code,
           errorKind: 'scope_denied',
+          errorMessage: scopeError.error.message_sv,
           requestId: id ?? null,
           userId,
           companyId,
@@ -9347,6 +9418,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           isError: false,
           errorCode: null,
           errorKind: null,
+          errorMessage: null,
           requestId: id ?? null,
           userId,
           companyId,
@@ -9364,6 +9436,10 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           isError: true,
           errorCode: structured.error.code,
           errorKind: 'execution',
+          // message_sv is the canonical domain message ("Verifikationen
+          // balanserar inte", "Perioden är låst", …) — the text worth
+          // clustering when mining failures for gotchas.
+          errorMessage: structured.error.message_sv,
           requestId: id ?? null,
           userId,
           companyId,

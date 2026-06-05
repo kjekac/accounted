@@ -19,6 +19,12 @@ jobs:
       - name: Reset extensions config
         run: echo '{"extensions":[]}' > extensions.config.json
       - run: npm run setup:extensions
+      - name: Lint ratchet (no new ESLint errors)
+        # `npm run lint` was never wired into CI, so ~60 legacy errors
+        # accumulated. This ratchet (sibling of check:guards) fails only when
+        # a PR ADDS an error beyond scripts/checks/eslint-baseline.json; the
+        # baseline ratchets down as legacy errors get fixed.
+        run: npm run check:lint
       - run: npm run build
       - run: npm test
       - name: Antipattern ratchet (no new MFA-bypassing routes / naive öre-rounding)

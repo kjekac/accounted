@@ -277,3 +277,44 @@ processing_activities:
       - not_used_for_model_training
       - rls_company_scoped
       - tls_to_bedrock
+
+  - id: mcp.telemetry
+    name: MCP/agent-telemetri i event_log
+    purpose: >-
+      Varje MCP-verktygsanrop loggar metadata (verktygsnamn, felkod,
+      felmeddelande max 500 tecken, latens, aktör, session) och varje
+      skill-laddning loggar slug/tier till event_log. Syftet är
+      tillförlitlighetsanalys av agentgränssnittet: felfrekvens per verktyg,
+      korrelation mellan laddade skills och efterföljande fel, samt agenters
+      egenrapporterade feedback (agent.feedback). Inga verktygsargument
+      eller verktygsresultat persisteras.
+    lawful_basis: art_6_1_f   # legitimate interest (service reliability/improvement)
+    special_category_basis: null
+    controller: gnubok-tenant
+    processor: supabase
+    data_subjects:
+      - business_owner
+    data_categories:
+      - user.unique_id                # userId, actorId (API-nyckel-id), sessionId
+      - user.contact                  # actorLabel (användarvald API-nyckeletikett)
+    recipients:
+      - name: Supabase
+        country: EU
+        role: processor
+    international_transfers:
+      applicable: false
+      mechanism: null
+      note: EU-only processor; no third-country transfer.
+    retention:
+      # Differentiated TTL via /api/events/cleanup/cron: mcp.*/agent.*-rader
+      # behålls 180 dagar (felfrekvens-trender kräver mer än leveransfönstret);
+      # övriga event_log-rader (leveranshändelser) 30 dagar.
+      duration: 180d
+      basis: legitimate_interest_reliability
+      stored_in:
+        - event_log
+    security_measures:
+      - rls_user_scoped_select        # event_log SELECT: auth.uid() = user_id
+      - service_role_only_writes
+      - error_message_truncated_500_chars
+      - no_tool_args_or_results_persisted

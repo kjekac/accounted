@@ -104,14 +104,19 @@ export interface CommitOptions {
   userEmail?: string
   /**
    * commit_method recorded on any journal_entries created by this operation.
-   * Must match the CHECK constraint on journal_entries.commit_method:
-   * 'user_accept' | 'bulk_accept' | 'timing_ceiling' | 'migration' | 'legacy'.
-   * Single-approval route passes 'user_accept' (default); bulk-approval passes
-   * 'bulk_accept'. Defaults to 'user_accept' since the dispatcher is only
-   * invoked from human-approval paths after agent auto-commit was removed
-   * (migration 20260505190027_drop_agent_auto_commit).
+   * Must match the CHECK constraint on journal_entries.commit_method
+   * (migration 20260618120001): 'user_accept' | 'bulk_accept' |
+   * 'timing_ceiling' | 'migration' | 'legacy' | 'agent' | 'api_key'.
+   *
+   * Web-UI single-approval passes 'user_accept'; bulk-approval passes
+   * 'bulk_accept'. MCP approvals pass the relaying credential — 'api_key'
+   * (gnubok-mcp bridge) or 'agent' (OAuth connector) — so the immutable layer
+   * records that the acknowledgment was agent-relayed rather than a
+   * first-party human session (agent_first_vision.md §8 P0-1). Every path is
+   * still human-approval-gated; agent auto-commit was removed in
+   * 20260505190027_drop_agent_auto_commit.
    */
-  commitMethod?: 'user_accept' | 'bulk_accept'
+  commitMethod?: 'user_accept' | 'bulk_accept' | 'agent' | 'api_key'
 }
 
 // ── Helper: ensure fiscal period covers the date ──────────────────
@@ -2470,10 +2475,11 @@ async function commitCreateVoucher(
         notes: (params.notes as string) || undefined,
         lines,
       },
-      // commit_method records HOW it was committed, not who staged it. MCP-
-      // staged ops still go through human approval, so 'user_accept' (or
-      // 'bulk_accept' from the bulk route) is the correct value. The DB CHECK
-      // constraint rejects anything else (migration 20260420120001).
+      // commit_method records HOW it was committed, not who staged it.
+      // Web routes pass 'user_accept'/'bulk_accept'; the MCP approve path
+      // passes 'api_key'/'agent' so agent-relayed acknowledgments are
+      // distinguishable in the immutable layer. The DB CHECK constraint
+      // rejects anything else (migrations 20260420120001, 20260618120001).
       opts.commitMethod ?? 'user_accept'
     )
 
