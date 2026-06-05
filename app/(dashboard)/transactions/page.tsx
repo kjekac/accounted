@@ -200,7 +200,7 @@ export default function TransactionsPage() {
   const [sourceFilter, setSourceFilter] = useState<'all' | 'bank' | 'skatteverket'>('all')
 
   const { toast } = useToast()
-  const { dialogProps: deleteDialogProps, confirm: confirmDelete } = useDestructiveConfirm()
+  const { dialogProps: confirmDialogProps, confirm } = useDestructiveConfirm()
   // Bank transaction whose title is being edited (null = dialog closed).
   const [editTitleTarget, setEditTitleTarget] = useState<TransactionWithInvoice | null>(null)
   const supabase = createClient()
@@ -212,7 +212,7 @@ export default function TransactionsPage() {
 
   // Computed lists
   const uncategorizedTransactions = transactions
-    .filter((t) => t.is_business === null && !exitingIds.has(t.id))
+    .filter((t) => t.is_business === null && !t.is_ignored && !exitingIds.has(t.id))
     .sort((a, b) => {
       const aHasMatch = a.potential_invoice || a.potential_supplier_invoice ? 1 : 0
       const bHasMatch = b.potential_invoice || b.potential_supplier_invoice ? 1 : 0
@@ -296,7 +296,10 @@ export default function TransactionsPage() {
         .from('transactions')
         .select('*', { count: 'exact', head: true })
         .eq('company_id', company.id)
-        .is('is_business', null),
+        .is('is_business', null)
+        // Same predicate as lib/worklist countUnbookedTransactions — ignored
+        // rows are handled, not pending.
+        .eq('is_ignored', false),
     ])
 
     if (txError) {
@@ -864,6 +867,76 @@ export default function TransactionsPage() {
     }
   }
 
+  async function handleIgnoreTransaction(tx: TransactionWithInvoice) {
+    // Mirrors BankReconciliationView's ignore flow: Ignorera is fully
+    // reversible, but the row vanishes immediately — confirmation before the
+    // write plus an Ångra toast gives two recovery affordances. The
+    // "Ignorerade transaktioner" card on Rapporter → Bankavstämning is the
+    // standing third.
+    const ok = await confirm({
+      title: 'Ignorera transaktionen?',
+      description: `${tx.description} — ${formatCurrency(tx.amount, tx.currency)} (${formatDate(tx.date)}) försvinner från listan utan att bokföras. Använd bara för poster som inte är affärshändelser, t.ex. dubbletter eller överföringar mellan egna konton — riktiga köp och betalningar ska bokföras. Du kan återställa den under Bankavstämning när som helst.`,
+      confirmLabel: 'Ignorera',
+      cancelLabel: 'Avbryt',
+      variant: 'warning',
+    })
+    if (!ok) return
+
+    setTemplatePickerOpen(false)
+    try {
+      const res = await fetch(`/api/transactions/${tx.id}/ignore`, { method: 'POST' })
+      const result = await res.json()
+      if (!res.ok || result.error) {
+        toast({
+          title: 'Kunde inte ignorera transaktionen',
+          description: typeof result.error === 'string' ? result.error : undefined,
+          variant: 'destructive',
+        })
+        return
+      }
+      setExitingIds((prev) => new Set(prev).add(tx.id))
+      setTotalUncategorizedCount((prev) => Math.max(0, (prev ?? 1) - 1))
+      setTimeout(() => {
+        setTransactions((prev) =>
+          prev.map((t) => (t.id === tx.id ? { ...t, is_ignored: true } : t))
+        )
+        setExitingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(tx.id)
+          return next
+        })
+      }, 350)
+      toast({
+        title: 'Transaktionen ignorerad',
+        description: `${tx.description} — ${formatCurrency(tx.amount, tx.currency)}`,
+        action: (
+          <ToastAction altText="Ångra ignorera" onClick={() => void handleUnignoreTransaction(tx.id)}>
+            Ångra
+          </ToastAction>
+        ),
+      })
+    } catch {
+      toast({ title: 'Kunde inte ignorera transaktionen', variant: 'destructive' })
+    }
+  }
+
+  async function handleUnignoreTransaction(transactionId: string) {
+    try {
+      const res = await fetch(`/api/transactions/${transactionId}/ignore`, { method: 'DELETE' })
+      const result = await res.json()
+      if (!res.ok || result.error) {
+        toast({ title: 'Kunde inte återställa transaktionen', variant: 'destructive' })
+        return
+      }
+      setTransactions((prev) =>
+        prev.map((t) => (t.id === transactionId ? { ...t, is_ignored: false } : t))
+      )
+      setTotalUncategorizedCount((prev) => (prev ?? 0) + 1)
+    } catch {
+      toast({ title: 'Kunde inte återställa transaktionen', variant: 'destructive' })
+    }
+  }
+
   async function handleConfirmInvoiceMatch(opts?: {
     force?: boolean
     expected_journal_entry_id?: string
@@ -1247,7 +1320,7 @@ export default function TransactionsPage() {
     const transaction = transactions.find((t) => t.id === id)
     if (!transaction) return
 
-    const ok = await confirmDelete({
+    const ok = await confirm({
       title: 'Ta bort transaktion',
       description: `Är du säker på att du vill ta bort "${transaction.description}"? Åtgärden kan inte ångras.`,
       confirmLabel: 'Ta bort',
@@ -1400,7 +1473,7 @@ export default function TransactionsPage() {
 
   async function handleBatchDelete() {
     const ids = Array.from(selectedIds)
-    const ok = await confirmDelete({
+    const ok = await confirm({
       title: `Ta bort ${ids.length} transaktioner?`,
       description: 'Åtgärden kan inte ångras.',
       confirmLabel: 'Ta bort',
@@ -1960,6 +2033,16 @@ export default function TransactionsPage() {
                 Matcha med faktura…
               </Button>
             )}
+            {templatePickerTransaction && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-muted-foreground"
+                onClick={() => void handleIgnoreTransaction(templatePickerTransaction)}
+              >
+                Ignorera transaktionen…
+              </Button>
+            )}
           </div>
           <TemplatePicker
             direction={templatePickerTransaction && templatePickerTransaction.amount < 0 ? 'expense' : 'income'}
@@ -2073,7 +2156,7 @@ export default function TransactionsPage() {
         </DialogContent>
       </Dialog>
 
-      <DestructiveConfirmDialog {...deleteDialogProps} />
+      <DestructiveConfirmDialog {...confirmDialogProps} />
 
       <EditTransactionTitleDialog
         open={editTitleTarget !== null}

@@ -15,6 +15,7 @@ import { CompanyProvider } from '@/contexts/CompanyContext'
 import { getActiveCompanyId } from '@/lib/company/context'
 import { getBranding } from '@/lib/branding/service'
 import { ensureSandboxAgentProfile } from '@/lib/sandbox/ensure-agent'
+import { countPendingOperations, countUnbookedTransactions } from '@/lib/worklist'
 import type { EntityType, CompanyRole, Team } from '@/types'
 
 /**
@@ -176,8 +177,8 @@ export default async function DashboardLayout({
 
   const [
     { data: settings },
-    { count: uncategorizedCount },
-    { count: pendingOpsCount },
+    uncategorizedCount,
+    pendingOpsCount,
     { data: agentProfileIdentity },
     { data: userProfile },
   ] = await Promise.all([
@@ -186,16 +187,11 @@ export default async function DashboardLayout({
       .select('company_name, onboarding_complete, entity_type, is_sandbox')
       .eq('company_id', companyId)
       .single(),
-    supabase
-      .from('transactions')
-      .select('*', { count: 'exact', head: true })
-      .eq('company_id', companyId)
-      .is('is_business', null),
-    supabase
-      .from('pending_operations')
-      .select('*', { count: 'exact', head: true })
-      .eq('company_id', companyId)
-      .eq('status', 'pending'),
+    // Shared worklist predicates (lib/worklist) — the badge must show the
+    // same number as every other "att göra" surface. Notably this excludes
+    // is_ignored rows, which the old inline query here did not.
+    countUnbookedTransactions(supabase, companyId),
+    countPendingOperations(supabase, companyId),
     // Agent identity — name + avatar — surfaced on the FAB and chat
     // surfaces. Null when no agent_profile exists yet (banner CTA path).
     supabase
@@ -275,8 +271,8 @@ export default async function DashboardLayout({
           <DashboardNav
             companyName={settings?.company_name || 'Min verksamhet'}
             entityType={entityType}
-            uncategorizedTransactionCount={uncategorizedCount ?? 0}
-            pendingOperationsCount={pendingOpsCount ?? 0}
+            uncategorizedTransactionCount={uncategorizedCount}
+            pendingOperationsCount={pendingOpsCount}
             isSandbox={isSandbox}
             extensionNavItems={getExtensionNavItems()}
             userName={userProfile?.full_name ?? null}
