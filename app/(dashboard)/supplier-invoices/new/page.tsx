@@ -37,6 +37,30 @@ interface LineItem {
   reverse_charge_rate?: number
 }
 
+// The existing invoice surfaced on a duplicate-number conflict, used to drive
+// the resolution dialog (open it / uncredit-and-retry).
+interface ExistingSupplierInvoice {
+  id: string
+  supplier_invoice_number: string
+  status: string
+  credit_note_id: string | null
+}
+
+// Canonical create/convert response. On failure `error` is the structured
+// envelope's inner object ({ code, message, details }); a few legacy convert
+// paths still return a flat string, so accept both.
+interface CreateResult {
+  data?: { id: string; arrival_number: number }
+  error?:
+    | string
+    | {
+        code?: string
+        message?: string
+        message_en?: string
+        details?: { existing?: ExistingSupplierInvoice | null }
+      }
+}
+
 interface FormData {
   supplier_id: string
   supplier_invoice_number: string
@@ -271,7 +295,7 @@ export default function NewSupplierInvoicePage() {
   // Conflict state for duplicate-supplier-invoice-number
   const [conflict, setConflict] = useState<{
     message: string
-    existing: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string | null } | null
+    existing: ExistingSupplierInvoice | null
   } | null>(null)
   const [isResolvingConflict, setIsResolvingConflict] = useState(false)
   const invoiceNumberInputRef = useRef<HTMLInputElement | null>(null)
@@ -733,16 +757,13 @@ export default function NewSupplierInvoicePage() {
   }
 
   // Single submit endpoint chooser — convert when we came from inbox, plain
-  // POST otherwise. Both endpoints validate the same CreateSupplierInvoiceSchema.
+  // POST otherwise. Both endpoints validate the same CreateSupplierInvoiceSchema
+  // and return the same canonical error envelope ({ error: { code, message,
+  // details } }) — including the recoverable duplicate-number 409.
   async function postCreate(data: FormData): Promise<{
     ok: boolean
     status: number
-    result: {
-      data?: { id: string; arrival_number: number }
-      error?: string
-      message?: string
-      existing?: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string | null }
-    }
+    result: CreateResult
   }> {
     const url = inboxItemId
       ? `/api/extensions/ext/invoice-inbox/items/${inboxItemId}/convert`
@@ -809,7 +830,12 @@ export default function NewSupplierInvoicePage() {
     const { ok, status, result } = await postCreate(data)
 
     if (!ok) {
-      handleCreateError(status, result)
+      // EF/direct path also hits the duplicate-number 409 (e.g. converting an
+      // inbox receipt whose number was already registered) — offer recovery
+      // instead of a dead-end toast.
+      if (!tryHandleDuplicateConflict(status, result)) {
+        handleCreateError(status, result)
+      }
       setIsSubmitting(false)
       return
     }
@@ -892,24 +918,39 @@ export default function NewSupplierInvoicePage() {
       router.push(afterCreate(invoiceId))
     } else {
       // Treat duplicate-number as a recoverable conflict; everything else as a hard error.
-      if (status === 409 && result.error === 'duplicate_supplier_invoice_number') {
-        setShowReview(false)
-        setConflict({
-          message: result.message || t('duplicate_default_message'),
-          existing: result.existing ?? null,
-        })
-      } else {
+      if (!tryHandleDuplicateConflict(status, result)) {
         handleCreateError(status, result)
       }
     }
     setIsSubmitting(false)
   }
 
+  // Detect the recoverable duplicate-supplier-invoice-number conflict and open
+  // the resolution dialog. Both the inbox `convert` route and the plain create
+  // route return the same structured 409 envelope, so this works for every
+  // submit path. Returns true when handled (caller should skip the error toast).
+  function tryHandleDuplicateConflict(status: number, result: CreateResult): boolean {
+    const err = result.error
+    if (
+      status !== 409 ||
+      typeof err !== 'object' ||
+      err === null ||
+      err.code !== 'SI_CREATE_DUPLICATE_INVOICE_NUMBER'
+    ) {
+      return false
+    }
+    // Close the review dialog if it was the path that triggered the conflict;
+    // a no-op for the EF/direct paths where it was never opened.
+    setShowReview(false)
+    setConflict({
+      message: err.message || t('duplicate_default_message'),
+      existing: err.details?.existing ?? null,
+    })
+    return true
+  }
+
   // Shared error toast for non-conflict failures.
-  function handleCreateError(
-    status: number,
-    result: { error?: string; message?: string },
-  ) {
+  function handleCreateError(status: number, result: CreateResult) {
     toast({
       title: t('register_invoice_failed_title'),
       description: getErrorMessage(result, { context: 'supplier_invoice', statusCode: status }),
@@ -992,12 +1033,7 @@ export default function NewSupplierInvoicePage() {
     const { ok, status, result } = await postCreate(pendingData)
 
     if (!ok || !result.data) {
-      if (status === 409 && result.error === 'duplicate_supplier_invoice_number') {
-        setConflict({
-          message: result.message || t('duplicate_default_message'),
-          existing: result.existing ?? null,
-        })
-      } else {
+      if (!tryHandleDuplicateConflict(status, result)) {
         handleCreateError(status, result)
       }
       setIsSubmitting(false)
