@@ -28,6 +28,7 @@ export const API_KEY_SCOPES = {
   'documents:write':    { label: 'Dokument — skriv',     description: 'Ladda upp och koppla dokument till verifikationer' },
   'compliance:read':    { label: 'Compliance — läs',     description: 'Pre-flight-kontroller: momsstängning, bokslutsberedskap, voucher-gap, IB/UB-kontinuitet' },
   'agent:read':         { label: 'Agent — läs',          description: 'Specialiserad bokföringsassistent: profil, laddade specialister/atomer, minnen (briefing + skill-katalog)' },
+  'agent:write':        { label: 'Agent — skriv',        description: 'Spara och ta bort agentens minnen om företaget (remember_fact, forget_fact)' },
   'pending_operations:read':    { label: 'Stagade operationer — läs',     description: 'Lista pending_operations (staged writes awaiting approval)' },
   'pending_operations:approve': { label: 'Stagade operationer — godkänn', description: 'Godkänn eller avvisa stagade operationer via API/MCP — agenten ersätter web-UI:s granskning' },
 } as const
@@ -94,6 +95,15 @@ export const PUBLIC_OAUTH_METADATA_SCOPES: ApiKeyScope[] = [...DEFAULT_OAUTH_SCO
  * Scopes that allow staging a pending_operation. Used to detect a
  * segregation-of-duties conflict when paired with `pending_operations:approve`
  * on the same API key (ISO 27001:2022 A.5.3, SOC 2 CC6.1).
+ *
+ * Documented system control (BFNAR 2013:2 systemdokumentation): `agent:write`
+ * is deliberately NOT a staging scope. The memory tools it gates
+ * (gnubok_remember_fact/forget_fact) write advisory agent context — they
+ * cannot create, mutate, or stage räkenskapsinformation, so memory-write +
+ * approve on one key does not let an agent both stage and commit bookkeeping.
+ * If a future memory surface ever feeds DIRECTLY into voucher generation
+ * (rather than via a separately staged-and-approved operation), revisit this
+ * classification.
  */
 export const STAGING_SCOPES: ApiKeyScope[] = [
   'transactions:write',
@@ -131,6 +141,7 @@ export const SCOPE_GROUPS = [
   { domain: 'bookkeeping',         label: 'Bokföring',            read: null,                                 write: 'bookkeeping:write' as const },
   { domain: 'payroll',             label: 'Löner',                read: 'payroll:read' as const,             write: 'payroll:write' as const },
   { domain: 'pending_operations',  label: 'Stagade operationer',  read: 'pending_operations:read' as const,  write: 'pending_operations:approve' as const },
+  { domain: 'agent',               label: 'Agent',                read: 'agent:read' as const,               write: 'agent:write' as const },
 ] as const
 
 /** Map MCP tool name → required scope. Tools omitted from this map are available to any authenticated key (e.g. discovery/search/skill loading). */
@@ -227,6 +238,11 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   // stay unscoped (discovery + static Markdown bodies + globally-readable atom
   // registry — no per-company data).
   gnubok_get_agent_briefing:              'agent:read',
+  // Agent memory write (previously UNMAPPED → callable by any key). Mapping to
+  // agent:write; existing non-revoked keys are grandfathered in the
+  // 20260619140000 migration so this does not regress them.
+  gnubok_remember_fact:                   'agent:write',
+  gnubok_forget_fact:                     'agent:write',
   // Pending operations approval (mirrors the /pending web UI)
   gnubok_list_pending_operations:         'pending_operations:read',
   gnubok_approve_pending_operation:       'pending_operations:approve',

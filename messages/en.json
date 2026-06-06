@@ -1490,7 +1490,14 @@
     "scope_events_read": "Read — poll event_log as a webhook fallback",
     "scope_webhooks_manage": "Manage — create, list, update, delete subscriptions",
     "scope_operations_read": "Read — status of long-running operations (import, year-end, revaluation)",
-    "scope_compliance_read": "Read — pre-flight: VAT closing, year-end readiness, voucher gaps, IB/UB continuity"
+    "scope_compliance_read": "Read — pre-flight: VAT closing, year-end readiness, voucher gaps, IB/UB continuity",
+    "group_agent": "Agent",
+    "scope_agent_read": "Read — agent briefing: profile, loaded specialists, saved memories",
+    "scope_agent_write": "Write — save and remove the agent's memories about the company",
+    "sod_warning": "This key can both create bookkeeping and approve it. That lets an automated agent commit postings with no human review (segregation of duties).",
+    "sod_dialog_title": "Confirm combined permissions",
+    "sod_dialog_description": "This key combines a staging write scope with permission to approve staged operations. That lets an automated agent both create and approve postings without a human reviewing them. Create the key anyway?",
+    "sod_confirm": "Create anyway"
   },
   "settings_oauth_clients": {
     "title": "OAuth clients",

@@ -1742,6 +1742,17 @@ const API_KEY: Record<string, StructuredErrorEntry> = {
     message_sv: 'API-nyckeln kunde inte hittas.',
     message_en: 'API key not found.',
   },
+  API_KEY_SOD_CONFLICT: {
+    httpStatus: 409,
+    message_sv:
+      'Nyckeln kombinerar ett skriv-scope som stagar bokföring med pending_operations:approve. Då kan en automatiserad agent både skapa och godkänna verifikationer utan mänsklig granskning (ansvarsfördelning, ISO 27001 A.5.3 / BFNAR 2013:2). Bekräfta att du förstår risken för att skapa nyckeln ändå.',
+    message_en:
+      'This key combines a staging write scope with pending_operations:approve, letting an automated agent both stage and approve postings with no human in the loop (segregation of duties, ISO 27001 A.5.3 / BFNAR 2013:2).',
+    remediation: {
+      description:
+        'Inform the user of the segregation-of-duties risk, then re-POST the same scopes with acknowledge_sod: true to create the key anyway.',
+    },
+  },
 }
 
 // ─────────────────────────────────────────────────────────────────
