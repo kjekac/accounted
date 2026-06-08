@@ -1738,6 +1738,11 @@ const SALARY_OVERRIDE_MAX = 10_000_000
 
 export const SalaryEmployeeOverrideSchema = z
   .object({
+    // Per-run monthly salary for this employee, editable while the run is a
+    // draft. 0 is allowed (an intentional nollkörning). This is NOT a review
+    // override — it sets the base the engine uses for this month only and does
+    // not require a reason. The route gates this field to `draft` status.
+    monthly_salary: z.number().nonnegative().max(SALARY_OVERRIDE_MAX).optional(),
     tax_withheld_override: z.number().nonnegative().max(SALARY_OVERRIDE_MAX).nullable().optional(),
     avgifter_amount_override: z.number().nonnegative().max(SALARY_OVERRIDE_MAX).nullable().optional(),
     avgifter_basis_override: z.number().nonnegative().max(SALARY_OVERRIDE_MAX).nullable().optional(),

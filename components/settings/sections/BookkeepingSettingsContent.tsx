@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { SettingsFormWrapper } from '@/components/settings/SettingsFormWrapper'
+import { SettingsLoadError } from '@/components/settings/SettingsLoadError'
 import { SettingsLoadingSkeleton } from '@/components/settings/SettingsLoadingSkeleton'
 import { PeriodLockingSettings } from '@/components/settings/PeriodLockingSettings'
 import { VoucherSeriesManager } from '@/components/settings/VoucherSeriesManager'
@@ -20,7 +21,7 @@ const SERIES_OPTIONS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
 
 export function BookkeepingSettingsContent() {
   const t = useTranslations('settings_bookkeeping')
-  const { settings, isLoading, updateSettings } = useSettings()
+  const { settings, isLoading, updateSettings, refetch } = useSettings()
   const { company } = useCompany()
   // Local mirror of the company-level accounting_framework so the K2/K3
   // selector can reflect its own saves without waiting for the layout to
@@ -30,7 +31,8 @@ export function BookkeepingSettingsContent() {
     company?.accounting_framework ?? 'k2',
   )
 
-  if (isLoading || !settings) return <SettingsLoadingSkeleton />
+  if (isLoading) return <SettingsLoadingSkeleton />
+  if (!settings) return <SettingsLoadError onRetry={refetch} />
 
   function handleSave(formData: FormData) {
     const autoLockValue = formData.get('auto_lock_period_days') as string

@@ -484,3 +484,38 @@ describe('generateAGIXml — Frånvarouppgift', () => {
     expect(xml).not.toContain('Franvarouppgift')
   })
 })
+
+describe('generateAGIXml — nolldeklaration (HU-only, no IU)', () => {
+  const zeroTotals: AGITotals = {
+    totalTax: 0,
+    totalAvgifterBasis: 0,
+    totalAvgifterAmount: 0,
+    totalSjuklonekostnad: 0,
+    avgifterByCategory: {},
+  }
+
+  it('produces a valid declaration with an HU but no individuppgifter when the roster is empty', () => {
+    const xml = generateAGIXml(company, [], zeroTotals)
+    // Root + HU present
+    expect(xml).toContain('<Skatteverket omrade="Arbetsgivardeklaration"')
+    expect(xml).toContain('</Skatteverket>')
+    expect(xml).toContain('<gem:RedovisningsPeriod faltkod="006">202604</gem:RedovisningsPeriod>')
+    expect(xml).toContain('<gem:AgRegistreradId faltkod="201">165561234567</gem:AgRegistreradId>')
+    // No individuppgifter and no absence section
+    expect(xml).not.toContain('<gem:IU>')
+    expect(xml).not.toContain('Franvarouppgift')
+  })
+
+  it('omits every zero HU total field (FK497/FK487/FK499)', () => {
+    const xml = generateAGIXml(company, [], zeroTotals)
+    expect(xml).not.toContain('faltkod="497"') // SummaSkatteavdr
+    expect(xml).not.toContain('faltkod="487"') // SummaArbAvgSlf
+    expect(xml).not.toContain('faltkod="499"') // TotalSjuklonekostnad
+  })
+
+  it('still validates required company data for a nolldeklaration', () => {
+    expect(() =>
+      generateAGIXml({ ...company, orgNumber: '' }, [], zeroTotals),
+    ).toThrow(AGIIncompleteDataError)
+  })
+})

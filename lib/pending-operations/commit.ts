@@ -1685,6 +1685,7 @@ async function commitCreateSupplierInvoiceFromInbox(
       total_sek: totalSek,
       paid_amount: 0,
       remaining_amount: totalRounded,
+      document_id: documentId,
       notes,
     })
     .select()

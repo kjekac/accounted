@@ -1,45 +1,26 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useTranslations } from 'next-intl'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { TaxSettingsForm } from '@/components/settings/TaxSettingsForm'
 import { SettingsFormWrapper } from '@/components/settings/SettingsFormWrapper'
+import { SettingsLoadError } from '@/components/settings/SettingsLoadError'
 import { SettingsLoadingSkeleton } from '@/components/settings/SettingsLoadingSkeleton'
 import { SkatteverketConnectPanel } from '@/components/settings/SkatteverketConnectPanel'
 import { useSettings } from '@/components/settings/useSettings'
 import { useToast } from '@/components/ui/use-toast'
-import { useCompany } from '@/contexts/CompanyContext'
-import { createClient } from '@/lib/supabase/client'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import type { CompanySettings } from '@/types'
 
 export function TaxSettingsContent() {
-  const { settings, isLoading, updateSettings } = useSettings()
-  const { company } = useCompany()
+  const { settings, isLoading, updateSettings, refetch } = useSettings()
   const t = useTranslations('settings_skatteverket')
   const searchParams = useSearchParams()
   const router = useRouter()
   const { toast } = useToast()
 
-  const [isSandbox, setIsSandbox] = useState(false)
-
   const hasSkatteverketExtension = ENABLED_EXTENSION_IDS.has('skatteverket')
-
-  // Sandbox companies don't connect to the real Skatteverket — hide the panel,
-  // matching the old Skatteverket tab's visibility gate.
-  useEffect(() => {
-    if (!company?.id) return
-    const supabase = createClient()
-    supabase
-      .from('company_settings')
-      .select('is_sandbox')
-      .eq('company_id', company.id)
-      .single()
-      .then(({ data }) => {
-        if (data?.is_sandbox) setIsSandbox(true)
-      })
-  }, [company?.id])
 
   // Skatteverket OAuth callback — the connect flow returns to /settings/tax with
   // a status query param (returnTo set in SkatteverketConnectPanel).
@@ -61,7 +42,8 @@ export function TaxSettingsContent() {
     }
   }, [searchParams, router, toast, t])
 
-  if (isLoading || !settings) return <SettingsLoadingSkeleton />
+  if (isLoading) return <SettingsLoadingSkeleton />
+  if (!settings) return <SettingsLoadError onRetry={refetch} />
 
   function handleSave(formData: FormData) {
     const vatRegistered = formData.get('vat_registered') === 'true'
@@ -88,7 +70,10 @@ export function TaxSettingsContent() {
     }
   }
 
-  const showSkatteverket = hasSkatteverketExtension && !isSandbox
+  // Sandbox companies don't connect to the real Skatteverket — hide the panel,
+  // matching the old Skatteverket tab's visibility gate. Read straight off the
+  // already-loaded settings row (no separate query needed).
+  const showSkatteverket = hasSkatteverketExtension && !settings.is_sandbox
 
   return (
     <div className="space-y-8">

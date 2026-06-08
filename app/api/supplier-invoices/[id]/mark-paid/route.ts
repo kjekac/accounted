@@ -7,6 +7,7 @@ import {
 } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
+import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { validateBody } from '@/lib/api/validate'
 import { MarkSupplierInvoicePaidSchema } from '@/lib/api/schemas'
 import { withRouteContext } from '@/lib/api/with-route-context'
@@ -277,6 +278,27 @@ export const POST = withRouteContext(
 
     if (paymentError) {
       opLog.warn('failed to record supplier_invoice_payments row', paymentError)
+    }
+
+    // Under kontantmetoden the cash payment entry is the ONLY booking of the
+    // affärshändelse, so its underlag (the document from the inbox) must hang on
+    // THIS verifikat per BFL 5 kap 6 §. Under faktureringsmetoden the document
+    // is already linked to the registration verifikat at receipt — re-linking
+    // here would move it off that primary booking, so we attach only for the
+    // cash entry. Non-fatal: the payment is already committed and immutable, so
+    // a link failure is logged and the invoice stays usable (mirrors the
+    // registration-time linking in commitCreateSupplierInvoiceFromInbox).
+    const invoiceDocumentId = (invoice as { document_id?: string | null }).document_id
+    if (useCashEntry && invoiceDocumentId && journalEntryId) {
+      try {
+        await linkToJournalEntry(supabase, companyId!, invoiceDocumentId, journalEntryId)
+      } catch (linkErr) {
+        opLog.warn('failed to link supplier invoice document to cash payment JE', {
+          documentId: invoiceDocumentId,
+          journalEntryId,
+          error: linkErr instanceof Error ? linkErr.message : String(linkErr),
+        })
+      }
     }
 
     try {

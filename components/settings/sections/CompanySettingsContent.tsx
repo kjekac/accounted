@@ -8,15 +8,17 @@ import { CompanyProfileSection } from '@/components/settings/CompanyProfileSecti
 import { FiscalPeriodEditor } from '@/components/settings/FiscalPeriodEditor'
 import { LogoUpload } from '@/components/settings/LogoUpload'
 import { SettingsFormWrapper } from '@/components/settings/SettingsFormWrapper'
+import { SettingsLoadError } from '@/components/settings/SettingsLoadError'
 import { SettingsLoadingSkeleton } from '@/components/settings/SettingsLoadingSkeleton'
 import { useSettings } from '@/components/settings/useSettings'
 import type { CompanySettings } from '@/types'
 
 export function CompanySettingsContent() {
   const router = useRouter()
-  const { settings, isLoading, updateSettings } = useSettings()
+  const { settings, isLoading, updateSettings, refetch } = useSettings()
 
-  if (isLoading || !settings) return <SettingsLoadingSkeleton />
+  if (isLoading) return <SettingsLoadingSkeleton />
+  if (!settings) return <SettingsLoadError onRetry={refetch} />
 
   function handleSave(formData: FormData) {
     const updates: Record<string, unknown> = {

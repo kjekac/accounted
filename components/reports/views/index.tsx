@@ -17,7 +17,7 @@ import { roundOre } from '@/lib/money'
 import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
 import { AccountNumber } from '@/components/ui/account-number'
 import { ReportExportMenu } from '@/components/reports/ReportExportMenu'
-import { useSettings } from '@/components/settings/useSettings'
+import { useCompanySettings } from '@/components/settings/useSettings'
 import { TrialBalanceChart } from '@/components/reports/TrialBalanceChart'
 import { VatCompositionChart } from '@/components/reports/VatCompositionChart'
 import { SkatteverketPanel } from '@/components/reports/SkatteverketPanel'
@@ -1011,10 +1011,10 @@ export function VatDeclarationView({
   // (moms_period in Inställningar) so the picker mirrors the setting instead of
   // always starting on quarterly. Applied once per company the first time its
   // settings load; a later manual change to the picker is preserved, and a
-  // company switch re-applies the new company's setting. `useSettings` only
-  // refetches when the active company changes, so this never clobbers a manual
-  // selection mid-session.
-  const { settings } = useSettings()
+  // company switch re-applies the new company's setting. `useCompanySettings`
+  // only refetches when the active company changes, so this never clobbers a
+  // manual selection mid-session.
+  const { settings } = useCompanySettings()
   const appliedForCompany = useRef<string | null>(null)
   useEffect(() => {
     const momsPeriod = settings?.moms_period
