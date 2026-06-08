@@ -15,6 +15,7 @@ import {
   DataListMetaSeparator,
 } from '@/components/ui/data-list'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
+import { isImportedTransaction } from '@/lib/transactions/origin'
 import {
   AlertCircle,
   ArrowUpRight,
@@ -125,7 +126,13 @@ export default function TransactionInboxCard({
     !!transaction.potential_supplier_invoice && !transaction.supplier_invoice_id
   const isUncategorized = transaction.is_business === null && !transaction.journal_entry_id
   const showCheckbox = isBatchMode && isUncategorized
-  const isDeletable = !transaction.journal_entry_id
+  // Unbooked rows are still actionable (match, split, edit, categorize) — that
+  // includes imported bank rows, which are the whole point of the inbox.
+  const isUnbooked = !transaction.journal_entry_id
+  // ...but only rows the USER created in the app may be deleted. Imported rows
+  // (bank sync / CSV) are ignore-only — mirrors the server guard in
+  // DELETE /api/transactions/[id]. See lib/transactions/origin.ts.
+  const canDelete = isUnbooked && !isImportedTransaction(transaction)
   // Title is editable only on a mutable staging row — not booked and not
   // confirmed-matched. Mirrors the server-side gate in PATCH /api/transactions/[id].
   const isTitleEditable =
@@ -200,7 +207,7 @@ export default function TransactionInboxCard({
   // Manual invoice-match affordance. Hidden once an auto-detected match is
   // already shown as the primary button — having both makes the row noisy.
   const showInvoiceMatchButton =
-    isDeletable && !hasInvoiceMatch && !hasSupplierInvoiceMatch
+    isUnbooked && !hasInvoiceMatch && !hasSupplierInvoiceMatch
 
   const invoiceMatchLabel = isIncome
     ? 'Matcha mot kundfaktura'
@@ -216,10 +223,10 @@ export default function TransactionInboxCard({
   // Available on any unbooked row (income or expense), independent of whether an
   // invoice match was auto-detected: the user may want to point the bank line at
   // an existing salary/Fortnox/manual voucher instead of confirming a payment.
-  const showMatchVoucherItem = isDeletable && !!onOpenMatchVoucher
+  const showMatchVoucherItem = isUnbooked && !!onOpenMatchVoucher
   const showSplitItem = showInvoiceMatchButton && !!onOpenSplitMatch
   const showEditItem = isTitleEditable && !!onEditTitle
-  const showDeleteItem = isDeletable && !!onDelete
+  const showDeleteItem = canDelete && !!onDelete
   const showOverflowMenu = showMatchVoucherItem || showSplitItem || showEditItem || showDeleteItem
 
   return (

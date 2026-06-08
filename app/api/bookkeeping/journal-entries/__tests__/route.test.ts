@@ -140,6 +140,22 @@ describe('GET /api/bookkeeping/journal-entries', () => {
     )
   })
 
+  it('uses the direct query path (not the RPC) when a search term is set', async () => {
+    enqueue({ data: [], error: null, count: 0 })
+
+    const request = createMockRequest('/api/bookkeeping/journal-entries', {
+      searchParams: { period_id: 'period-1', search: 'luftfyllning' },
+    })
+    const response = await GET(request)
+    const { status } = await parseJsonResponse(response)
+
+    expect(status).toBe(200)
+    // Free-text search needs an ILIKE the include_related RPC can't express, so
+    // the route must fall through to the direct PostgREST query.
+    expect(mockSupabase.from).toHaveBeenCalledWith('journal_entries')
+    expect(mockSupabase.rpc).not.toHaveBeenCalled()
+  })
+
   it('returns 500 on database error', async () => {
     enqueue({ data: null, error: { message: 'DB error' } })
 

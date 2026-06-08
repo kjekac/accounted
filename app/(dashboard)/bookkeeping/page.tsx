@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button'
 import JournalEntryList from '@/components/bookkeeping/JournalEntryList'
 import JournalEntryForm, { type FormLine } from '@/components/bookkeeping/JournalEntryForm'
 import ChartOfAccountsManager from '@/components/bookkeeping/ChartOfAccountsManager'
-import { FiscalYearSelector } from '@/components/common/FiscalYearSelector'
 import { useToast } from '@/components/ui/use-toast'
 import { Lock, Loader2, Copy } from 'lucide-react'
 import { PageHeader } from '@/components/ui/page-header'
@@ -44,7 +43,6 @@ export default function BookkeepingPage() {
 
   const [refreshKey, setRefreshKey] = useState(0)
   const [activeTab, setActiveTab] = useState<TabValue>('journal')
-  const [periodId, setPeriodId] = useState<string | null>(null)
   const [copyPrefill, setCopyPrefill] = useState<CopyPrefill | null>(null)
   const [isLoadingCopy, setIsLoadingCopy] = useState(false)
   const [nextVoucher, setNextVoucher] = useState<NextVoucher | null>(null)
@@ -163,8 +161,7 @@ export default function BookkeepingPage() {
         </TabsList>
 
         <TabsContent value="journal" forceMount className="space-y-4">
-          <FiscalYearSelector value={periodId} onChange={setPeriodId} />
-          <JournalEntryList key={`${refreshKey}-${periodId ?? 'all'}`} periodId={periodId ?? undefined} />
+          <JournalEntryList key={refreshKey} />
         </TabsContent>
 
         <TabsContent value="new-entry" forceMount>

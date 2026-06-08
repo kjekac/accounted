@@ -8,8 +8,9 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
-import { Plus, Trash2, AlertTriangle, Loader2, Lock, CalendarPlus } from 'lucide-react'
+import { Plus, Trash2, AlertTriangle, Loader2, Lock, CalendarPlus, Eraser } from 'lucide-react'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import { JournalEntryReviewContent } from '@/components/bookkeeping/JournalEntryReviewContent'
@@ -106,6 +107,7 @@ export default function JournalEntryForm({
   const [foreignAmount, setForeignAmount] = useState('')
   const [periodMismatch, setPeriodMismatch] = useState<'no_period' | 'wrong_period' | null>(null)
   const [showCreatePeriod, setShowCreatePeriod] = useState(false)
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
   // Month (YYYY-MM) of the most recently posted voucher this session. Used to
   // flag, at the review step, when the user is about to book into a different
   // month — guards against accidentally posting to the wrong month.
@@ -455,6 +457,20 @@ export default function JournalEntryForm({
   const handleTemplateApply = (templateLines: FormLine[], templateDescription: string) => {
     setLines(templateLines)
     if (!description) setDescription(templateDescription)
+  }
+
+  // Wipe the form back to a blank entry. Mirrors the post-submit reset: it
+  // clears the data the user typed (lines, description, note, attachments,
+  // currency) but keeps the contextual defaults (period, date, series) so the
+  // form is immediately ready for the next entry.
+  const handleClearAll = () => {
+    setDescription('')
+    setNotes('')
+    setUploadedFiles([])
+    setLines([{ ...BLANK_LINE }, { ...BLANK_LINE }])
+    setEntryCurrency('SEK')
+    setExchangeRate('')
+    setForeignAmount('')
   }
 
   const handleOpenCreateAccount = (lineIndex: number, prefill: string) => {
@@ -1067,6 +1083,17 @@ export default function JournalEntryForm({
 
       <div className="flex flex-col items-end gap-1">
         <div className="flex gap-2">
+          {!embedded && (
+            <Button
+              variant="ghost"
+              onClick={() => setShowClearConfirm(true)}
+              disabled={!hasContent || isSubmitting || isSavingDraft}
+              title={t('clear_all_tooltip')}
+            >
+              <Eraser className="mr-2 h-4 w-4" />
+              {t('clear_all')}
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={handleSaveDraft}
@@ -1195,6 +1222,31 @@ export default function JournalEntryForm({
         periods={periods}
         onCreated={fetchPeriods}
       />
+
+      {/* Clear-all confirmation */}
+      <Dialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('clear_all_confirm_title')}</DialogTitle>
+            <DialogDescription>{t('clear_all_confirm_body')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowClearConfirm(false)}>
+              {t('clear_all_cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                handleClearAll()
+                setShowClearConfirm(false)
+              }}
+            >
+              <Eraser className="mr-2 h-4 w-4" />
+              {t('clear_all_confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 

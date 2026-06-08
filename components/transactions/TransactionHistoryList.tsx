@@ -25,6 +25,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
+import { isImportedTransaction } from '@/lib/transactions/origin'
 import { getCategoryDisplayName } from '@/lib/tax/expense-warnings'
 import {
   ArrowUpRight,
@@ -229,6 +230,9 @@ function BankHistoryRow({
   const { canWrite } = useCanWrite()
   const isIncome = transaction.amount > 0
   const isBooked = !!transaction.journal_entry_id
+  // Only user-created rows are deletable; imported (bank sync / CSV) rows are
+  // ignore-only. Mirrors the server guard in DELETE /api/transactions/[id].
+  const canDelete = !isBooked && !isImportedTransaction(transaction)
   const isLinkedToInvoice = !!transaction.invoice_id
   const hasInvoiceMatch =
     !isLinkedToInvoice && !!transaction.potential_invoice && !isBooked
@@ -315,7 +319,7 @@ function BankHistoryRow({
               </Link>
             </Button>
           )}
-          {(hasInvoiceMatch || (!isBooked && onDelete) || (isBooked && canWrite)) && (
+          {(hasInvoiceMatch || (canDelete && onDelete) || (isBooked && canWrite)) && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -345,7 +349,7 @@ function BankHistoryRow({
                     )}
                   </CorrectionAffordance>
                 )}
-                {!isBooked && onDelete && (
+                {canDelete && onDelete && (
                   <>
                     {hasInvoiceMatch && <DropdownMenuSeparator />}
                     <DropdownMenuItem

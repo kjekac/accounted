@@ -171,7 +171,7 @@ export function CompanyMembersSection() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleInvite} className="flex gap-3">
+            <form onSubmit={handleInvite} className="flex flex-col gap-3 sm:flex-row">
               <div className="flex-1">
                 <Label htmlFor="company-invite-email" className="sr-only">{t('members_invite_email_label')}</Label>
                 <Input
@@ -185,7 +185,7 @@ export function CompanyMembersSection() {
                 />
               </div>
               <Select value={inviteRole} onValueChange={setInviteRole}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-full sm:w-[140px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

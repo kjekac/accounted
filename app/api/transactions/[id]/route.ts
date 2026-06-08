@@ -7,6 +7,7 @@ import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structure
 import { validateBody } from '@/lib/api/validate'
 import { UpdateTransactionTitleSchema } from '@/lib/api/schemas'
 import { guardSandbox } from '@/lib/sandbox/guard'
+import { isImportedTransaction } from '@/lib/transactions/origin'
 import type { Transaction } from '@/types'
 
 export async function DELETE(
@@ -26,10 +27,11 @@ export async function DELETE(
 
   const companyId = await requireCompanyId(supabase, user.id)
 
-  // Fetch the transaction with ownership check
+  // Fetch the transaction with ownership check. `bank_connection_id` +
+  // `import_source` tell us where the row came from (see the imported guard below).
   const { data: transaction, error: fetchError } = await supabase
     .from('transactions')
-    .select('id, journal_entry_id')
+    .select('id, journal_entry_id, bank_connection_id, import_source')
     .eq('id', id)
     .eq('company_id', companyId)
     .single()
@@ -60,6 +62,27 @@ export async function DELETE(
             'Transaktionen är redan bokförd eller kopplad till en verifikation och kan inte raderas. Koppla bort den under Rapporter → Bankavstämning om kopplingen är fel, eller storna verifikationen.',
           message_en:
             'The transaction is already booked or linked to a journal entry and cannot be deleted. Unlink it under Reports → Bank reconciliation if the link is wrong, or reverse (storno) the voucher.',
+        },
+      },
+      { status: 409 }
+    )
+  }
+
+  // Guard: only transactions the user created in the app can be deleted. Rows
+  // fetched via bank sync or uploaded via a bank-file import are an external
+  // record of money that moved — deleting one would silently drop a real bank
+  // line (and a re-sync would just bring it back). The user can *ignore* such a
+  // row (POST /api/transactions/[id]/ignore) to take it off the to-book list,
+  // but never delete it. See lib/transactions/origin.ts for the origin rule.
+  if (isImportedTransaction(transaction)) {
+    return NextResponse.json(
+      {
+        error: {
+          code: 'TRANSACTION_DELETE_IMPORTED',
+          message:
+            'Transaktionen har hämtats från banken eller importerats via fil och kan inte raderas. Du kan ignorera den så att den döljs från listan över transaktioner att bokföra.',
+          message_en:
+            'This transaction was fetched from your bank or imported from a file and cannot be deleted. You can ignore it to hide it from the list of transactions to book.',
         },
       },
       { status: 409 }

@@ -88,22 +88,28 @@ export async function GET(
     })
   }
 
-  // Build avgifter entry preview
+  // Build avgifter entry preview — skipped for a nollkörning (0 avgifter),
+  // mirroring the vacation/pension guards below. The bookkeeping engine never
+  // posts an all-zero 7510/2731 voucher (see book/route.ts nollkörning path),
+  // so previewing one would falsely imply a verifikat that is never created.
   const totalAvgifter = employees.reduce((sum, e) => sum + e.avgifter_amount, 0)
-  const avgifterLines: CreateJournalEntryLineInput[] = [
-    {
-      account_number: SALARY_ACCOUNTS.AVGIFTER_EXPENSE,
-      debit_amount: Math.round(totalAvgifter * 100) / 100,
-      credit_amount: 0,
-      line_description: `${desc} — Arbetsgivaravgifter`,
-    },
-    {
-      account_number: SALARY_ACCOUNTS.AVGIFTER_LIABILITY,
-      debit_amount: 0,
-      credit_amount: Math.round(totalAvgifter * 100) / 100,
-      line_description: `${desc} — Arbetsgivaravgifter`,
-    },
-  ]
+  const roundedAvgifter = Math.round(totalAvgifter * 100) / 100
+  const avgifterLines: CreateJournalEntryLineInput[] = roundedAvgifter !== 0
+    ? [
+        {
+          account_number: SALARY_ACCOUNTS.AVGIFTER_EXPENSE,
+          debit_amount: roundedAvgifter,
+          credit_amount: 0,
+          line_description: `${desc} — Arbetsgivaravgifter`,
+        },
+        {
+          account_number: SALARY_ACCOUNTS.AVGIFTER_LIABILITY,
+          debit_amount: 0,
+          credit_amount: roundedAvgifter,
+          line_description: `${desc} — Arbetsgivaravgifter`,
+        },
+      ]
+    : []
 
   // Build vacation entry preview
   const totalVacation = employees.reduce((sum, e) => sum + e.vacation_accrual, 0)
@@ -170,14 +176,17 @@ export async function GET(
 
   return NextResponse.json({
     data: {
-      salaryEntry: {
+      // Each entry is null when it has no lines — a nollkörning posts nothing,
+      // so the salary and avgifter entries fall away just like vacation/pension
+      // already do, and the UI can simply skip the null ones.
+      salaryEntry: salaryLines.length > 0 ? {
         description: desc,
         lines: salaryLines,
-      },
-      avgifterEntry: {
+      } : null,
+      avgifterEntry: avgifterLines.length > 0 ? {
         description: `${desc} — Arbetsgivaravgifter`,
         lines: avgifterLines,
-      },
+      } : null,
       vacationEntry: vacationLines.length > 0 ? {
         description: `${desc} — Semesteravsättning`,
         lines: vacationLines,

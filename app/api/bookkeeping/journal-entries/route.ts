@@ -7,6 +7,7 @@ import { validateBody } from '@/lib/api/validate'
 import { CreateJournalEntrySchema } from '@/lib/api/schemas'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
+import { escapeLikePattern } from '@/lib/invoices/duplicate-payment-guard'
 
 ensureInitialized()
 
@@ -32,6 +33,14 @@ export async function GET(request: Request) {
   // other value is passed (defense against trivial injection / typos).
   const seriesRaw = searchParams.get('series')
   const seriesFilter = seriesRaw && /^[A-Z]$/.test(seriesRaw) ? seriesRaw : null
+  // Free-text search over the voucher description (verifikationstext). When set,
+  // we take the direct-query path below (the include_related RPC can't search),
+  // which filters strictly by fiscal_period_id. So search is scoped to the
+  // selected fiscal period / company and — like voucher sort — does NOT surface
+  // cross-period follow-up entries: every result stays inside the selected
+  // year's series (the BFL-compliant per-year view). It narrows the period, it
+  // never widens it.
+  const search = searchParams.get('search')?.trim() || null
   // 'date_desc' (default) | 'date_asc' | 'voucher_asc' | 'voucher_desc'
   // sort_by overrides sort_date when present. sort_date is kept for backwards
   // compatibility with older clients.
@@ -55,7 +64,7 @@ export async function GET(request: Request) {
   // belonging to a different year's series would be misleading. The trade-off
   // is that the visible row count may differ between sort modes for the same
   // period; the strict count is the BFL-compliant view of that year.
-  if (periodId && includeRelated && !isVoucherSort) {
+  if (periodId && includeRelated && !isVoucherSort && !search) {
     const { data, error } = await supabase.rpc('list_fiscal_period_entries_with_related', {
       p_company_id: companyId,
       p_period_id: periodId,
@@ -131,6 +140,15 @@ export async function GET(request: Request) {
 
   if (seriesFilter) {
     query = query.eq('voucher_series', seriesFilter)
+  }
+
+  if (search) {
+    // Escape LIKE wildcards (\ % _) so they match literally, and cap the needle
+    // length (≤200 chars) — both handled by the shared escapeLikePattern helper.
+    // The cap bounds DB work against oversized/pathological inputs (compliance
+    // A.8.28 / ASVS V1.2.5); escaping prevents silent over-matching on values
+    // like "50%". Supabase parameterises the value, so this is not about SQLi.
+    query = query.ilike('description', `%${escapeLikePattern(search)}%`)
   }
 
   const { data, error, count } = await query

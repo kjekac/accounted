@@ -50,8 +50,8 @@ interface EntryPreview {
 }
 
 interface PreviewData {
-  salaryEntry: EntryPreview
-  avgifterEntry: EntryPreview
+  salaryEntry: EntryPreview | null
+  avgifterEntry: EntryPreview | null
   vacationEntry: EntryPreview | null
 }
 
@@ -160,6 +160,29 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
       const result = await res.json()
       toast({
         title: 'Kunde inte lägga till anställd',
+        description: getErrorMessage(result, { context: 'salary', statusCode: res.status }),
+        variant: 'destructive',
+      })
+    }
+    setActionLoading(null)
+  }
+
+  // Remove an employee from a draft run. The DELETE endpoint is draft-only and
+  // cascades to the employee's line items; the button is only rendered while the
+  // run is a draft, matching that guard.
+  async function handleRemoveEmployee(employeeId: string, name: string) {
+    if (!confirm(`Ta bort ${name} från lönekörningen?`)) return
+    setActionLoading(`remove-${employeeId}`)
+    const res = await fetch(`/api/salary/runs/${id}/employees/${employeeId}`, {
+      method: 'DELETE',
+    })
+    if (res.ok) {
+      await loadRun()
+      toast({ title: 'Anställd borttagen' })
+    } else {
+      const result = await res.json()
+      toast({
+        title: 'Kunde inte ta bort anställd',
         description: getErrorMessage(result, { context: 'salary', statusCode: res.status }),
         variant: 'destructive',
       })
@@ -317,6 +340,9 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
   const employees = (run.employees || []) as SalaryRunEmployee[]
   const addedEmployeeIds = new Set(employees.map(e => e.employee_id))
   const notAdded = availableEmployees.filter(e => !addedEmployeeIds.has(e.id))
+  // Employees can only be removed while the run is a draft (matches the DELETE
+  // endpoint's guard); gate the row action column on the same condition.
+  const canRemoveEmployee = run.status === 'draft' && canWrite
 
   // calculation_params is frozen only when the run has been calculated, so it
   // distinguishes "not yet calculated" from "calculated to 0" (a nollkörning).
@@ -464,6 +490,7 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
                   <TableHead className="hidden lg:table-cell text-right">Avgifter</TableHead>
                   <TableHead className="hidden md:table-cell text-right">Semester</TableHead>
                   <TableHead className="text-right w-[80px]">Lönespec</TableHead>
+                  {canRemoveEmployee && <TableHead className="w-[48px]"><span className="sr-only">Ta bort</span></TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -530,6 +557,28 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
                           Visa PDF
                         </a>
                       </TableCell>
+                      {canRemoveEmployee && (
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleRemoveEmployee(sre.employee_id, name)
+                            }}
+                            disabled={actionLoading === `remove-${sre.employee_id}`}
+                            aria-label={`Ta bort ${name} från lönekörningen`}
+                            title="Ta bort från lönekörningen"
+                          >
+                            {actionLoading === `remove-${sre.employee_id}` ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                   )
                 })}
@@ -582,31 +631,48 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
             <CardTitle className="text-base">Förhandsgranskning — verifikationer</CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
-            {[preview.salaryEntry, preview.avgifterEntry, preview.vacationEntry, (preview as unknown as Record<string, EntryPreview | null>).pensionEntry].filter(Boolean).map((entry, idx) => (
-              <div key={idx} className="space-y-2">
-                <h4 className="text-sm font-medium">{entry!.description}</h4>
-                <table className="w-full text-xs">
-                  <thead className="[&_th]:font-medium [&_th]:text-[11px] [&_th]:uppercase [&_th]:tracking-wider [&_th]:text-muted-foreground">
-                    <tr className="border-b">
-                      <th className="text-left py-1">Konto</th>
-                      <th className="text-left py-1">Beskrivning</th>
-                      <th className="text-right py-1">Debet</th>
-                      <th className="text-right py-1">Kredit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {entry!.lines.map((line, li) => (
-                      <tr key={li} className="border-t border-border/30">
-                        <td className="py-1.5 tabular-nums font-mono">{line.account_number}</td>
-                        <td className="py-1.5 text-muted-foreground">{line.line_description}</td>
-                        <td className="py-1.5 text-right tabular-nums">{line.debit_amount ? formatCurrency(line.debit_amount) : ''}</td>
-                        <td className="py-1.5 text-right tabular-nums">{line.credit_amount ? formatCurrency(line.credit_amount) : ''}</td>
+            {(() => {
+              const entries = [
+                preview.salaryEntry,
+                preview.avgifterEntry,
+                preview.vacationEntry,
+                (preview as unknown as Record<string, EntryPreview | null>).pensionEntry,
+              ].filter(Boolean) as EntryPreview[]
+              if (entries.length === 0) {
+                return (
+                  <p className="text-sm text-muted-foreground">
+                    Nollkörning — inga verifikat bokförs för den här körningen.
+                    Kontrollera att övriga lönekörningar för perioden täcker
+                    arbetsgivardeklarationen till Skatteverket.
+                  </p>
+                )
+              }
+              return entries.map((entry, idx) => (
+                <div key={idx} className="space-y-2">
+                  <h4 className="text-sm font-medium">{entry.description}</h4>
+                  <table className="w-full text-xs">
+                    <thead className="[&_th]:font-medium [&_th]:text-[11px] [&_th]:uppercase [&_th]:tracking-wider [&_th]:text-muted-foreground">
+                      <tr className="border-b">
+                        <th className="text-left py-1">Konto</th>
+                        <th className="text-left py-1">Beskrivning</th>
+                        <th className="text-right py-1">Debet</th>
+                        <th className="text-right py-1">Kredit</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
+                    </thead>
+                    <tbody>
+                      {entry.lines.map((line, li) => (
+                        <tr key={li} className="border-t border-border/30">
+                          <td className="py-1.5 tabular-nums font-mono">{line.account_number}</td>
+                          <td className="py-1.5 text-muted-foreground">{line.line_description}</td>
+                          <td className="py-1.5 text-right tabular-nums">{line.debit_amount ? formatCurrency(line.debit_amount) : ''}</td>
+                          <td className="py-1.5 text-right tabular-nums">{line.credit_amount ? formatCurrency(line.credit_amount) : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))
+            })()}
           </CardContent>
         </Card>
       )}

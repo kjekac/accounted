@@ -79,33 +79,46 @@ describe('DELETE /api/transactions/[id]', () => {
     expect(body.error.message).toMatch(/Bankavstämning|storna/)
   })
 
-  it('allows deleting unbooked bank-synced transactions', async () => {
+  it('blocks deleting an unbooked bank-synced transaction (ignore-only)', async () => {
+    // A live bank connection (PSD2) makes this an imported row — not the user's
+    // to delete, only to ignore.
     const tx = makeTransaction({ bank_connection_id: 'bc-1', journal_entry_id: null, import_source: null })
-    enqueue({ data: tx, error: null }) // fetch
-    enqueue({ data: null, error: null }) // delete
+    enqueue({ data: tx, error: null }) // fetch (no delete should follow)
 
     const request = new Request('http://localhost/api/transactions/tx-1', { method: 'DELETE' })
     const response = await DELETE(request, createMockRouteParams({ id: 'tx-1' }))
-    const { status, body } = await parseJsonResponse(response)
+    const { status, body } = await parseJsonResponse<{ error: { code: string; message: string } }>(response)
 
-    expect(status).toBe(200)
-    expect(body).toEqual({ success: true })
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('TRANSACTION_DELETE_IMPORTED')
+    expect(body.error.message).toMatch(/banken|ignorera/i)
   })
 
-  it('allows deleting unbooked imported transactions', async () => {
+  it('blocks deleting an unbooked CSV-imported transaction (ignore-only)', async () => {
     const tx = makeTransaction({ import_source: 'csv_nordea', journal_entry_id: null, bank_connection_id: null })
-    enqueue({ data: tx, error: null }) // fetch
-    enqueue({ data: null, error: null }) // delete
+    enqueue({ data: tx, error: null }) // fetch (no delete should follow)
 
     const request = new Request('http://localhost/api/transactions/tx-1', { method: 'DELETE' })
     const response = await DELETE(request, createMockRouteParams({ id: 'tx-1' }))
-    const { status, body } = await parseJsonResponse(response)
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(response)
 
-    expect(status).toBe(200)
-    expect(body).toEqual({ success: true })
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('TRANSACTION_DELETE_IMPORTED')
   })
 
-  it('deletes a manually added unbooked transaction', async () => {
+  it('blocks deleting an unbooked Enable Banking transaction (ignore-only)', async () => {
+    const tx = makeTransaction({ import_source: 'enable_banking', journal_entry_id: null, bank_connection_id: null })
+    enqueue({ data: tx, error: null }) // fetch (no delete should follow)
+
+    const request = new Request('http://localhost/api/transactions/tx-1', { method: 'DELETE' })
+    const response = await DELETE(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('TRANSACTION_DELETE_IMPORTED')
+  })
+
+  it('deletes a manually added unbooked transaction (null source)', async () => {
     const tx = makeTransaction({ journal_entry_id: null, bank_connection_id: null, import_source: null })
     enqueue({ data: tx, error: null }) // fetch
     enqueue({ data: null, error: null }) // delete
@@ -117,6 +130,22 @@ describe('DELETE /api/transactions/[id]', () => {
     expect(status).toBe(200)
     expect(body).toEqual({ success: true })
   })
+
+  it.each(['manual', 'mcp'])(
+    'deletes an unbooked in-app transaction created via %s',
+    async (source) => {
+      const tx = makeTransaction({ journal_entry_id: null, bank_connection_id: null, import_source: source })
+      enqueue({ data: tx, error: null }) // fetch
+      enqueue({ data: null, error: null }) // delete
+
+      const request = new Request('http://localhost/api/transactions/tx-1', { method: 'DELETE' })
+      const response = await DELETE(request, createMockRouteParams({ id: 'tx-1' }))
+      const { status, body } = await parseJsonResponse(response)
+
+      expect(status).toBe(200)
+      expect(body).toEqual({ success: true })
+    },
+  )
 
   it('returns 500 with a structured code when deletion fails', async () => {
     const tx = makeTransaction({ journal_entry_id: null, bank_connection_id: null, import_source: null })
@@ -132,9 +161,12 @@ describe('DELETE /api/transactions/[id]', () => {
   })
 
   it('returns 409 with an audit-trail code when the immutability trigger blocks the delete', async () => {
-    // An unbooked row with payment_match_log rows: the cascade hits the
-    // audit_log_immutable trigger (P0001), not a clean FK error.
-    const tx = makeTransaction({ journal_entry_id: null, bank_connection_id: 'bc-1', import_source: null })
+    // A user-created (deletable) row that still carries payment_match_log rows
+    // — e.g. it was auto-suggested a match. The cascade on delete hits the
+    // audit_log_immutable trigger (P0001), not a clean FK error. Fixture must be
+    // user-created (no bank link / import source) so it passes the imported
+    // guard and actually reaches the delete.
+    const tx = makeTransaction({ journal_entry_id: null, bank_connection_id: null, import_source: 'manual' })
     enqueue({ data: tx, error: null }) // fetch
     enqueue({
       data: null,

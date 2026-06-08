@@ -31,7 +31,7 @@ export function SettingsShell({ variant, activeSection, children }: SettingsShel
           <aside className="hidden w-56 shrink-0 overflow-y-auto border-r border-border p-3 md:block">
             <SettingsRail variant="modal" display="rail" activeId={activeSection} />
           </aside>
-          <div className="min-h-0 flex-1 overflow-y-auto p-6">
+          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-6">
             <div className="mb-6 md:hidden">
               <SettingsRail variant="modal" display="select" activeId={activeSection} />
             </div>

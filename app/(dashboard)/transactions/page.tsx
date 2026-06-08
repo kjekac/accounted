@@ -58,6 +58,7 @@ import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, SupplierInvoice, Supplier, VatTreatment, EntityType, LinePatternEntry, BookingTemplateLibrary } from '@/types'
 import type { SuggestedTemplate } from '@/lib/transactions/category-suggestions'
+import { isImportedTransaction } from '@/lib/transactions/origin'
 
 type InvoiceWithCustomer = Invoice & { customer?: Customer }
 type SupplierInvoiceWithSupplier = SupplierInvoice & { supplier?: Supplier }
@@ -1472,15 +1473,40 @@ export default function TransactionsPage() {
   }
 
   async function handleBatchDelete() {
-    const ids = Array.from(selectedIds)
+    // Only user-created rows can be deleted; imported (bank sync / CSV) rows are
+    // ignore-only. Split the selection so we never fire a delete the server
+    // would 409, and tell the user how many were skipped. Mirrors the server
+    // guard in DELETE /api/transactions/[id].
+    const selected = Array.from(selectedIds)
+    const ids: string[] = []
+    let skippedImported = 0
+    for (const id of selected) {
+      const tx = transactions.find((t) => t.id === id)
+      if (tx && isImportedTransaction(tx)) skippedImported++
+      else ids.push(id)
+    }
+
+    if (ids.length === 0) {
+      toast({
+        title: 'Inget att ta bort',
+        description: 'De valda transaktionerna är importerade och kan endast ignoreras, inte raderas.',
+        variant: 'destructive',
+      })
+      return
+    }
+
     const ok = await confirm({
       title: `Ta bort ${ids.length} transaktioner?`,
-      description: 'Åtgärden kan inte ångras.',
+      description:
+        skippedImported > 0
+          ? `${skippedImported} importerade transaktioner hoppas över (kan endast ignoreras). Åtgärden kan inte ångras.`
+          : 'Åtgärden kan inte ångras.',
       confirmLabel: 'Ta bort',
       variant: 'destructive',
     })
     if (!ok) return
 
+    const deletedIds = new Set<string>()
     setBatchProgress({ done: 0, total: ids.length })
     let successes = 0
     const failures: string[] = []
@@ -1489,6 +1515,7 @@ export default function TransactionsPage() {
         const response = await fetch(`/api/transactions/${ids[i]}`, { method: 'DELETE' })
         if (response.ok) {
           successes++
+          deletedIds.add(ids[i])
         } else {
           const tx = transactions.find((t) => t.id === ids[i])
           failures.push(tx?.description || ids[i])
@@ -1498,16 +1525,19 @@ export default function TransactionsPage() {
       }
       setBatchProgress({ done: i + 1, total: ids.length })
     }
-    if (successes > 0) {
-      setTransactions((prev) => prev.filter((t) => !selectedIds.has(t.id) || failures.includes(t.description)))
+    if (deletedIds.size > 0) {
+      setTransactions((prev) => prev.filter((t) => !deletedIds.has(t.id)))
     }
     setBatchProgress(null)
-    if (failures.length === 0) {
+    if (failures.length === 0 && skippedImported === 0) {
       toast({ title: 'Klart', description: `${successes} transaktioner borttagna` })
     } else {
+      const parts = [`${successes} borttagna`]
+      if (failures.length > 0) parts.push(`${failures.length} misslyckades`)
+      if (skippedImported > 0) parts.push(`${skippedImported} importerade kunde inte raderas`)
       toast({
         title: 'Delvis klart',
-        description: `${successes} borttagna, ${failures.length} misslyckades`,
+        description: parts.join(', '),
         variant: 'destructive',
       })
     }

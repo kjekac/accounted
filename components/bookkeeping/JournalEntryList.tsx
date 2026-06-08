@@ -4,13 +4,27 @@ import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { ChevronDown, ChevronRight, Paperclip, AlertTriangle, CircleSlash, Loader2, BookOpen, X, Copy, Lock } from 'lucide-react'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogFooter,
+  DialogClose,
+} from '@/components/ui/dialog'
+import {
+  FiscalYearSelector,
+  STORAGE_KEY_PREFIX as FISCAL_YEAR_STORAGE_KEY_PREFIX,
+  ALL_YEARS_VALUE as FISCAL_YEAR_ALL_VALUE,
+} from '@/components/common/FiscalYearSelector'
+import { ChevronDown, ChevronRight, Paperclip, AlertTriangle, CircleSlash, Loader2, BookOpen, X, Copy, Lock, Search, SlidersHorizontal } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
 import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
 import { Input } from '@/components/ui/input'
@@ -24,7 +38,8 @@ import AttachmentPreviewSheet from '@/components/bookkeeping/AttachmentPreviewSh
 import { useToast } from '@/components/ui/use-toast'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
-import type { JournalEntry, JournalEntryLine } from '@/types'
+import { useCompanyOptional } from '@/contexts/CompanyContext'
+import type { FiscalPeriod, JournalEntry, JournalEntryLine } from '@/types'
 
 const NEEDS_ATTACHMENT = new Set([
   'manual',
@@ -35,14 +50,18 @@ const NEEDS_ATTACHMENT = new Set([
   'import',
 ])
 
-interface Props {
-  periodId?: string
-}
+type SortBy = 'date_desc' | 'date_asc' | 'voucher_asc' | 'voucher_desc'
 
-export default function JournalEntryList({ periodId }: Props) {
+// Per-company persistence of the sort dropdown. Mirrors the localStorage
+// convention used by FiscalYearSelector ('Accounted:fiscal-year:<companyId>').
+const SORT_STORAGE_KEY_PREFIX = 'Accounted:journal-sort:'
+const SORT_VALUES = new Set<SortBy>(['date_desc', 'date_asc', 'voucher_asc', 'voucher_desc'])
+
+export default function JournalEntryList() {
   const router = useRouter()
   const { toast } = useToast()
   const { canWrite } = useCanWrite()
+  const company = useCompanyOptional()?.company ?? null
   const t = useTranslations('journal_list')
   const [entries, setEntries] = useState<JournalEntry[]>([])
   const [committingId, setCommittingId] = useState<string | null>(null)
@@ -55,12 +74,19 @@ export default function JournalEntryList({ periodId }: Props) {
   const [showMissingOnly, setShowMissingOnly] = useState(false)
   const [correctionEntry, setCorrectionEntry] = useState<JournalEntry | null>(null)
   const [previewEntryId, setPreviewEntryId] = useState<string | null>(null)
-  const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'voucher_asc' | 'voucher_desc'>('date_desc')
+  const [sortBy, setSortBy] = useState<SortBy>('date_desc')
+  const [sortHydrated, setSortHydrated] = useState(false)
+  const [periodId, setPeriodId] = useState<string | null>(null)
+  const [periodHydrated, setPeriodHydrated] = useState(false)
+  const [periods, setPeriods] = useState<FiscalPeriod[]>([])
+  const [filterOpen, setFilterOpen] = useState(false)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [dateFromInput, setDateFromInput] = useState('')
   const [dateToInput, setDateToInput] = useState('')
   const [seriesFilter, setSeriesFilter] = useState<string>('all')
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
   const pageSize = 20
 
   const normalizeDate = (v: string): string | null => {
@@ -136,6 +162,72 @@ export default function JournalEntryList({ periodId }: Props) {
     fetchNoDocRequired()
   }, [fetchNoDocRequired])
 
+  // Restore the persisted sort order (per company). Read in an effect rather
+  // than the useState initializer to avoid an SSR/client hydration mismatch.
+  // sortHydrated gates the first fetch so the list is fetched once, already in
+  // the saved order — no flash of the default sort.
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(SORT_STORAGE_KEY_PREFIX + (company?.id ?? 'default'))
+      if (stored && SORT_VALUES.has(stored as SortBy)) setSortBy(stored as SortBy)
+    }
+    setSortHydrated(true)
+  }, [company?.id])
+
+  // Restore the persisted fiscal-year selection (per company), reading the same
+  // localStorage key FiscalYearSelector writes. The selector lives inside the
+  // filter dialog and only mounts when opened, so we resolve the saved scope
+  // here — independent of the dialog — to keep the initial fetch correct.
+  // periodHydrated gates the first fetch so the list loads already scoped.
+  useEffect(() => {
+    if (company?.id && typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(FISCAL_YEAR_STORAGE_KEY_PREFIX + company.id)
+      setPeriodId(stored && stored !== FISCAL_YEAR_ALL_VALUE ? stored : null)
+    } else {
+      setPeriodId(null)
+    }
+    setPeriodHydrated(true)
+  }, [company?.id])
+
+  // Fetch fiscal periods so the active räkenskapsår can be labelled on the
+  // filter bar without opening the dialog (BFL period-orientation: the user
+  // should always see which year the ledger is scoped to). Read-only — the
+  // dialog's FiscalYearSelector still owns selection; this copy resolves the
+  // name for display.
+  useEffect(() => {
+    if (!company?.id) {
+      setPeriods([])
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/bookkeeping/fiscal-periods')
+        if (!res.ok) return
+        const { data } = await res.json()
+        if (!cancelled) setPeriods((data || []) as FiscalPeriod[])
+      } catch {
+        // Non-critical — the chip falls back to the active-filter count badge.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [company?.id])
+
+  // Debounce the free-text search before it reaches the API. Require ≥2 chars:
+  // a single character matches almost every verifikationstext and isn't a useful
+  // filter, so 0–1 chars are treated as "no search" instead of firing a query on
+  // every keystroke (ASVS V2.4).
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      const trimmed = searchInput.trim()
+      setSearch(trimmed.length >= 2 ? trimmed : '')
+      setPage(0)
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [searchInput])
+
   async function fetchEntries() {
     setLoading(true)
     const params = new URLSearchParams({
@@ -147,6 +239,7 @@ export default function JournalEntryList({ periodId }: Props) {
     if (dateFrom) params.set('date_from', dateFrom)
     if (dateTo) params.set('date_to', dateTo)
     if (seriesFilter !== 'all') params.set('series', seriesFilter)
+    if (search) params.set('search', search)
 
     const res = await fetch(`/api/bookkeeping/journal-entries?${params}`)
     if (!res.ok) {
@@ -165,8 +258,9 @@ export default function JournalEntryList({ periodId }: Props) {
   }
 
   useEffect(() => {
+    if (!sortHydrated || !periodHydrated) return
     fetchEntries()
-  }, [periodId, page, sortBy, dateFrom, dateTo, seriesFilter])
+  }, [periodId, page, sortBy, dateFrom, dateTo, seriesFilter, search, sortHydrated, periodHydrated])
 
   const handleAttachmentCountChange = useCallback((entryId: string, count: number) => {
     setAttachmentCounts((prev) => ({ ...prev, [entryId]: count }))
@@ -198,18 +292,63 @@ export default function JournalEntryList({ periodId }: Props) {
     }
   }
 
-  if (loading) {
-    return (
-      <Card>
-        <CardContent className="flex flex-col items-center justify-center py-12">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mb-3" />
-          <p className="text-sm text-muted-foreground">{t('loading')}</p>
-        </CardContent>
-      </Card>
-    )
+  const filteredEntries = showMissingOnly
+    ? entries.filter(
+        (e) =>
+          NEEDS_ATTACHMENT.has(e.source_type) &&
+          !attachmentCounts[e.id] &&
+          e.status === 'posted' &&
+          !noDocRequired.has(e.id)
+      )
+    : entries
+
+  // Count of active dialog filters, shown as a badge on the Filtrera button so
+  // the user can tell the list is scoped without opening the dialog. Sort order
+  // is a view preference (always set), not a filter, so it is excluded.
+  const activeFilterCount =
+    (periodId ? 1 : 0) +
+    (seriesFilter !== 'all' ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0) +
+    (showMissingOnly ? 1 : 0)
+
+  // When any filter or search is active we keep the filter bar mounted even
+  // with zero results, so the user can edit or clear their query. The pristine
+  // "no entries yet" state below only applies to an untouched, empty ledger.
+  const hasActiveFilters = Boolean(search) || activeFilterCount > 0
+
+  // Resolve the active fiscal-year scope for the bar chip. "All years" (periodId
+  // null) renders immediately; a specific period waits until its name resolves
+  // from the fetched list (scopeLabel stays null meanwhile, so the chip never
+  // flashes the wrong scope). Surfacing this keeps the period visible per BFL
+  // without the user having to open the filter dialog.
+  const activePeriod = periodId ? periods.find((p) => p.id === periodId) ?? null : null
+  const scopeLabel = periodId ? activePeriod?.name ?? null : t('scope_all_years')
+
+  // Apply a fiscal-year selection from the dialog. The FiscalYearSelector
+  // persists the choice to localStorage itself; here we only mirror it into
+  // local state and reset pagination.
+  const handlePeriodChange = (next: string | null) => {
+    setPeriodId(next)
+    setPage(0)
   }
 
-  if (entries.length === 0) {
+  const clearAllFilters = () => {
+    setPeriodId(null)
+    // Mirror the selector's "Alla räkenskapsår" write so the cleared scope
+    // survives a remount/reload instead of being restored from a stale value.
+    if (company?.id && typeof window !== 'undefined') {
+      window.localStorage.setItem(FISCAL_YEAR_STORAGE_KEY_PREFIX + company.id, FISCAL_YEAR_ALL_VALUE)
+    }
+    setSeriesFilter('all')
+    setShowMissingOnly(false)
+    setDateFrom('')
+    setDateTo('')
+    setDateFromInput('')
+    setDateToInput('')
+    setPage(0)
+  }
+
+  if (!loading && entries.length === 0 && !hasActiveFilters) {
     return (
       <Card>
         <CardContent className="flex flex-col items-center justify-center py-12">
@@ -225,124 +364,240 @@ export default function JournalEntryList({ periodId }: Props) {
     )
   }
 
-  const filteredEntries = showMissingOnly
-    ? entries.filter(
-        (e) =>
-          NEEDS_ATTACHMENT.has(e.source_type) &&
-          !attachmentCounts[e.id] &&
-          e.status === 'posted' &&
-          !noDocRequired.has(e.id)
-      )
-    : entries
-
   return (
     <div className="space-y-4">
-      {/* Filters and sorting */}
-      <div className="space-y-3 sm:space-y-0 sm:flex sm:items-center sm:gap-4 sm:flex-wrap">
-        <div className="flex items-center justify-between sm:justify-start gap-2">
-          <div className="flex items-center gap-2">
-            <Switch
-              id="missing-attachments"
-              checked={showMissingOnly}
-              onCheckedChange={setShowMissingOnly}
-            />
-            <Label htmlFor="missing-attachments" className="text-sm cursor-pointer">
-              {t('show_missing')}
-            </Label>
-            {showMissingOnly && (
-              <Badge variant="secondary" className="text-xs">
-                {filteredEntries.length}
-              </Badge>
-            )}
-          </div>
-        </div>
-        <Select value={sortBy} onValueChange={(v) => { setSortBy(v as typeof sortBy); setPage(0) }}>
-          <SelectTrigger className="h-8 w-auto gap-1.5 text-xs sm:w-[200px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="date_desc">{t('sort_date_desc')}</SelectItem>
-            <SelectItem value="date_asc">{t('sort_date_asc')}</SelectItem>
-            <SelectItem value="voucher_asc">{t('sort_voucher_asc')}</SelectItem>
-            <SelectItem value="voucher_desc">{t('sort_voucher_desc')}</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select value={seriesFilter} onValueChange={(v) => { setSeriesFilter(v); setPage(0) }}>
-          <SelectTrigger
-            className="h-8 w-auto gap-1.5 text-xs sm:w-[120px] font-mono"
-            aria-label="Verifikationsserie"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all" className="text-xs">Alla serier</SelectItem>
-            {'ABCDEFG'.split('').map((letter) => (
-              <SelectItem key={letter} value={letter} className="font-mono text-xs">
-                Serie {letter}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <div className="flex items-center gap-1.5">
+      {/* Search (always visible) + filter dialog for everything else */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1 sm:flex-none sm:w-[280px]">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
           <Input
             type="text"
-            placeholder={t('date_from_placeholder')}
-            value={dateFromInput}
-            onChange={(e) => setDateFromInput(e.target.value)}
-            onBlur={() => {
-              const v = dateFromInput.trim()
-              if (v === '') return
-              const normalized = normalizeDate(v)
-              if (normalized) setDateFromInput(normalized)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                applyDateFilter()
-              }
-            }}
-            className="h-8 flex-1 sm:flex-none sm:w-[145px] text-xs"
+            inputMode="search"
+            placeholder={t('search_placeholder')}
+            aria-label={t('search_placeholder')}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            className="h-8 pl-8 pr-7 text-xs"
           />
-          <Input
-            type="text"
-            placeholder={t('date_to_placeholder')}
-            value={dateToInput}
-            onChange={(e) => setDateToInput(e.target.value)}
-            onBlur={() => {
-              const v = dateToInput.trim()
-              if (v === '') return
-              const normalized = normalizeDate(v)
-              if (normalized) setDateToInput(normalized)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                applyDateFilter()
-              }
-            }}
-            className="h-8 flex-1 sm:flex-none sm:w-[145px] text-xs"
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs shrink-0"
-            onClick={applyDateFilter}
-          >
-            {t('filter')}
-          </Button>
-          {(dateFrom || dateTo) && (
+          {searchInput && (
             <button
               type="button"
-              onClick={() => { setDateFrom(''); setDateTo(''); setDateFromInput(''); setDateToInput(''); setPage(0) }}
-              className="p-1 rounded-sm hover:bg-muted text-muted-foreground shrink-0"
-              title={t('clear_date_filter')}
+              onClick={() => setSearchInput('')}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded-sm hover:bg-muted text-muted-foreground"
+              title={t('clear_search')}
+              aria-label={t('clear_search')}
             >
-              <X className="h-4 w-4" />
+              <X className="h-3.5 w-3.5" />
             </button>
           )}
         </div>
+
+        <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
+          <DialogTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-2 text-xs shrink-0"
+              aria-label={
+                activeFilterCount > 0
+                  ? t('filter_with_count', { count: activeFilterCount })
+                  : t('filter')
+              }
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              {t('filter')}
+              {activeFilterCount > 0 && (
+                <Badge
+                  variant="secondary"
+                  className="h-4 min-w-4 justify-center px-1 text-[10px] tabular-nums"
+                >
+                  {activeFilterCount}
+                </Badge>
+              )}
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t('filter_dialog_title')}</DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {/* Räkenskapsår */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t('filter_section_period')}</Label>
+                <FiscalYearSelector
+                  value={periodId}
+                  onChange={handlePeriodChange}
+                  label={null}
+                  className="w-full"
+                />
+              </div>
+
+              {/* Sortering */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t('filter_section_sort')}</Label>
+                <Select
+                  value={sortBy}
+                  onValueChange={(v) => {
+                    const next = v as SortBy
+                    setSortBy(next)
+                    setPage(0)
+                    if (typeof window !== 'undefined') {
+                      window.localStorage.setItem(SORT_STORAGE_KEY_PREFIX + (company?.id ?? 'default'), next)
+                    }
+                  }}
+                >
+                  <SelectTrigger className="h-9 w-full text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="date_desc">{t('sort_date_desc')}</SelectItem>
+                    <SelectItem value="date_asc">{t('sort_date_asc')}</SelectItem>
+                    <SelectItem value="voucher_asc">{t('sort_voucher_asc')}</SelectItem>
+                    <SelectItem value="voucher_desc">{t('sort_voucher_desc')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Verifikationsserie */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t('filter_section_series')}</Label>
+                <Select value={seriesFilter} onValueChange={(v) => { setSeriesFilter(v); setPage(0) }}>
+                  <SelectTrigger className="h-9 w-full text-sm font-mono" aria-label={t('filter_section_series')}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Alla serier</SelectItem>
+                    {'ABCDEFG'.split('').map((letter) => (
+                      <SelectItem key={letter} value={letter} className="font-mono">
+                        Serie {letter}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Datumintervall */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t('filter_section_date')}</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="text"
+                    placeholder={t('date_from_placeholder')}
+                    value={dateFromInput}
+                    onChange={(e) => setDateFromInput(e.target.value)}
+                    onBlur={applyDateFilter}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        applyDateFilter()
+                      }
+                    }}
+                    className="h-9 flex-1 text-sm"
+                  />
+                  <span className="text-sm text-muted-foreground">–</span>
+                  <Input
+                    type="text"
+                    placeholder={t('date_to_placeholder')}
+                    value={dateToInput}
+                    onChange={(e) => setDateToInput(e.target.value)}
+                    onBlur={applyDateFilter}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        applyDateFilter()
+                      }
+                    }}
+                    className="h-9 flex-1 text-sm"
+                  />
+                  {(dateFrom || dateTo) && (
+                    <button
+                      type="button"
+                      onClick={() => { setDateFrom(''); setDateTo(''); setDateFromInput(''); setDateToInput(''); setPage(0) }}
+                      className="p-1 rounded-sm hover:bg-muted text-muted-foreground shrink-0"
+                      title={t('clear_date_filter')}
+                      aria-label={t('clear_date_filter')}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Visa saknade underlag */}
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="missing-attachments"
+                  checked={showMissingOnly}
+                  onCheckedChange={setShowMissingOnly}
+                />
+                <Label htmlFor="missing-attachments" className="text-sm cursor-pointer">
+                  {t('show_missing')}
+                </Label>
+                {showMissingOnly && (
+                  <Badge variant="secondary" className="text-xs tabular-nums">
+                    {filteredEntries.length}
+                  </Badge>
+                )}
+              </div>
+            </div>
+
+            <DialogFooter className="sm:justify-between">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearAllFilters}
+                disabled={activeFilterCount === 0}
+              >
+                {t('filter_clear_all')}
+              </Button>
+              <DialogClose asChild>
+                <Button variant="outline" size="sm">{t('filter_done')}</Button>
+              </DialogClose>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
+      {/* Active fiscal-year scope — visible without opening the filter dialog so
+          the user always sees which räkenskapsår the ledger is scoped to (BFL
+          period-correctness). Clicking it opens the dialog to change the scope. */}
+      {periodHydrated && scopeLabel && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>{t('scope_label')}</span>
+          <button
+            type="button"
+            onClick={() => setFilterOpen(true)}
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border px-2 font-medium text-foreground transition-colors duration-150 hover:bg-secondary/60"
+          >
+            {scopeLabel}
+            {(activePeriod?.locked_at || activePeriod?.is_closed) && (
+              <Lock className="h-3 w-3 text-muted-foreground" />
+            )}
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mb-3" />
+            <p className="text-sm text-muted-foreground">{t('loading')}</p>
+          </CardContent>
+        </Card>
+      ) : filteredEntries.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <div className="p-4 rounded-full bg-muted mb-4">
+              <Search className="h-6 w-6 text-muted-foreground" />
+            </div>
+            <h3 className="text-lg font-medium mb-1">{t('no_results_title')}</h3>
+            <p className="text-sm text-muted-foreground text-center max-w-sm">
+              {t('no_results_description')}
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
       <div className="space-y-2">
         {filteredEntries.map((entry) => {
           const isExpanded = expandedId === entry.id
@@ -385,6 +640,33 @@ export default function JournalEntryList({ periodId }: Props) {
                     <JournalEntryStatusBadge entry={entry} showStatus={entry.status === 'reversed' || entry.status === 'draft'} />
                   )}
                   <span className="flex-1 truncate">{entry.description}</span>
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground transition-colors duration-150 hover:bg-secondary"
+                  >
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={t('copy_voucher_tooltip')}
+                      title={t('copy_voucher_tooltip')}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        router.push(`/bookkeeping?copy_from=${entry.id}`)
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          router.push(`/bookkeeping?copy_from=${entry.id}`)
+                        }
+                      }}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </span>
+                  </Button>
                   {attachmentCounts[entry.id] ? (
                     <Button
                       asChild
@@ -461,6 +743,33 @@ export default function JournalEntryList({ periodId }: Props) {
                       <JournalEntryStatusBadge entry={entry} showStatus={entry.status === 'reversed' || entry.status === 'draft'} />
                     )}
                     <span className="ml-auto flex items-center gap-1">
+                      <Button
+                        asChild
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-muted-foreground transition-colors duration-150 hover:bg-secondary"
+                      >
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-label={t('copy_voucher_tooltip')}
+                          title={t('copy_voucher_tooltip')}
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            router.push(`/bookkeeping?copy_from=${entry.id}`)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              router.push(`/bookkeeping?copy_from=${entry.id}`)
+                            }
+                          }}
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </span>
+                      </Button>
                       {attachmentCounts[entry.id] ? (
                         <Button
                           asChild
@@ -638,6 +947,7 @@ export default function JournalEntryList({ periodId }: Props) {
           )
         })}
       </div>
+      )}
 
       {/* Correction dialog */}
       {correctionEntry && (
