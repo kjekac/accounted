@@ -9003,7 +9003,11 @@ export const tools: McpTool[] = [
 // ── MCP Protocol Handler ─────────────────────────────────────
 
 const SERVER_INFO = {
+  // `name` is a stable identifier clients may key state on — stays 'gnubok'
+  // per the rebrand rule. `title` is the human-readable display name
+  // (MCP spec 2025-06-18).
   name: 'gnubok',
+  title: 'Accounted',
   version: '1.0.0',
 }
 
