@@ -73,11 +73,22 @@ import {
 } from '@/lib/email/invoice-templates'
 import { uploadDocument, MAX_DOCUMENT_SIZE } from '@/lib/core/documents/document-service'
 import { extractInvoiceFields, ExtractionSchema as InvoiceExtractionSchema } from '@/extensions/general/invoice-inbox/lib/extract-invoice-fields'
+// Skatteverket filing tools (PR5). Cross-extension lib import, same sanctioned
+// pattern as invoice-inbox above — the CI guard only checks lib/, app/api/,
+// components/. The two submit tools stage ops whose commit dispatches back into
+// the skatteverket extension via the registry (lib/pending-operations/commit.ts).
+import { skvRequest, SkatteverketAuthError } from '@/extensions/general/skatteverket/lib/api-client'
+import { agiGetKvittenser } from '@/extensions/general/skatteverket/lib/agi-client'
+import { buildMomsuppgift, resolveRedovisare } from '@/extensions/general/skatteverket/lib/declaration-prep'
+import { writeSkatteverketAudit } from '@/extensions/general/skatteverket/lib/audit'
+import { skvAuthCodeToStructured } from '@/extensions/general/skatteverket/lib/error-map'
+import { formatRedovisningsperiod } from '@/lib/skatteverket/format'
+import { createExtensionContext } from '@/lib/extensions/context-factory'
 import { commitPendingOperation } from '@/lib/pending-operations/commit'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 // ensureInitialized() is called by the extension router (ext/[...path]/route.ts)
 // which dispatches to this handler — no duplicate call needed here.
-import type { Transaction, TransactionCategory, EntityType, VatTreatment, Invoice, Currency, CompanySettings, Customer, InvoiceItem, PendingOperation } from '@/types'
+import type { Transaction, TransactionCategory, EntityType, VatTreatment, Invoice, Currency, CompanySettings, Customer, InvoiceItem, PendingOperation, VatPeriodType } from '@/types'
 
 // ── Actor context ────────────────────────────────────────────
 
@@ -364,6 +375,40 @@ async function stagePendingOperation(
     )
   }
   return response
+}
+
+// ── Skatteverket filing helpers (PR5) ────────────────────────
+//
+// Direct lib calls bypass the HTTP dispatcher's SKATTEVERKET_ENABLED gate, so
+// every Skatteverket tool gates on it first (before any DB/SKV access).
+// mapSkatteverketError re-attaches a registry code to a SkatteverketAuthError
+// so toToolError/getStructuredError surface the right structured envelope +
+// reconnect remediation (the raw SKV codes aren't registry entries).
+
+function assertSkatteverketEnabled(): void {
+  if (process.env.SKATTEVERKET_ENABLED !== 'true') {
+    const err = new Error('Skatteverket-integrationen är inte aktiverad i denna miljö.') as Error & { code: string }
+    err.code = 'EXTENSION_DISABLED'
+    throw err
+  }
+}
+
+function mapSkatteverketError(err: unknown): Error {
+  if (err instanceof SkatteverketAuthError) {
+    const mapped = skvAuthCodeToStructured(err.code)
+    const out = new Error(err.message) as Error & { code: string }
+    out.code = mapped.code
+    return out
+  }
+  return err instanceof Error ? err : new Error(String(err))
+}
+
+/** YYYYMM → last day of that month as yyyy-MM-dd (for dateForPeriodCheck). */
+function skvPeriodToEndDate(redovisningsperiod: string): string {
+  const year = Number(redovisningsperiod.slice(0, 4))
+  const month = Number(redovisningsperiod.slice(4, 6))
+  const lastDay = new Date(year, month, 0).getDate()
+  return `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 }
 
 // ── Journal entry reference resolution ────────────────────────
@@ -803,6 +848,42 @@ const VAT_REPORT_OUTPUT_SCHEMA = {
     },
   },
   required: ['period', 'period_label', 'rutor', 'summary', 'warnings'],
+} as const
+
+// ── Skatteverket filing read-tool output schemas (PR5) ──
+// Kept shallow (opaque object/null sub-objects) to stay within the tools/list
+// payload budget; the SKV response shapes live in the extension types.
+const SKV_VAT_VALIDATE_OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    redovisare: { type: 'string', description: '12-digit redovisare' },
+    redovisningsperiod: { type: 'string', description: 'YYYYMM' },
+    momsuppgift: { type: 'object', description: 'The momsuppgift payload sent to Skatteverket' },
+    kontrollresultat: { type: 'object', description: 'Skatteverket kontrollresultat (status + per-ruta fel/varningar)' },
+  },
+  required: ['redovisare', 'redovisningsperiod', 'momsuppgift', 'kontrollresultat'],
+} as const
+
+const SKV_VAT_STATUS_OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    redovisare: { type: 'string', description: '12-digit redovisare' },
+    redovisningsperiod: { type: 'string', description: 'YYYYMM' },
+    submitted: { type: ['object', 'null'], description: 'Inlämnad deklaration, or null if none on file' },
+    decided: { type: ['object', 'null'], description: 'Beslutad deklaration, or null if not yet decided' },
+  },
+  required: ['redovisare', 'redovisningsperiod', 'submitted', 'decided'],
+} as const
+
+const SKV_AGI_STATUS_OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    salary_run_id: { type: 'string' },
+    period: { type: 'string', description: 'YYYYMM' },
+    local_state: { type: ['object', 'null'], description: 'Locally cached submission state' },
+    kvittenser: { type: ['array', 'null'], description: 'Signed receipts from Skatteverket, or null when unavailable' },
+  },
+  required: ['salary_run_id', 'period', 'local_state', 'kvittenser'],
 } as const
 
 // ── VAT report computation (shared by gnubok_get_vat_report + gnubok_vat_review_widget) ──
@@ -6581,6 +6662,307 @@ export const tools: McpTool[] = [
         undefined,
         run.payment_date ? { dateForPeriodCheck: run.payment_date } : {},
       )
+    },
+  },
+
+  // ── PR5: Skatteverket filing (external system, openWorldHint) ──────
+  //
+  // VAT (momsdeklaration) + AGI (arbetsgivardeklaration) filing from Claude.
+  // Reads hit SKV live (and write BFL audit rows); the two submit tools stage
+  // high-risk ops whose commit "sends for BankID signing" — the user's
+  // signature in the browser is the irreversible filing act, not the commit.
+
+  {
+    name: 'gnubok_vat_declaration_validate',
+    title: 'Validate VAT Declaration (Momsdeklaration)',
+    description: 'Live-validate the period momsdeklaration with Skatteverket (POST /kontrollera) — read-only at SKV, saves nothing. Returns kontrollresultat (fel/varningar per ruta) so you can fix the underlag before submitting.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        period_type: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'], description: 'Period type' },
+        year: { type: 'number', description: 'Year (e.g. 2026)' },
+        period: { type: 'number', description: '1–12 for monthly, 1–4 for quarterly, 1 for yearly' },
+      },
+      required: ['period_type', 'year', 'period'],
+    },
+    outputSchema: SKV_VAT_VALIDATE_OUTPUT_SCHEMA,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    async execute(args, companyId, userId, supabase) {
+      assertSkatteverketEnabled()
+      const periodType = args.period_type as VatPeriodType
+      const year = args.year as number
+      const period = args.period as number
+      const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
+      try {
+        const { redovisare, redovisningsperiod, momsuppgift } =
+          await buildMomsuppgift(supabase, companyId, { periodType, year, period })
+        const res = await skvRequest(
+          supabase, userId, 'POST', `/kontrollera/${redovisare}/${redovisningsperiod}`, momsuppgift,
+        )
+        await writeSkatteverketAudit(ctx, {
+          endpoint: 'kontrollera', agRegistreradId: redovisare, redovisningsperiod,
+          outcome: res.ok ? 'ok' : 'skv_error', responseStatus: res.status,
+        })
+        if (!res.ok) {
+          const text = await res.text().catch(() => '')
+          throw new Error(`Skatteverket svarade med ${res.status}: ${text}`)
+        }
+        const kontrollresultat = await res.json()
+        return { redovisare, redovisningsperiod, momsuppgift, kontrollresultat }
+      } catch (err) {
+        throw mapSkatteverketError(err)
+      }
+    },
+  },
+
+  {
+    name: 'gnubok_vat_declaration_submit',
+    title: 'Submit VAT Declaration (Momsdeklaration)',
+    description: 'Stage the period momsdeklaration for filing with Skatteverket. High-risk — approval sends it for BankID signing (returns a signing link); it is not filed until you sign. Always staged.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        period_type: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'], description: 'Period type' },
+        year: { type: 'number', description: 'Year (e.g. 2026)' },
+        period: { type: 'number', description: '1–12 for monthly, 1–4 for quarterly, 1 for yearly' },
+      },
+      required: ['period_type', 'year', 'period'],
+    },
+    outputSchema: STAGED_OPERATION_SCHEMA,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    async execute(args, companyId, userId, supabase, actor) {
+      assertSkatteverketEnabled()
+      const periodType = args.period_type as VatPeriodType
+      const year = args.year as number
+      const period = args.period as number
+      const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
+      // Mandatory stage-time validation: the preview carries the real
+      // kontrollresultat and we never stage a declaration SKV would reject.
+      // /kontrollera is read-only on SKV's side. Shares buildMomsuppgift with
+      // the commit executor so preview numbers == filed numbers.
+      const prepared = await (async () => {
+        try {
+          const prep = await buildMomsuppgift(supabase, companyId, { periodType, year, period })
+          const res = await skvRequest(
+            supabase, userId, 'POST', `/kontrollera/${prep.redovisare}/${prep.redovisningsperiod}`, prep.momsuppgift,
+          )
+          await writeSkatteverketAudit(ctx, {
+            endpoint: 'kontrollera', agRegistreradId: prep.redovisare, redovisningsperiod: prep.redovisningsperiod,
+            outcome: res.ok ? 'ok' : 'skv_error', responseStatus: res.status,
+          })
+          if (!res.ok) {
+            const text = await res.text().catch(() => '')
+            throw new Error(`Skatteverket svarade med ${res.status}: ${text}`)
+          }
+          return { ...prep, kontrollresultat: await res.json() }
+        } catch (err) {
+          throw mapSkatteverketError(err)
+        }
+      })()
+      return stagePendingOperation(
+        supabase, companyId, userId, 'submit_vat_declaration',
+        `Lämna momsdeklaration: ${prepared.redovisningsperiod}`,
+        { period_type: periodType, year, period },
+        {
+          redovisningsperiod: prepared.redovisningsperiod,
+          redovisare: prepared.redovisare,
+          rutor: prepared.momsuppgift,
+          kontrollresultat: prepared.kontrollresultat,
+          commit_action: 'Skickar för BankID-signering; lämnas inte in förrän du signerat.',
+        },
+        actor,
+        {
+          description: 'After approval, sign in Skatteverket via the returned BankID link, then poll gnubok_vat_declaration_status.',
+          tool: 'gnubok_vat_declaration_status',
+          args: { period_type: periodType, year, period },
+        },
+        { dateForPeriodCheck: skvPeriodToEndDate(prepared.redovisningsperiod) },
+      )
+    },
+  },
+
+  {
+    name: 'gnubok_vat_declaration_status',
+    title: 'VAT Declaration Status (Momsdeklaration)',
+    description: 'Fetch the filing status of a momsdeklaration from Skatteverket: inlämnat (submitted) and/or beslutat (decided). Sections are null when nothing is on file yet.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        period_type: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'], description: 'Period type' },
+        year: { type: 'number', description: 'Year (e.g. 2026)' },
+        period: { type: 'number', description: '1–12 for monthly, 1–4 for quarterly, 1 for yearly' },
+        state: { type: 'string', enum: ['submitted', 'decided', 'both'], description: "Which view to fetch. Default 'both'." },
+      },
+      required: ['period_type', 'year', 'period'],
+    },
+    outputSchema: SKV_VAT_STATUS_OUTPUT_SCHEMA,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    async execute(args, companyId, userId, supabase) {
+      assertSkatteverketEnabled()
+      const periodType = args.period_type as VatPeriodType
+      const year = args.year as number
+      const period = args.period as number
+      const state = (args.state as string) ?? 'both'
+      const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
+      try {
+        const redovisare = await resolveRedovisare(supabase, companyId)
+        const redovisningsperiod = formatRedovisningsperiod(periodType, year, period)
+        let submitted: unknown = null
+        let decided: unknown = null
+        if (state === 'submitted' || state === 'both') {
+          const res = await skvRequest(supabase, userId, 'GET', `/inlamnat/${redovisare}/${redovisningsperiod}`)
+          await writeSkatteverketAudit(ctx, {
+            endpoint: 'inlamnat', agRegistreradId: redovisare, redovisningsperiod,
+            outcome: res.ok || res.status === 404 ? 'ok' : 'skv_error', responseStatus: res.status,
+          })
+          if (res.status !== 404) {
+            if (!res.ok) {
+              const text = await res.text().catch(() => '')
+              throw new Error(`Skatteverket svarade med ${res.status}: ${text}`)
+            }
+            submitted = await res.json()
+          }
+        }
+        if (state === 'decided' || state === 'both') {
+          const res = await skvRequest(supabase, userId, 'GET', `/beslutat/${redovisare}/${redovisningsperiod}`)
+          await writeSkatteverketAudit(ctx, {
+            endpoint: 'beslutat', agRegistreradId: redovisare, redovisningsperiod,
+            outcome: res.ok || res.status === 404 ? 'ok' : 'skv_error', responseStatus: res.status,
+          })
+          if (res.status !== 404) {
+            if (!res.ok) {
+              const text = await res.text().catch(() => '')
+              throw new Error(`Skatteverket svarade med ${res.status}: ${text}`)
+            }
+            decided = await res.json()
+          }
+        }
+        return { redovisare, redovisningsperiod, submitted, decided }
+      } catch (err) {
+        throw mapSkatteverketError(err)
+      }
+    },
+  },
+
+  {
+    name: 'gnubok_agi_submit',
+    title: 'Submit AGI Declaration (Arbetsgivardeklaration)',
+    description: "Stage filing of a salary run's arbetsgivardeklaration (AGI) with Skatteverket. High-risk — approval posts the XML underlag and returns a BankID signing link; it is not filed until you sign. Always staged.",
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        salary_run_id: { type: 'string', description: 'UUID of the salary run' },
+      },
+      required: ['salary_run_id'],
+    },
+    outputSchema: STAGED_OPERATION_SCHEMA,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    async execute(args, companyId, userId, supabase, actor) {
+      assertSkatteverketEnabled()
+      const salaryRunId = args.salary_run_id as string
+      if (!salaryRunId) throw new Error('salary_run_id is required')
+      // Local preconditions only — NO SKV call at stage time. The commit
+      // executor posts the underlag + creates the granskningsunderlag on approval.
+      const { data: run } = await supabase
+        .from('salary_runs')
+        .select('id, status, period_year, period_month, payment_date')
+        .eq('id', salaryRunId)
+        .eq('company_id', companyId)
+        .maybeSingle()
+      if (!run) throw new Error('Salary run not found')
+      const { data: decl } = await supabase
+        .from('agi_declarations')
+        .select('id, status, xml_content')
+        .eq('salary_run_id', salaryRunId)
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (!decl?.xml_content) {
+        throw new Error('AGI-underlag saknas — generera AGI först med gnubok_generate_agi.')
+      }
+      const period = `${run.period_year}-${String(run.period_month).padStart(2, '0')}`
+      return stagePendingOperation(
+        supabase, companyId, userId, 'submit_agi',
+        `Lämna AGI: ${period}`,
+        { salary_run_id: salaryRunId },
+        {
+          period,
+          salary_run_status: run.status,
+          agi_declaration_id: decl.id,
+          retention_years: 7,
+          commit_action: 'Skickar underlag + returnerar BankID-signeringslänk; lämnas inte in förrän du signerat.',
+        },
+        actor,
+        {
+          description: 'After approval, sign via the returned BankID link, then poll gnubok_agi_status.',
+          tool: 'gnubok_agi_status',
+          args: { salary_run_id: salaryRunId },
+        },
+        run.payment_date ? { dateForPeriodCheck: run.payment_date } : {},
+      )
+    },
+  },
+
+  {
+    name: 'gnubok_agi_status',
+    title: 'AGI Declaration Status (Arbetsgivardeklaration)',
+    description: 'Fetch AGI filing status for a salary run: local submission state plus live Skatteverket kvittenser (signed receipts) when available. Returns kvittensnummer/signeradTid once the AGI has been signed.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        salary_run_id: { type: 'string', description: 'UUID of the salary run' },
+      },
+      required: ['salary_run_id'],
+    },
+    outputSchema: SKV_AGI_STATUS_OUTPUT_SCHEMA,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    async execute(args, companyId, userId, supabase) {
+      assertSkatteverketEnabled()
+      const salaryRunId = args.salary_run_id as string
+      if (!salaryRunId) throw new Error('salary_run_id is required')
+      const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
+      try {
+        const { data: run } = await supabase
+          .from('salary_runs')
+          .select('id, period_year, period_month')
+          .eq('id', salaryRunId)
+          .eq('company_id', companyId)
+          .maybeSingle()
+        if (!run) throw new Error('Salary run not found')
+        const arbetsgivare = await resolveRedovisare(supabase, companyId)
+        const period = formatRedovisningsperiod('monthly', run.period_year, run.period_month)
+        // Local cached submission state (extension_data key agi_submission_${period}).
+        const { data: localRow } = await supabase
+          .from('extension_data')
+          .select('value')
+          .eq('company_id', companyId)
+          .eq('extension_id', 'skatteverket')
+          .eq('key', `agi_submission_${period}`)
+          .maybeSingle()
+        let localState: unknown = null
+        if (localRow?.value) {
+          try { localState = JSON.parse(localRow.value as string) } catch { localState = null }
+        }
+        // Live kvittenser (read-only). A non-ok read (e.g. nothing filed yet)
+        // leaves kvittenser null rather than hard-failing the status check;
+        // auth errors throw and map to SKATTEVERKET_NOT_CONNECTED.
+        let kvittenser: unknown = null
+        const res = await agiGetKvittenser(supabase, userId, arbetsgivare, period)
+        await writeSkatteverketAudit(ctx, {
+          endpoint: 'kvittenser', agRegistreradId: arbetsgivare, redovisningsperiod: period,
+          outcome: res.ok ? 'ok' : 'skv_error', responseStatus: res.status,
+        })
+        if (res.ok) kvittenser = res.data.kvittenser
+        return { salary_run_id: salaryRunId, period, local_state: localState, kvittenser }
+      } catch (err) {
+        throw mapSkatteverketError(err)
+      }
     },
   },
 

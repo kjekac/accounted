@@ -26,7 +26,8 @@ export const API_KEY_SCOPES = {
   'operations:read':    { label: 'Operationer — läs',    description: 'Hämta status för långkörande operationer (importer, bokslut, omvärdering)' },
   'documents:read':     { label: 'Dokument — läs',       description: 'Lista och hämta dokumentbilagor' },
   'documents:write':    { label: 'Dokument — skriv',     description: 'Ladda upp och koppla dokument till verifikationer' },
-  'compliance:read':    { label: 'Compliance — läs',     description: 'Pre-flight-kontroller: momsstängning, bokslutsberedskap, voucher-gap, IB/UB-kontinuitet' },
+  'compliance:read':    { label: 'Compliance — läs',     description: 'Pre-flight-kontroller: momsstängning, bokslutsberedskap, voucher-gap, IB/UB-kontinuitet; Skatteverket-status (moms + AGI)' },
+  'skatteverket:write': { label: 'Skatteverket — skriv', description: 'Lämna momsdeklaration och arbetsgivardeklaration (AGI) till Skatteverket (stagas; signeras med BankID)' },
   'agent:read':         { label: 'Agent — läs',          description: 'Specialiserad bokföringsassistent: profil, laddade specialister/atomer, minnen (briefing + skill-katalog)' },
   'agent:write':        { label: 'Agent — skriv',        description: 'Spara och ta bort agentens minnen om företaget (remember_fact, forget_fact)' },
   'pending_operations:read':    { label: 'Stagade operationer — läs',     description: 'Lista pending_operations (staged writes awaiting approval)' },
@@ -113,6 +114,10 @@ export const STAGING_SCOPES: ApiKeyScope[] = [
   'bookkeeping:write',
   'payroll:write',
   'documents:write',
+  // Skatteverket submit tools stage submit_vat_declaration / submit_agi, so a
+  // key holding both this and pending_operations:approve is a SoD conflict —
+  // findStageApproveConflict picks it up automatically from this list.
+  'skatteverket:write',
 ]
 
 /**
@@ -142,6 +147,7 @@ export const SCOPE_GROUPS = [
   { domain: 'payroll',             label: 'Löner',                read: 'payroll:read' as const,             write: 'payroll:write' as const },
   { domain: 'pending_operations',  label: 'Stagade operationer',  read: 'pending_operations:read' as const,  write: 'pending_operations:approve' as const },
   { domain: 'agent',               label: 'Agent',                read: 'agent:read' as const,               write: 'agent:write' as const },
+  { domain: 'skatteverket',        label: 'Skatteverket',         read: null,                                 write: 'skatteverket:write' as const },
 ] as const
 
 /** Map MCP tool name → required scope. Tools omitted from this map are available to any authenticated key (e.g. discovery/search/skill loading). */
@@ -247,6 +253,13 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_list_pending_operations:         'pending_operations:read',
   gnubok_approve_pending_operation:       'pending_operations:approve',
   gnubok_reject_pending_operation:        'pending_operations:approve',
+  // Skatteverket filing (PR5). Reads are compliance:read (status of moms/AGI);
+  // the two submit tools require the opt-in skatteverket:write staging scope.
+  gnubok_vat_declaration_validate:        'compliance:read',
+  gnubok_vat_declaration_status:          'compliance:read',
+  gnubok_agi_status:                      'compliance:read',
+  gnubok_vat_declaration_submit:          'skatteverket:write',
+  gnubok_agi_submit:                      'skatteverket:write',
 }
 
 export function validateScopes(scopes: unknown): ApiKeyScope[] | null {

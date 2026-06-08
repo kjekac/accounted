@@ -129,8 +129,14 @@ const SCOPE_GROUPS: ScopeGroup[] = [
   {
     domain: 'compliance',
     labelKey: 'group_compliance',
-    read: { scope: 'compliance:read', labelKey: 'scope_compliance_read', tools: 0 },
+    read: { scope: 'compliance:read', labelKey: 'scope_compliance_read', tools: 3 },
     write: null,
+  },
+  {
+    domain: 'skatteverket',
+    labelKey: 'group_skatteverket',
+    read: null,
+    write: { scope: 'skatteverket:write', labelKey: 'scope_skatteverket_write', tools: 2 },
   },
 ]
 

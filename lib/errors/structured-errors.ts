@@ -2200,6 +2200,45 @@ const BULK_BOOK: Record<string, StructuredErrorEntry> = {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Skatteverket filing codes (PR5 — MCP momsdeklaration + AGI tools)
+// ─────────────────────────────────────────────────────────────────
+
+const SKATTEVERKET: Record<string, StructuredErrorEntry> = {
+  EXTENSION_DISABLED: {
+    httpStatus: 503,
+    message_sv: 'Skatteverket-integrationen är inte aktiverad i denna miljö.',
+    message_en: 'The Skatteverket integration is not enabled in this environment.',
+  },
+  SKATTEVERKET_NOT_CONNECTED: {
+    httpStatus: 401,
+    message_sv:
+      'Anslutningen till Skatteverket saknas eller har gått ut. Anslut med BankID under Inställningar → Skatteverket.',
+    message_en: 'No valid Skatteverket connection. Reconnect with BankID before retrying.',
+    remediation: {
+      description:
+        'Connect (or reconnect) to Skatteverket with BankID under Settings → Skatteverket, then retry.',
+    },
+  },
+  SKATTEVERKET_ACCESS_DENIED: {
+    httpStatus: 403,
+    message_sv:
+      'Behörighet saknas hos Skatteverket för det här företaget. Kontrollera att du är firmatecknare eller deklarationsombud.',
+    message_en:
+      'Skatteverket denied access for this company (missing authorisation or scope).',
+    remediation: {
+      description:
+        'Verify the signed-in user is firmatecknare/deklarationsombud for this company at Skatteverket, then reconnect with BankID.',
+    },
+  },
+  SKATTEVERKET_RATE_LIMITED: {
+    httpStatus: 429,
+    message_sv: 'För många förfrågningar mot Skatteverket. Vänta en stund och försök igen.',
+    message_en: 'Skatteverket rate limit exceeded.',
+    retryable: true,
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Combined registry
 // ─────────────────────────────────────────────────────────────────
 
@@ -2238,6 +2277,7 @@ const REGISTRY: Record<string, StructuredErrorEntry> = {
   ...COMPANY,
   ...API_KEY,
   ...PROVIDER,
+  ...SKATTEVERKET,
 }
 
 export function getErrorEntry(code: string): StructuredErrorEntry | undefined {

@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Extension, ExtensionContext } from '@/lib/extensions/types'
 import { NextResponse } from 'next/server'
 import {
@@ -10,8 +11,16 @@ import { TimeoutError } from '@/lib/http/fetch-with-timeout'
 import { buildAuthorizeUrl, exchangeCodeForTokens, generatePkcePair } from './lib/oauth'
 import { storeTokens, getTokens, deleteTokens } from './lib/token-store'
 import { skvRequest, SkatteverketAuthError, getSkatteverketEnvironment } from './lib/api-client'
-import { rutorToMomsuppgift, formatRedovisare, formatRedovisningsperiod } from './lib/mappers'
-import { calculateVatDeclaration } from '@/lib/reports/vat-declaration'
+import { writeSkatteverketAudit } from './lib/audit'
+import { skvAuthCodeToStructured } from './lib/error-map'
+import {
+  buildMomsuppgift,
+  buildAgiUnderlag,
+  type VatDeclarationPrep,
+  type AgiUnderlagPrep,
+} from './lib/declaration-prep'
+import { createExtensionContext } from '@/lib/extensions/context-factory'
+import type { SkvSubmitResult } from '@/lib/pending-operations/skatteverket-commit'
 import {
   agiPostUnderlag,
   agiGetKontrollresultat,
@@ -35,7 +44,7 @@ import {
   SkattekontoMatchError,
 } from './lib/skattekonto-match'
 import { splitTransactions } from './lib/skattekonto-buckets'
-import type { SkattekontoBalanceSnapshot } from './types'
+import type { SkattekontoBalanceSnapshot, SkatteverketUtkastResponse } from './types'
 import type { VatPeriodType } from '@/types'
 
 /**
@@ -129,57 +138,6 @@ async function requireAgiWriteRole(ctx: ExtensionContext): Promise<NextResponse 
     )
   }
   return null
-}
-
-/**
- * Append an immutable row to skatteverket_api_audit_log. Errors are
- * swallowed (logged only) so an audit-table outage does not break the
- * regulator flow — but a successful primary call without an audit row
- * shows up as a noisy console.error for ops to investigate.
- */
-async function writeSkatteverketAudit(
-  ctx: ExtensionContext,
-  fields: {
-    endpoint: string
-    agRegistreradId?: string | null
-    redovisningsperiod?: string | null
-    outcome: 'ok' | 'validation_error' | 'skv_error' | 'auth_error' | 'internal_error'
-    responseStatus?: number | null
-    skvStatus?: string | null
-    requestSizeBytes?: number | null
-    correlationId?: string | null
-    errorMessage?: string | null
-  },
-): Promise<void> {
-  try {
-    const { error } = await ctx.supabase
-      .from('skatteverket_api_audit_log')
-      .insert({
-        company_id: ctx.companyId,
-        user_id: ctx.userId,
-        endpoint: fields.endpoint,
-        ag_registered_id: fields.agRegistreradId ?? null,
-        redovisningsperiod: fields.redovisningsperiod ?? null,
-        outcome: fields.outcome,
-        response_status: fields.responseStatus ?? null,
-        skv_status: fields.skvStatus ?? null,
-        request_size_bytes: fields.requestSizeBytes ?? null,
-        correlation_id: fields.correlationId ?? null,
-        error_message: fields.errorMessage ?? null,
-      })
-    if (error) {
-      ctx.log.error('skatteverket_api_audit_log insert failed', {
-        endpoint: fields.endpoint,
-        outcome: fields.outcome,
-        error: error.message,
-      })
-    }
-  } catch (err) {
-    ctx.log.error('skatteverket_api_audit_log insert threw', {
-      endpoint: fields.endpoint,
-      error: err instanceof Error ? err.message : String(err),
-    })
-  }
 }
 
 export const skatteverketExtension: Extension = {
@@ -1901,22 +1859,32 @@ export const skatteverketExtension: Extension = {
       handler: handleSkattekontoDriftDetected,
     },
   ],
+
+  // Registry-resolved commit services for the MCP submit tools. The core
+  // pending-operations dispatcher (lib/pending-operations/commit.ts) cannot
+  // import this extension (CI guard), so it reaches these through
+  // extensionRegistry.get('skatteverket')?.services when committing a staged
+  // submit_vat_declaration / submit_agi operation. Commit = "send for BankID
+  // signing" (returns a signing link), never "file".
+  services: {
+    commitSubmitVatDeclaration,
+    commitSubmitAgi,
+  },
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
 /**
- * Parse and validate declaration request body.
- * Computes momsuppgift from Accounted's VAT calculation if not provided directly.
+ * Parse and validate declaration request body, then compute the momsuppgift.
+ *
+ * The computation itself lives in lib/declaration-prep.ts (buildMomsuppgift)
+ * so the commit-side service and MCP tools file exactly the same numbers this
+ * route does — see the no-drift note there. This shell only parses the body.
  */
 async function parseDeclarationRequest(
   request: Request,
   ctx: ExtensionContext
-): Promise<{
-  redovisare: string
-  redovisningsperiod: string
-  momsuppgift: ReturnType<typeof rutorToMomsuppgift>
-}> {
+): Promise<VatDeclarationPrep> {
   const body = await request.json()
   const { periodType, year, period } = body as {
     periodType: VatPeriodType
@@ -1928,32 +1896,7 @@ async function parseDeclarationRequest(
     throw new Error('Saknar obligatoriska fält: periodType, year, period')
   }
 
-  // Get company settings for redovisare formatting
-  const { data: settings } = await ctx.supabase
-    .from('company_settings')
-    .select('org_number, entity_type')
-    .eq('company_id', ctx.companyId)
-    .single()
-
-  if (!settings?.org_number) {
-    throw new Error('Organisationsnummer saknas i företagsinställningar')
-  }
-
-  const redovisare = formatRedovisare(settings.org_number, settings.entity_type)
-  const redovisningsperiod = formatRedovisningsperiod(periodType, year, period)
-
-  // Calculate VAT declaration from the general ledger
-  const declaration = await calculateVatDeclaration(
-    ctx.supabase,
-    ctx.companyId,
-    periodType,
-    year,
-    period
-  )
-
-  const momsuppgift = rutorToMomsuppgift(declaration.rutor)
-
-  return { redovisare, redovisningsperiod, momsuppgift }
+  return buildMomsuppgift(ctx.supabase, ctx.companyId, { periodType, year, period })
 }
 
 /**
@@ -1982,80 +1925,16 @@ function parseQueryParams(
  * Load the AGI XML for a salary run from agi_declarations.xml_content
  * (built by app/api/salary/runs/[id]/agi/xml/route.ts via generateAGIXml).
  *
- * Returns the XML alongside the formatted arbetsgivare/period strings used
- * downstream by the granskningsunderlag and kvittenser endpoints.
- *
- * Skatteverket's POST /underlag accepts XML directly; we don't transform it
- * here, just plumb it through.
+ * The lookup + status guard live in lib/declaration-prep.ts (buildAgiUnderlag)
+ * so the commit-side service files the same XML this route does. This shell
+ * only parses the salaryRunId from the body.
  */
 async function loadAGIXml(
   request: Request,
   ctx: ExtensionContext,
-): Promise<{
-  arbetsgivare: string
-  period: string
-  salaryRunId: string
-  xml: string
-}> {
+): Promise<AgiUnderlagPrep> {
   const body = (await request.json()) as { salaryRunId?: string }
-  const salaryRunId = body.salaryRunId
-  if (!salaryRunId) {
-    throw new Error('Saknar obligatoriskt fält: salaryRunId')
-  }
-
-  // Status guard — must mirror the orchestrator at
-  // app/api/salary/runs/[id]/agi/submit/route.ts. The extension endpoint
-  // is also reachable directly from AGIPanel, so the check has to live here
-  // too. Per BFL 5 kap and SFL 26 kap, AGI must reflect finalised payroll
-  // data; submitting from a draft/cancelled run would emit incorrect figures
-  // and require a costly rättelse.
-  const { data: run, error: runError } = await ctx.supabase
-    .from('salary_runs')
-    .select('status')
-    .eq('id', salaryRunId)
-    .eq('company_id', ctx.companyId)
-    .single()
-
-  if (runError || !run) {
-    throw new Error('Lönekörning hittades inte')
-  }
-
-  if (!['review', 'approved', 'paid', 'booked'].includes(run.status)) {
-    throw new Error('AGI kan bara skickas till Skatteverket efter granskning')
-  }
-
-  const { data: settings } = await ctx.supabase
-    .from('company_settings')
-    .select('org_number, entity_type')
-    .eq('company_id', ctx.companyId)
-    .single()
-
-  if (!settings?.org_number) {
-    throw new Error('Organisationsnummer saknas i företagsinställningar')
-  }
-
-  // Use the most recent agi_declarations row for this salary run — covers
-  // both new declarations and corrections (which overwrite xml_content
-  // in place per the existing /api/salary/runs/[id]/agi/xml route).
-  const { data: declaration, error: declarationError } = await ctx.supabase
-    .from('agi_declarations')
-    .select('xml_content, period_year, period_month')
-    .eq('company_id', ctx.companyId)
-    .eq('salary_run_id', salaryRunId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (declarationError || !declaration?.xml_content) {
-    throw new Error(
-      'AGI-XML saknas. Generera AGI-filen från lönekörningen först (Lön → AGI → Generera).',
-    )
-  }
-
-  const arbetsgivare = formatRedovisare(settings.org_number, settings.entity_type)
-  const period = formatRedovisningsperiod('monthly', declaration.period_year, declaration.period_month)
-
-  return { arbetsgivare, period, salaryRunId, xml: declaration.xml_content }
+  return buildAgiUnderlag(ctx.supabase, ctx.companyId, body.salaryRunId ?? '')
 }
 
 /**
@@ -2086,4 +1965,265 @@ function handleSkvError(err: unknown): NextResponse {
     { error: err instanceof Error ? err.message : 'Okänt fel' },
     { status: 500 }
   )
+}
+
+// ── MCP submit commit services ─────────────────────────────────────────
+//
+// Registry-resolved by lib/pending-operations/commit.ts when a staged
+// submit_vat_declaration / submit_agi op is approved. "Commit" runs the SKV
+// chain up to the BankID signing link and returns it — the user's signature in
+// the browser is the irreversible filing act, outside this code.
+//
+// Direct lib calls bypass the HTTP dispatcher's SKATTEVERKET_ENABLED gate
+// (app/api/extensions/ext/[...path]/route.ts), so each service checks the flag
+// itself and returns a recoverable EXTENSION_DISABLED result (the op stays
+// reviewable). SkatteverketAuthError (no connection / scope / quota) is
+// likewise recoverable. SKV business rejections are non-recoverable → the op
+// is consumed and the user regenerates + re-stages.
+
+function skatteverketEnabled(): boolean {
+  return process.env.SKATTEVERKET_ENABLED === 'true'
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+const EXTENSION_DISABLED_RESULT: Extract<SkvSubmitResult, { ok: false }> = {
+  ok: false,
+  code: 'EXTENSION_DISABLED',
+  http_status: 503,
+  recoverable: true,
+  error: 'Skatteverket-integrationen är inte aktiverad i denna miljö.',
+}
+
+/**
+ * Translate a thrown error inside a commit service to a SkvSubmitResult.
+ * SkatteverketAuthError (connection / scope / quota) is recoverable — the op
+ * stays reviewable so the user reconnects and re-approves. Anything else is a
+ * non-recoverable internal error → the op is rejected.
+ */
+async function mapServiceError(
+  ctx: ExtensionContext,
+  endpoint: string,
+  err: unknown,
+): Promise<Extract<SkvSubmitResult, { ok: false }>> {
+  if (err instanceof SkatteverketAuthError) {
+    const mapped = skvAuthCodeToStructured(err.code)
+    await writeSkatteverketAudit(ctx, { endpoint, outcome: 'auth_error', errorMessage: err.message })
+    return { ok: false, code: mapped.code, http_status: mapped.httpStatus, recoverable: true, error: err.message }
+  }
+  await writeSkatteverketAudit(ctx, {
+    endpoint,
+    outcome: 'internal_error',
+    errorMessage: err instanceof Error ? err.message : String(err),
+  })
+  return {
+    ok: false,
+    code: 'SKATTEVERKET_INTERNAL_ERROR',
+    http_status: 500,
+    recoverable: false,
+    error: err instanceof Error ? err.message : 'Okänt fel',
+  }
+}
+
+/**
+ * VAT "skicka för signering": POST /utkast + PUT /las → signeringslänk.
+ * Recompute-at-commit (buildMomsuppgift over posted entries) so the figures
+ * filed equal what the preview showed for the same ledger state.
+ */
+async function commitSubmitVatDeclaration(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>,
+): Promise<SkvSubmitResult> {
+  if (!skatteverketEnabled()) return EXTENSION_DISABLED_RESULT
+
+  const periodType = params.period_type as VatPeriodType
+  const year = params.year as number
+  const period = params.period as number
+  const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
+
+  try {
+    const { redovisare, redovisningsperiod, momsuppgift } =
+      await buildMomsuppgift(supabase, companyId, { periodType, year, period })
+
+    // 1. POST /utkast — save the draft to Eget utrymme. Overwrites any prior
+    //    draft for the period, so retry after a mid-chain failure is safe.
+    const utkast = await skvRequest(
+      supabase, userId, 'POST', `/utkast/${redovisare}/${redovisningsperiod}`, momsuppgift,
+    )
+    await writeSkatteverketAudit(ctx, {
+      endpoint: 'declaration/draft', agRegistreradId: redovisare, redovisningsperiod,
+      outcome: utkast.ok ? 'ok' : 'skv_error', responseStatus: utkast.status,
+    })
+    if (!utkast.ok) {
+      const text = await utkast.text().catch(() => '')
+      return {
+        ok: false, code: 'SKATTEVERKET_SUBMIT_REJECTED', http_status: utkast.status,
+        recoverable: false, error: `Skatteverket svarade med ${utkast.status}: ${text}`,
+      }
+    }
+    const utkastData = (await utkast.json()) as SkatteverketUtkastResponse
+
+    // 2. PUT /las — lock for signing; returns the BankID signeringslänk.
+    const las = await skvRequest(
+      supabase, userId, 'PUT', `/las/${redovisare}/${redovisningsperiod}`,
+    )
+    await writeSkatteverketAudit(ctx, {
+      endpoint: 'declaration/lock', agRegistreradId: redovisare, redovisningsperiod,
+      outcome: las.ok ? 'ok' : 'skv_error', responseStatus: las.status,
+    })
+    if (!las.ok) {
+      const text = await las.text().catch(() => '')
+      return {
+        ok: false, code: 'SKATTEVERKET_SUBMIT_REJECTED', http_status: las.status,
+        recoverable: false, error: `Skatteverket svarade med ${las.status}: ${text}`,
+      }
+    }
+    const lasData = (await las.json()) as SkatteverketUtkastResponse
+    if (!lasData.signeringsLank) {
+      return {
+        ok: false, code: 'SKATTEVERKET_SUBMIT_REJECTED', http_status: 502, recoverable: false,
+        error: 'Skatteverket låste deklarationen men returnerade ingen signeringslänk.',
+      }
+    }
+
+    // Persist locked state so the UI/poller can resume (mirrors /declaration/lock).
+    await ctx.settings.set(
+      `submission_${redovisningsperiod}`,
+      JSON.stringify({
+        status: 'draft_locked', redovisare, redovisningsperiod,
+        signeringsLank: lasData.signeringsLank, updatedAt: new Date().toISOString(),
+      }),
+    )
+
+    return {
+      ok: true,
+      signing_url: lasData.signeringsLank,
+      redovisningsperiod,
+      redovisare,
+      kontrollresultat: utkastData.kontrollResultat ?? null,
+    }
+  } catch (err) {
+    return mapServiceError(ctx, 'declaration/submit', err)
+  }
+}
+
+/**
+ * AGI "skicka för signering": POST /underlag → poll kontrollresultat →
+ * skapaGranskningsunderlag(lasPeriod) → Mina Sidor signing link. Mirrors the
+ * route handlers' status flips (monotonic guards) and audit rows.
+ */
+async function commitSubmitAgi(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>,
+): Promise<SkvSubmitResult> {
+  if (!skatteverketEnabled()) return EXTENSION_DISABLED_RESULT
+
+  const salaryRunId = params.salary_run_id as string
+  const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
+
+  try {
+    const { arbetsgivare, period, xml, periodYear, periodMonth } =
+      await buildAgiUnderlag(supabase, companyId, salaryRunId)
+
+    // 1. POST /underlag (XML) → inlamningId.
+    const submit = await agiPostUnderlag(supabase, userId, xml)
+    await writeSkatteverketAudit(ctx, {
+      endpoint: 'agi/submit', agRegistreradId: arbetsgivare, redovisningsperiod: period,
+      outcome: submit.ok ? 'ok' : 'skv_error', responseStatus: submit.status,
+      errorMessage: submit.ok ? null : submit.error,
+    })
+    if (!submit.ok) {
+      return { ok: false, code: 'SKATTEVERKET_SUBMIT_REJECTED', http_status: submit.status,
+        recoverable: false, error: submit.error }
+    }
+    const inlamningId = submit.data.inlamningId
+    await ctx.settings.set(`agi_submission_${period}`, JSON.stringify({
+      status: 'underlag_submitted', arbetsgivare, period, salaryRunId,
+      inlamningId, updatedAt: new Date().toISOString(),
+    }))
+
+    // 2. Poll kontrollresultat (bounded; SKV is typically sub-second).
+    let kontroll = await agiGetKontrollresultat(supabase, userId, inlamningId)
+    for (let i = 0; i < 2 && kontroll.ok && kontroll.data.status === 'PROCESSING'; i++) {
+      await sleep(750)
+      kontroll = await agiGetKontrollresultat(supabase, userId, inlamningId)
+    }
+    await writeSkatteverketAudit(ctx, {
+      endpoint: 'agi/kontrollresultat', agRegistreradId: arbetsgivare, redovisningsperiod: period,
+      outcome: kontroll.ok ? 'ok' : 'skv_error', responseStatus: kontroll.status,
+      skvStatus: kontroll.ok ? kontroll.data.status : null,
+    })
+    if (!kontroll.ok) {
+      return { ok: false, code: 'SKATTEVERKET_SUBMIT_REJECTED', http_status: kontroll.status,
+        recoverable: false, error: kontroll.error }
+    }
+    if (kontroll.data.status === 'PROCESSING') {
+      // Still processing after the bounded poll — recoverable; re-approve shortly.
+      return { ok: false, code: 'SKATTEVERKET_PROCESSING', http_status: 202, recoverable: true,
+        error: 'Skatteverket bearbetar fortfarande AGI-underlaget. Försök igen om en stund.' }
+    }
+    if (kontroll.data.status === 'DONE_REJECTED' || kontroll.data.status === 'DONE_FAILED') {
+      // Scope by salary_run_id, not just period: a correction run sharing the
+      // period must not have its (still-valid) declaration flipped to rejected.
+      await supabase.from('agi_declarations').update({ status: 'rejected' })
+        .eq('company_id', companyId).eq('salary_run_id', salaryRunId)
+        .eq('period_year', periodYear).eq('period_month', periodMonth)
+        .in('status', ['generated', 'pending_signature', 'exported'])
+      return { ok: false, code: 'AGI_KONTROLL_REJECTED', http_status: 422, recoverable: false,
+        error: 'Skatteverket avvisade AGI-underlaget vid kontroll. Åtgärda felen och generera om AGI:n.' }
+    }
+
+    // 3. skapaGranskningsunderlag (lasPeriod=true) → Mina Sidor signing link.
+    const gransk = await agiSkapaGranskningsunderlag(supabase, userId, arbetsgivare, period, { lasPeriod: true })
+    await writeSkatteverketAudit(ctx, {
+      endpoint: 'agi/granskningsunderlag', agRegistreradId: arbetsgivare, redovisningsperiod: period,
+      outcome: gransk.ok ? 'ok' : 'skv_error', responseStatus: gransk.status,
+      skvStatus: gransk.ok ? gransk.data.tillstand : null,
+    })
+    if (!gransk.ok) {
+      return { ok: false, code: 'SKATTEVERKET_SUBMIT_REJECTED', http_status: gransk.status,
+        recoverable: false, error: gransk.error }
+    }
+    const tillstand = gransk.data.tillstand
+    const canSign = tillstand === 'LOCKED_FOR_SIGNING' || tillstand === 'UNLOCKED'
+
+    await ctx.settings.set(`agi_submission_${period}`, JSON.stringify({
+      status: canSign ? 'awaiting_signing' : 'underlag_rejected', arbetsgivare, period,
+      signeringslank: gransk.data.link, tillstand, meddelande: gransk.data.meddelande,
+      updatedAt: new Date().toISOString(),
+    }))
+
+    if (tillstand === 'INCORRECT_DATA') {
+      return { ok: false, code: 'AGI_GRANSKNING_INCORRECT', http_status: 422, recoverable: false,
+        error: gransk.data.meddelande || 'Skatteverket avvisade granskningsunderlaget. Åtgärda felen och generera om AGI:n.' }
+    }
+    if (!canSign) {
+      // RECEIVING / CALCULATING etc. — still processing, recoverable.
+      return { ok: false, code: 'SKATTEVERKET_PROCESSING', http_status: 202, recoverable: true,
+        error: gransk.data.meddelande || 'Skatteverket bearbetar fortfarande underlaget. Försök igen om en stund.' }
+    }
+
+    // Flip the declaration to pending_signature (monotonic guard). Scoped by
+    // salary_run_id so a correction run in the same period isn't co-flipped —
+    // more precise than the period-only route handler, which has no run id.
+    await supabase.from('agi_declarations').update({ status: 'pending_signature' })
+      .eq('company_id', companyId).eq('salary_run_id', salaryRunId)
+      .eq('period_year', periodYear).eq('period_month', periodMonth)
+      .in('status', ['generated', 'rejected'])
+
+    return {
+      ok: true,
+      signing_url: gransk.data.link,
+      arbetsgivare,
+      period,
+      inlamning_id: inlamningId,
+      tillstand,
+    }
+  } catch (err) {
+    return mapServiceError(ctx, 'agi/submit', err)
+  }
 }

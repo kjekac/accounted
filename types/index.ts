@@ -1607,6 +1607,10 @@ export type PendingOperationType =
   | 'bulk_book_transactions'
   // PR #614: link a single bank tx to an already-posted verifikat (no new JE)
   | 'link_transaction_journal_entry'
+  // PR5: Skatteverket filing via MCP. Commit = "send for BankID signing"
+  // (returns a signing link); the user's signature in the browser files it.
+  | 'submit_vat_declaration'
+  | 'submit_agi'
 export type PendingOperationStatus = 'pending' | 'committing' | 'committed' | 'rejected'
 
 export type PendingOperationActorType = 'user' | 'api_key' | 'mcp_oauth' | 'cron'

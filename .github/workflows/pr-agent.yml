@@ -1,0 +1,79 @@
+name: PR Agent
+
+# AI pull-request review (PR-Agent, the original open-source reviewer — repo id
+# 662766482, same repo the qodo-ai/Codium-ai names redirect to). Replaces the
+# Greptile bot that went silent after #682.
+#
+# Supply-chain hardening:
+#   * Pinned to an immutable commit SHA (v0.36.0), NOT a movable tag, because the
+#     repo now sits under a recently-created, unverified org (The-PR-Agent).
+#   * Runs on a DEDICATED, minimal IAM key (bedrock:InvokeModel only) supplied via
+#     PR_AGENT_AWS_* secrets — never the app's general AWS credentials. A leaked
+#     PR-Agent key can do nothing but invoke the one Bedrock model.
+#
+# Scope: ONLY /review runs automatically. /describe and /improve are disabled so
+# the bot never overwrites hand-written PR descriptions. Users can still invoke
+# any command interactively by commenting e.g. "/describe" or "/improve" on a PR.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created, edited]
+
+# One run per PR; cancel a superseded run when a new push lands.
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  pr_agent:
+    # Skip bot-authored events (vercel/supabase/etc.) to avoid feedback loops.
+    if: ${{ github.event.sender.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    name: The PR Agent
+    steps:
+      - name: The PR Agent
+        # Pinned to the v0.36.0 commit SHA (immutable) — do not switch to @v0.36.0.
+        uses: The-PR-Agent/pr-agent@ffe1f89a4dafc7d8e88b9cf010a3233e30b49f43 # v0.36.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # ── DEDICATED Bedrock IAM key (bedrock:InvokeModel only) — NOT the
+          #    app's AWS_* secrets. litellm reads AWS_REGION_NAME; AWS_REGION is
+          #    set too for safety. Create these three repo/org secrets:
+          #      PR_AGENT_AWS_ACCESS_KEY_ID, PR_AGENT_AWS_SECRET_ACCESS_KEY,
+          #      PR_AGENT_AWS_REGION (an EU region, e.g. eu-west-1).
+          AWS_ACCESS_KEY_ID: ${{ secrets.PR_AGENT_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PR_AGENT_AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION_NAME: ${{ secrets.PR_AGENT_AWS_REGION }}
+          AWS_REGION: ${{ secrets.PR_AGENT_AWS_REGION }}
+
+          # ── Model: Claude Opus 4.8 via the EU Bedrock inference profile, with
+          #    Sonnet 4.6 as fallback if the Opus profile isn't enabled for these
+          #    creds. custom_model_max_tokens is required because these ids are not
+          #    in PR-Agent's built-in token map.
+          CONFIG.MODEL: "bedrock/eu.anthropic.claude-opus-4-8"
+          CONFIG.MODEL_WEAK: "bedrock/eu.anthropic.claude-sonnet-4-6"
+          CONFIG.FALLBACK_MODELS: '["bedrock/eu.anthropic.claude-sonnet-4-6"]'
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "200000"
+          # Input window PR-Agent prunes the diff to fit. Default (~32k) truncated
+          # large PRs; raise it so the whole diff is reviewed (Sonnet 4.6 = 200k ctx).
+          CONFIG.MAX_MODEL_TOKENS: "64000"
+          LITELLM.DROP_PARAMS: "true"
+
+          # ── pr_actions = which GitHub PR *event actions* trigger the bot
+          #    (NOT a command list). Default omits 'synchronize', so pushes are
+          #    skipped; we add it so every push is reviewed too.
+          GITHUB_ACTION_CONFIG.PR_ACTIONS: '["opened", "reopened", "ready_for_review", "review_requested", "synchronize"]'
+          # ── Which commands actually run on a handled event. Only review —
+          #    describe/improve off so the bot never rewrites the PR body or
+          #    pushes code suggestions.
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "false"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "false"

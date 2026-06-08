@@ -12,7 +12,7 @@ import { getPool } from '@/tests/pg/setup'
  *
  *   - Correctness: uuid_generate_v4() produces valid non-null UUIDs with
  *     distinct values across calls. gen_random_bytes(n) returns a bytea of
- *     exactly n bytes; gen_random_bytes(0) returns empty bytea.
+ *     exactly n bytes (n >= 1; OpenSSL-backed pgcrypto rejects size 0).
  *
  *   - Function properties: VOLATILE, PARALLEL SAFE, SET search_path = '',
  *     LANGUAGE sql — consistent with the rest of the codebase.
@@ -80,12 +80,15 @@ describe('extension function wrappers', () => {
     }
   })
 
-  it('gen_random_bytes(0) returns empty bytea', async () => {
+  it('gen_random_bytes(n) returns exactly n bytes', async () => {
+    // Modern (OpenSSL-backed) pgcrypto rejects size 0 with "Length not in
+    // range", so we assert the real contract on a positive length rather than
+    // the version-dependent 0-byte edge case.
     const pool = getPool()
     const r = await pool.query<{ len: number }>(
-      `SELECT octet_length(public.gen_random_bytes(0)) AS len`,
+      `SELECT octet_length(public.gen_random_bytes(16)) AS len`,
     )
-    expect(r.rows[0]!.len).toBe(0)
+    expect(r.rows[0]!.len).toBe(16)
   })
 
   it('gen_random_bytes returns distinct values across calls', async () => {
