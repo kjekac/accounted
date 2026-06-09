@@ -21,9 +21,16 @@ on:
   issue_comment:
     types: [created, edited]
 
-# One run per PR; cancel a superseded run when a new push lands.
+# One run per PR *per event type*; a new push (pull_request:synchronize) cancels
+# a superseded review. The event_name suffix is critical: without it, the
+# pull_request and issue_comment triggers share a group, so a bot comment
+# (Vercel/Supabase/compliance preview bots fire within ~2s of opening a PR)
+# queues an issue_comment run that cancel-in-progress kills the real review with —
+# before the job-level `if: sender.type != 'Bot'` ever gets to skip it. Keeping the
+# groups separate lets comment runs cancel only each other (all skipped, harmless)
+# and never the open/push review.
 concurrency:
-  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
