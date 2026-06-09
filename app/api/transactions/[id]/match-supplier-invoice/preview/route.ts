@@ -12,6 +12,8 @@ import { z } from 'zod'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
+import { buildSupplierPaymentClearingLines } from '@/lib/bookkeeping/supplier-payment-lines'
+import { ORE_TOLERANCE } from '@/lib/money'
 import type { SupplierInvoice, SupplierInvoiceItem } from '@/types'
 
 type PreviewLine = {
@@ -81,6 +83,10 @@ export const GET = withRouteContext(
 
     const lines: PreviewLine[] = []
     let entryType: 'clearing' | 'cash' = 'clearing'
+    // Drives the dialog's "markeras som betald" / öresavrundning copy. Cash
+    // entries always book the full invoice, so they default to fully paid.
+    let isFullyPaid = true
+    let oreRounding = false
 
     if (useCashEntry) {
       entryType = 'cash'
@@ -158,26 +164,52 @@ export const GET = withRouteContext(
     } else {
       // Clearing: Dr 2440 / Cr 1930 (or chosen payment account).
       const si = invoice as SupplierInvoice
-      const amountSek = resolveSekAmount(
-        Math.abs(transaction.amount),
-        null,
-        transaction.currency,
-        null,
-      )
-      const total = resolveSekAmount(si.total, si.total_sek, si.currency, si.exchange_rate)
-      const amount = Math.round(Math.min(amountSek, total) * 100) / 100
-      lines.push({
-        account_number: '2440',
-        debit_amount: amount,
-        credit_amount: 0,
-        description: 'Kvittning leverantörsskuld',
-      })
-      lines.push({
-        account_number: paymentAccount,
-        debit_amount: 0,
-        credit_amount: amount,
-        description: 'Utbetalning från bank',
-      })
+      const isPureSek = transaction.currency === 'SEK' && si.currency === 'SEK'
+      if (isPureSek) {
+        // Shared builder so the previewed lines — including any 3740
+        // öresavrundning row — are byte-identical to what the POST commits.
+        const remainingSek = si.remaining_amount ?? si.total
+        const bankSek = Math.abs(transaction.amount)
+        const { lines: clearingLines, oreDiffSek } = buildSupplierPaymentClearingLines({
+          apSek: remainingSek,
+          bankSek,
+          paymentAccount,
+        })
+        for (const l of clearingLines) {
+          lines.push({
+            account_number: l.account_number,
+            debit_amount: l.debit_amount,
+            credit_amount: l.credit_amount,
+            description: l.line_description ?? '',
+          })
+        }
+        oreRounding = oreDiffSek !== 0
+        // Full settlement when the öre residual is absorbed or the bank covers
+        // the whole remaining; a ≥1 kr short payment leaves a partial.
+        isFullyPaid = oreRounding || bankSek >= remainingSek - ORE_TOLERANCE
+      } else {
+        const amountSek = resolveSekAmount(
+          Math.abs(transaction.amount),
+          null,
+          transaction.currency,
+          null,
+        )
+        const total = resolveSekAmount(si.total, si.total_sek, si.currency, si.exchange_rate)
+        const amount = Math.round(Math.min(amountSek, total) * 100) / 100
+        lines.push({
+          account_number: '2440',
+          debit_amount: amount,
+          credit_amount: 0,
+          description: 'Kvittning leverantörsskuld',
+        })
+        lines.push({
+          account_number: paymentAccount,
+          debit_amount: 0,
+          credit_amount: amount,
+          description: 'Utbetalning från bank',
+        })
+        isFullyPaid = amount >= total - ORE_TOLERANCE
+      }
     }
 
     return NextResponse.json({
@@ -185,6 +217,8 @@ export const GET = withRouteContext(
       lines,
       invoice_already_booked: siAlreadyBooked,
       accounting_method: accountingMethod,
+      is_fully_paid: isFullyPaid,
+      ore_rounding: oreRounding,
     })
   },
 )

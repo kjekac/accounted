@@ -194,4 +194,64 @@ describe('findSupplierInvoiceMatch', () => {
     // "AB" is filtered out (length < 3), so no name match
     expect(result).toBeNull()
   })
+
+  // Pass 3, widened window: early payments (the reported RosholmDell case)
+  it('auto-matches an EARLY exact payment near the invoice date, weeks before due', () => {
+    // Paid 2026-06-08, invoice issued 2026-06-05, due 2026-07-05 (27 days out).
+    // The old due-date-only ±5d window missed this; the issue→due window catches it.
+    const tx = makeTransaction({ amount: -29890, date: '2026-06-08', description: 'RosholmDell Advo BG 0000007746514' })
+    const inv = makeSupplierInvoice({
+      status: 'registered',
+      remaining_amount: 29890,
+      invoice_date: '2026-06-05',
+      due_date: '2026-07-05',
+    })
+
+    const result = findSupplierInvoiceMatch(tx, [inv])
+
+    expect(result).not.toBeNull()
+    expect(result!.confidence).toBe(0.85)
+    expect(result!.matchMethod).toBe('amount_date')
+    expect(result!.ambiguous).toBeFalsy()
+  })
+
+  it('still matches a few days AFTER the due date', () => {
+    const tx = makeTransaction({ amount: -29890, date: '2026-07-09' }) // due + 4d
+    const inv = makeSupplierInvoice({
+      status: 'registered',
+      remaining_amount: 29890,
+      invoice_date: '2026-06-05',
+      due_date: '2026-07-05',
+    })
+    expect(findSupplierInvoiceMatch(tx, [inv])!.matchMethod).toBe('amount_date')
+  })
+
+  it('flags amount_date as AMBIGUOUS when two invoices share the amount in-window', () => {
+    const tx = makeTransaction({ amount: -29890, date: '2026-06-08', description: 'bankgiro-betalning' })
+    const a = makeSupplierInvoice({
+      id: 'inv-a', status: 'registered', remaining_amount: 29890,
+      invoice_date: '2026-06-05', due_date: '2026-07-05',
+    })
+    const b = makeSupplierInvoice({
+      id: 'inv-b', status: 'registered', remaining_amount: 29890,
+      invoice_date: '2026-06-04', due_date: '2026-07-04',
+    })
+
+    const result = findSupplierInvoiceMatch(tx, [a, b])
+
+    expect(result).not.toBeNull()
+    expect(result!.confidence).toBe(0.85)
+    expect(result!.ambiguous).toBe(true) // caller must demote to a suggestion
+  })
+
+  it('uses an invoice_date-only window when there is no due_date', () => {
+    const tx = makeTransaction({ amount: -29890, date: '2026-06-20' }) // 15 days after issue
+    const inv = makeSupplierInvoice({
+      status: 'registered',
+      remaining_amount: 29890,
+      invoice_date: '2026-06-05',
+      due_date: null,
+    })
+    expect(findSupplierInvoiceMatch(tx, [inv])!.matchMethod).toBe('amount_date')
+  })
 })

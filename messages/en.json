@@ -1826,6 +1826,7 @@
     "amount_diff": "Difference: {amount}",
     "different_currencies": " (different currencies)",
     "partial_payment_note": " — the invoice will become partially paid.",
+    "ore_rounding_note": "The {amount} difference is booked as rounding (account 3740). The invoice is marked as paid.",
     "fx_title": "Currency conversion",
     "fx_rate_description": "Riksbanken mid-rate {date}: 1 {invoiceCurrency} = {rate} SEK",
     "fx_paid_in_invoice_currency": "Payment equals: {amount}",

@@ -10,7 +10,9 @@ const unitProject = {
     globals: true,
     environment: 'node' as const,
     include: ['**/*.test.ts'],
-    exclude: ['**/node_modules/**', '**/*.pg.test.ts'],
+    // `.claude/worktrees/*` are ephemeral agent checkouts whose `@/*` imports
+    // resolve back to this root — never part of the suite.
+    exclude: ['**/node_modules/**', '**/*.pg.test.ts', '**/.claude/**'],
   },
 }
 
@@ -21,7 +23,7 @@ const pgRealProject = {
     globals: true,
     environment: 'node' as const,
     include: ['**/*.pg.test.ts'],
-    exclude: ['**/node_modules/**'],
+    exclude: ['**/node_modules/**', '**/.claude/**'],
     setupFiles: ['tests/pg/setup.ts'],
     // One-connection-at-a-time to avoid cross-file DB contention.
     fileParallelism: false,

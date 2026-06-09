@@ -22,7 +22,7 @@
  * guard rail #9 — identical to the route's previous `Math.round(x*100)/100`
  * except on exact-half-öre amounts, where `roundOre` rounds correctly.
  */
-import { roundOre, ORE_TOLERANCE } from '@/lib/money'
+import { roundOre, ORE_TOLERANCE, ORE_ROUNDING_SETTLEMENT_MAX } from '@/lib/money'
 
 /** Half an öre — anything over the remaining by more than this is a real overpayment. */
 export const PAYMENT_OVERSHOOT_TOLERANCE = ORE_TOLERANCE
@@ -38,6 +38,10 @@ export interface InvoicePaymentPlan {
   newRemaining: number
   isFullyPaid: boolean
   newStatus: 'paid' | 'partially_paid'
+  /** True when a sub-krona öre residual was absorbed (full settlement of an
+   *  inexact amount) — the 3740 line carries it. Always false unless the caller
+   *  opts in via `absorbOreRounding`. */
+  oreSettled: boolean
 }
 
 export type PlanInvoicePaymentResult =
@@ -51,11 +55,17 @@ export type PlanInvoicePaymentResult =
 export function planInvoicePayment(
   invoice: InvoicePaymentTotals,
   paymentAmountInInvoiceCurrency: number,
+  opts?: { absorbOreRounding?: boolean },
 ): PlanInvoicePaymentResult {
+  const absorbOre = opts?.absorbOreRounding === true
   const currentRemaining =
     invoice.remaining_amount ?? invoice.total - (invoice.paid_amount || 0)
 
-  if (paymentAmountInInvoiceCurrency > currentRemaining + PAYMENT_OVERSHOOT_TOLERANCE) {
+  // A rounded-up whole-krona payment is not an overpayment — widen the reject
+  // band to one krona when absorbing öre; otherwise keep the strict half-öre
+  // float tolerance the three legacy callers rely on.
+  const overshootTolerance = absorbOre ? ORE_ROUNDING_SETTLEMENT_MAX : PAYMENT_OVERSHOOT_TOLERANCE
+  if (paymentAmountInInvoiceCurrency > currentRemaining + overshootTolerance) {
     return {
       ok: false,
       code: 'MATCH_AMOUNT_EXCEEDS_REMAINING',
@@ -63,6 +73,23 @@ export function planInvoicePayment(
         transaction_amount: paymentAmountInInvoiceCurrency,
         remaining_amount: roundOre(currentRemaining),
         excess: roundOre(paymentAmountInInvoiceCurrency - currentRemaining),
+      },
+    }
+  }
+
+  const diff = roundOre(currentRemaining - paymentAmountInInvoiceCurrency)
+
+  // Within the öre band (and absorbing) → settle in full; the 3740 line carries
+  // the residual. Covers both a short whole-krona payment and a rounded-up one.
+  if (absorbOre && Math.abs(diff) < ORE_ROUNDING_SETTLEMENT_MAX) {
+    return {
+      ok: true,
+      plan: {
+        newPaidAmount: roundOre((invoice.paid_amount || 0) + currentRemaining),
+        newRemaining: 0,
+        isFullyPaid: true,
+        newStatus: 'paid',
+        oreSettled: Math.abs(diff) >= ORE_TOLERANCE,
       },
     }
   }
@@ -78,6 +105,7 @@ export function planInvoicePayment(
       newRemaining,
       isFullyPaid,
       newStatus: isFullyPaid ? 'paid' : 'partially_paid',
+      oreSettled: false,
     },
   }
 }

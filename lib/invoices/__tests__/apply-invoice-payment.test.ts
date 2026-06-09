@@ -14,6 +14,7 @@ describe('planInvoicePayment', () => {
         newRemaining: 0,
         isFullyPaid: true,
         newStatus: 'paid',
+        oreSettled: false,
       })
     }
   })

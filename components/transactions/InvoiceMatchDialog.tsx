@@ -449,13 +449,33 @@ export default function InvoiceMatchDialog({
               // built by buildInvoicePaymentClearingLines, which posts the
               // FX diff to 3960/7960 so the books balance correctly even
               // when the on-screen numbers can't be naively compared.
-              const amountsMatch = sameCurrency && Math.abs(txAbs - invRemaining) < 0.01
+              const diff = Math.abs(txAbs - invRemaining)
+              const amountsMatch = sameCurrency && diff < 0.01
+              // A sub-krona SEK difference is öresavrundning: the backend books
+              // it to 3740 and settles the invoice in full instead of leaving it
+              // delbetald (see ORE_ROUNDING_SETTLEMENT_MAX). SEK only — keep the
+              // 1 kr band in sync with the server constant.
+              const isOreRounding =
+                sameCurrency && transaction.currency === 'SEK' && diff >= 0.01 && diff < 1.0
 
               if (amountsMatch) {
                 return (
                   <div className="flex items-center gap-2 p-3 rounded-lg bg-success/10 text-success">
                     <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
                     <p className="text-sm font-medium">{t('amounts_match')}</p>
+                  </div>
+                )
+              }
+
+              if (isOreRounding) {
+                return (
+                  <div className="flex items-start gap-2 p-3 rounded-lg bg-success/10 text-success">
+                    <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                    <p className="text-sm font-medium">
+                      {t('ore_rounding_note', {
+                        amount: formatCurrency(diff, transaction.currency),
+                      })}
+                    </p>
                   </div>
                 )
               }

@@ -201,6 +201,50 @@ describe('buildInvoicePaymentClearingLines', () => {
     })
   })
 
+  describe('öresavrundning (pure SEK, sub-krona difference → 3740)', () => {
+    it('customer paid a sub-krona SHORT: clears full 1510, books 3740 debit (förlust)', () => {
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1000, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1000.25, total: 1000.25, paid_amount: 0 },
+        'Inbetalning kundfaktura',
+      )
+      expect(result.arSek).toBe(1000.25) // full remaining cleared → invoice settles
+      expect(result.oreRoundingSek).toBe(0.25)
+      expect(result.lines).toHaveLength(3)
+      expect(result.lines.find((l) => l.account_number === '1930')?.debit_amount).toBe(1000)
+      expect(result.lines.find((l) => l.account_number === '1510')?.credit_amount).toBe(1000.25)
+      expect(result.lines.find((l) => l.account_number === '3740')?.debit_amount).toBe(0.25)
+      const debit = result.lines.reduce((s, l) => s + l.debit_amount, 0)
+      const credit = result.lines.reduce((s, l) => s + l.credit_amount, 0)
+      expect(Math.round((debit - credit) * 100)).toBe(0)
+    })
+
+    it('customer paid a sub-krona OVER: clears full 1510, books 3740 credit (vinst)', () => {
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1000.25, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1000, total: 1000, paid_amount: 0 },
+        'Inbetalning kundfaktura',
+      )
+      expect(result.arSek).toBe(1000)
+      expect(result.oreRoundingSek).toBe(-0.25)
+      expect(result.lines.find((l) => l.account_number === '3740')?.credit_amount).toBe(0.25)
+      const debit = result.lines.reduce((s, l) => s + l.debit_amount, 0)
+      const credit = result.lines.reduce((s, l) => s + l.credit_amount, 0)
+      expect(Math.round((debit - credit) * 100)).toBe(0)
+    })
+
+    it('a ≥1 kr shortfall stays a partial (no 3740, AR = bank)', () => {
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 600, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1000, total: 1000, paid_amount: 0 },
+        'Delbetalning kundfaktura',
+      )
+      expect(result.arSek).toBe(600)
+      expect(result.oreRoundingSek).toBe(0)
+      expect(result.lines).toHaveLength(2)
+    })
+  })
+
   describe('cross currency (USD invoice + USD tx)', () => {
     it('uses tx amount_sek for the bank-leg when populated', () => {
       // USD-denominated bank account paying a USD invoice — ingest converts

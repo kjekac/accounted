@@ -449,7 +449,10 @@ export async function ingestTransactions(
         )
 
         if (match && !matchedSupplierInvoiceIds.has(match.supplierInvoice.id)) {
-          if (match.confidence >= 0.85) {
+          // Ambiguous amount_date hits (several same-amount invoices in-window)
+          // are demoted to suggestions — auto-linking the wrong one is worse
+          // than asking the user to pick.
+          if (match.confidence >= 0.85 && !match.ambiguous) {
             // Auto-link at high confidence
             await supabase
               .from('transactions')

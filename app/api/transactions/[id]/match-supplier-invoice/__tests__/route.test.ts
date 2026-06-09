@@ -38,6 +38,16 @@ vi.mock('@/lib/bookkeeping/supplier-invoice-entries', () => ({
   createSupplierInvoiceCashEntry: (...args: unknown[]) => mockCreateCashEntry(...args),
 }))
 
+// Pure-SEK clearing now posts via the shared builder + createJournalEntry
+// (not createSupplierInvoicePaymentEntry). Mock the engine so that path doesn't
+// hit the queued Supabase mock.
+const mockCreateJournalEntry = vi.fn()
+const mockFindFiscalPeriod = vi.fn()
+vi.mock('@/lib/bookkeeping/engine', () => ({
+  createJournalEntry: (...args: unknown[]) => mockCreateJournalEntry(...args),
+  findFiscalPeriod: (...args: unknown[]) => mockFindFiscalPeriod(...args),
+}))
+
 import { POST } from '../route'
 
 const mockUser = { id: 'user-1', email: 'test@test.se' }
@@ -48,6 +58,8 @@ beforeEach(() => {
   mockSupabase.auth.getUser.mockResolvedValue({ data: { user: mockUser } })
   mockCreatePaymentEntry.mockResolvedValue({ id: 'je-1' })
   mockCreateCashEntry.mockResolvedValue({ id: 'je-1' })
+  mockCreateJournalEntry.mockResolvedValue({ id: 'je-1' })
+  mockFindFiscalPeriod.mockResolvedValue('fp-1')
 })
 
 const TX_UUID = '11111111-1111-4111-8111-111111111111'
@@ -109,17 +121,26 @@ function enqueueHappyPath(opts: {
 }
 
 describe('POST /api/transactions/[id]/match-supplier-invoice — FX residual', () => {
-  it('passes no exchangeRateDifference for a SEK transaction paying a SEK invoice', async () => {
+  it('books a clean SEK clearing entry (no FX) for a SEK tx paying a SEK invoice', async () => {
+    // SEK/SEK now routes through buildSupplierPaymentClearingLines +
+    // createJournalEntry, not createSupplierInvoicePaymentEntry. An exact
+    // payment yields just Dr 2440 / Cr 1930 — no 3960/7960 FX line, no 3740.
     enqueueHappyPath({
       transaction: { amount: -2390, currency: 'SEK' },
       invoice: { currency: 'SEK', remaining_amount: 2390 },
     })
     await POST(makeReq(), createMockRouteParams({ id: TX_UUID }))
-    expect(mockCreatePaymentEntry).toHaveBeenCalledTimes(1)
-    const args = mockCreatePaymentEntry.mock.calls[0]
-    // (supabase, companyId, userId, invoice, paymentAmountSek, paymentDate, exchangeRateDifference?)
-    expect(args[4]).toBe(2390) // paymentAmountSek = actual bank SEK
-    expect(args[6]).toBeUndefined() // no FX diff
+    expect(mockCreatePaymentEntry).not.toHaveBeenCalled()
+    expect(mockCreateJournalEntry).toHaveBeenCalledTimes(1)
+    const input = mockCreateJournalEntry.mock.calls[0][3] as {
+      lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+    }
+    expect(input.lines).toHaveLength(2)
+    expect(input.lines.find((l) => l.account_number === '2440')?.debit_amount).toBe(2390)
+    expect(input.lines.find((l) => l.account_number === '1930')?.credit_amount).toBe(2390)
+    expect(
+      input.lines.some((l) => ['3960', '7960', '3740'].includes(l.account_number)),
+    ).toBe(false)
   })
 
   it('computes a loss when the SEK paid exceeds the AP booked SEK (EUR invoice)', async () => {
@@ -195,6 +216,32 @@ describe('POST /api/transactions/[id]/match-supplier-invoice — non-FX paths', 
     expect(body.success).toBe(true)
     expect(body.paid_amount).toBe(1000)
     expect(body.remaining_amount).toBe(0)
+  })
+
+  it('öresavrundning: a whole-krona Bankgiro payment settles an öre-bearing invoice in full via 3740', async () => {
+    // The reported bug: invoice 11 231,25, bank paid 11 231 → previously left
+    // 0,25 stranded as partially_paid. Now → paid, with 0,25 booked to 3740.
+    enqueueHappyPath({
+      transaction: { amount: -11231, currency: 'SEK' },
+      invoice: { currency: 'SEK', remaining_amount: 11231.25 },
+    })
+    const res = await POST(makeReq(), createMockRouteParams({ id: TX_UUID }))
+    const { status, body } = await parseJsonResponse<{
+      invoice_status: string
+      paid_amount: number
+      remaining_amount: number
+    }>(res)
+    expect(status).toBe(200)
+    expect(body.invoice_status).toBe('paid')
+    expect(body.remaining_amount).toBe(0)
+    expect(body.paid_amount).toBe(11231.25)
+    expect(mockCreatePaymentEntry).not.toHaveBeenCalled()
+    const input = mockCreateJournalEntry.mock.calls[0][3] as {
+      lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+    }
+    expect(input.lines.find((l) => l.account_number === '2440')?.debit_amount).toBe(11231.25)
+    expect(input.lines.find((l) => l.account_number === '1930')?.credit_amount).toBe(11231)
+    expect(input.lines.find((l) => l.account_number === '3740')?.credit_amount).toBe(0.25)
   })
 
   it('returns 400 MATCH_SI_AMOUNT_EXCEEDS_REMAINING when tx exceeds invoice remaining (same currency)', async () => {
@@ -313,5 +360,26 @@ describe('POST /api/transactions/[id]/match-supplier-invoice — cash method + F
     expect(status).toBe(400)
     expect(body.error.code).toBe('MATCH_SI_CASH_FX_UNSUPPORTED')
     expect(mockCreateCashEntry).not.toHaveBeenCalled()
+  })
+
+  it('does NOT absorb öre under the cash method — a SEK sub-krona diff stays partial', async () => {
+    // Kontantmetoden books the full invoice via the cash entry (not the bank
+    // amount), so folding the 0,25 to 3740 would hide a 1930 discrepancy. The
+    // öre band is accrual-only; here the invoice stays partially_paid.
+    enqueueHappyPath({
+      transaction: { amount: -11231, currency: 'SEK' },
+      invoice: { currency: 'SEK', remaining_amount: 11231.25 },
+      accountingMethod: 'cash',
+    })
+    const res = await POST(makeReq(), createMockRouteParams({ id: TX_UUID }))
+    const { status, body } = await parseJsonResponse<{
+      invoice_status: string
+      remaining_amount: number
+    }>(res)
+    expect(status).toBe(200)
+    expect(mockCreateCashEntry).toHaveBeenCalledTimes(1)
+    expect(mockCreateJournalEntry).not.toHaveBeenCalled() // no 3740 clearing entry
+    expect(body.invoice_status).toBe('partially_paid')
+    expect(body.remaining_amount).toBe(0.25)
   })
 })

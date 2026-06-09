@@ -300,7 +300,12 @@ export const POST = withRouteContext(
     // Overshoot guard + paid/remaining math — shared with the v1 and agent
     // (commit) paths via planInvoicePayment so they cannot drift again. Runs
     // before any JE is created, so a doomed match never burns a voucher number.
-    const payment = planInvoicePayment(invoice, paidAmountInInvoiceCurrency)
+    // Pure-SEK settlements absorb sub-krona öresavrundning (booked to 3740 by
+    // buildInvoicePaymentClearingLines) so a whole-krona payment settles in full.
+    const pureSek = transaction.currency === 'SEK' && invoice.currency === 'SEK'
+    const payment = planInvoicePayment(invoice, paidAmountInInvoiceCurrency, {
+      absorbOreRounding: pureSek,
+    })
     if (!payment.ok) {
       return errorResponseFromCode('MATCH_AMOUNT_EXCEEDS_REMAINING', txLog, {
         requestId,

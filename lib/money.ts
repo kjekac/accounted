@@ -45,6 +45,21 @@ export function roundOre(n: number): number {
 export const ORE_TOLERANCE = 0.005
 
 /**
+ * Maximum |bank payment − invoice remaining| (in SEK) that is treated as
+ * öresavrundning — booked to BAS 3740 (Öres- och kronutjämning) so the invoice
+ * settles fully — rather than left as a genuine partial payment.
+ *
+ * Swedish whole-krona settlements (Bankgiro, Swish, kort) pay an öre-bearing
+ * invoice total rounded to the nearest krona, so the residual is always strictly
+ * under 1 krona. A real shortfall is ≥ 1 krona, so this band can never hide one.
+ *
+ * NOTE: deliberately looser than `ORE_TOLERANCE` (0,005). That constant is
+ * float-equalisation; this is an accounting policy band. Keep them distinct —
+ * never reuse `ORE_TOLERANCE` for settlement rounding.
+ */
+export const ORE_ROUNDING_SETTLEMENT_MAX = 1.0
+
+/**
  * True when two amounts are equal to the öre (within `ORE_TOLERANCE`). Prefer
  * this over `a === b` for money — direct equality on floats fails on drift.
  */

@@ -50,6 +50,7 @@
  *                     partially_paid.
  */
 import type { CreateJournalEntryLineInput } from '@/types'
+import { ORE_TOLERANCE, ORE_ROUNDING_SETTLEMENT_MAX } from '@/lib/money'
 import { resolveSekAmount } from './currency-utils'
 
 const TWO_DP = (n: number): number => Math.round(n * 100) / 100
@@ -92,6 +93,14 @@ export interface PaymentClearingLines {
    * in caller logic without reading this paragraph.
    */
   fxDiffSek: number
+  /**
+   * Öresavrundning residual (SEK), pure-SEK same-currency settlements only.
+   * remainingSek − bankSek: >0 → customer paid a sub-krona short (3740 debit,
+   * förlust); <0 → paid a sub-krona over (3740 credit, vinst); 0 → no 3740 line.
+   * When non-zero the AR leg (1510) is credited the FULL remaining so the
+   * invoice settles, and the residual balances the verifikat via 3740.
+   */
+  oreRoundingSek: number
   lines: CreateJournalEntryLineInput[]
 }
 
@@ -141,11 +150,27 @@ export function buildInvoicePaymentClearingLines(
 
   const sameCurrency = tx.currency === invoice.currency
   const invoiceIsForeign = invoice.currency !== 'SEK'
+  // Pure SEK both sides: the only place whole-krona öresavrundning applies.
+  const pureSek = sameCurrency && invoice.currency === 'SEK'
 
   let arSek: number
   let fxDiffSek: number
+  let oreRoundingSek = 0
 
-  if (sameCurrency || !invoiceIsForeign) {
+  if (pureSek) {
+    // A whole-krona bank settlement of an öre-bearing SEK invoice leaves a
+    // sub-krona residual. Clear the FULL remaining off 1510 (invoice → paid)
+    // and let 3740 absorb the öre; a ≥1 kr short payment stays a real partial.
+    const remainingSek = TWO_DP(invoice.remaining_amount ?? invoice.total - (invoice.paid_amount ?? 0))
+    const oreDiff = TWO_DP(remainingSek - bankSek)
+    if (oreDiff !== 0 && Math.abs(oreDiff) < ORE_ROUNDING_SETTLEMENT_MAX) {
+      arSek = remainingSek
+      oreRoundingSek = oreDiff
+    } else {
+      arSek = bankSek
+    }
+    fxDiffSek = 0
+  } else if (sameCurrency || !invoiceIsForeign) {
     // Same currency (or SEK invoice paid by SEK tx): the customer-debt
     // reduction equals what hit the bank. No FX diff possible.
     arSek = bankSek
@@ -212,5 +237,27 @@ export function buildInvoicePaymentClearingLines(
     }
   }
 
-  return { bankSek, arSek, fxDiffSek, lines }
+  // Öresavrundning (3740) — pure-SEK only, mutually exclusive with an FX diff.
+  // The AR leg above is already the full remaining, so 3740 balances the
+  // verifikat: customer paid a sub-krona short → 3740 debit (förlust); over →
+  // credit (vinst). Opposite polarity to the supplier side (AP cleared by a Dr).
+  if (Math.abs(oreRoundingSek) >= ORE_TOLERANCE) {
+    if (oreRoundingSek > 0) {
+      lines.push({
+        account_number: '3740',
+        debit_amount: Math.abs(oreRoundingSek),
+        credit_amount: 0,
+        line_description: 'Öresavrundning',
+      })
+    } else {
+      lines.push({
+        account_number: '3740',
+        debit_amount: 0,
+        credit_amount: Math.abs(oreRoundingSek),
+        line_description: 'Öresavrundning',
+      })
+    }
+  }
+
+  return { bankSek, arSek, fxDiffSek, oreRoundingSek, lines }
 }

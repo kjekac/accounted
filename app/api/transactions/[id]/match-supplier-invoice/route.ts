@@ -3,6 +3,8 @@ import {
   createSupplierInvoicePaymentEntry,
   createSupplierInvoiceCashEntry,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
+import { buildSupplierPaymentClearingLines } from '@/lib/bookkeeping/supplier-payment-lines'
+import { planSupplierPayment } from '@/lib/invoices/apply-supplier-payment'
 import { createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
@@ -82,26 +84,10 @@ export const POST = withRouteContext(
 
     const txAmountAbs = Math.abs(transaction.amount)
 
-    // Overshoot guard for the same-currency branch. The legacy code path used
-    // txAmountAbs wholesale and would push supplier_invoices.paid_amount past
-    // invoice.total whenever the bank transaction was larger than what was
-    // owed. Reject and direct the user at the split-payment flow which can
-    // allocate the excess to additional supplier invoices.
-    // FX branch (currency mismatch) is already clamped below to
-    // invoice.remaining_amount, so it cannot overshoot.
-    if (
-      transaction.currency === invoice.currency &&
-      txAmountAbs > invoice.remaining_amount + 0.005
-    ) {
-      return errorResponseFromCode('MATCH_SI_AMOUNT_EXCEEDS_REMAINING', txLog, {
-        requestId,
-        details: {
-          transaction_amount: txAmountAbs,
-          remaining_amount: Math.round(invoice.remaining_amount * 100) / 100,
-          excess: Math.round((txAmountAbs - invoice.remaining_amount) * 100) / 100,
-        },
-      })
-    }
+    // Pure SEK settlements route through the shared clearing builder so öre
+    // rounding lands on 3740 and the invoice settles in full; foreign legs keep
+    // the kursvinst/kursförlust path in createSupplierInvoicePaymentEntry.
+    const isPureSek = transaction.currency === 'SEK' && invoice.currency === 'SEK'
 
     // Amount in the *invoice's* currency — used to update
     // supplier_invoices.paid_amount/remaining_amount and the
@@ -115,6 +101,43 @@ export const POST = withRouteContext(
       transaction.currency === invoice.currency
         ? txAmountAbs
         : invoice.remaining_amount
+
+    const { data: settings } = await supabase
+      .from('company_settings')
+      .select('accounting_method, last_supplier_payment_account')
+      .eq('company_id', companyId)
+      .single()
+
+    const accountingMethod = settings?.accounting_method || 'accrual'
+    // Same default the preview route uses, so the committed verifikat credits the
+    // same account the user saw previewed (the old path hardcoded 1930 here).
+    const paymentAccount =
+      (settings as { last_supplier_payment_account?: string } | null)?.last_supplier_payment_account || '1930'
+
+    // Route on the supplier invoice's actual booking state — if 2440 was posted
+    // at receipt (accrual), the match clears 2440 regardless of the company's
+    // current setting. Only true kontantmetoden invoices (no registration JE)
+    // book expense + input VAT here.
+    const siAlreadyBooked = !!(invoice as { registration_journal_entry_id?: string | null }).registration_journal_entry_id
+    const useCashEntry = !siAlreadyBooked && accountingMethod === 'cash'
+
+    // Ledger math + overshoot guard in one place (mirrors planInvoicePayment on
+    // the customer side). Öre absorption applies ONLY to the accrual SEK clearing
+    // path: there a whole-krona payment within 1 kr settles the invoice in full
+    // and the residual is booked to 3740 by the line builder. Cash-method entries
+    // book the full invoice total (not the bank amount), so absorbing there would
+    // mark the invoice paid while leaving a hidden 1930 discrepancy — keep strict.
+    // Rejecting here, BEFORE any JE is created, keeps a doomed overshoot from
+    // burning a voucher number.
+    const paymentPlan = planSupplierPayment(invoice, paymentAmountInvoiceCurrency, {
+      absorbOreRounding: isPureSek && !useCashEntry,
+    })
+    if (!paymentPlan.ok) {
+      return errorResponseFromCode('MATCH_SI_AMOUNT_EXCEEDS_REMAINING', txLog, {
+        requestId,
+        details: paymentPlan.details,
+      })
+    }
 
     // SEK that actually left the bank, when we know it. SEK transaction → the
     // absolute amount; foreign transaction with a stored amount_sek → that
@@ -162,21 +185,6 @@ export const POST = withRouteContext(
 
     const now = new Date().toISOString()
 
-    const { data: settings } = await supabase
-      .from('company_settings')
-      .select('accounting_method')
-      .eq('company_id', companyId)
-      .single()
-
-    const accountingMethod = settings?.accounting_method || 'accrual'
-
-    // Route on the supplier invoice's actual booking state — if 2440 was
-    // posted at receipt (accrual), the match must clear 2440 regardless of
-    // the company's current setting. Only true kontantmetoden invoices
-    // (no registration JE) book expense + input VAT here.
-    const siAlreadyBooked = !!(invoice as { registration_journal_entry_id?: string | null }).registration_journal_entry_id
-    const useCashEntry = !siAlreadyBooked && accountingMethod === 'cash'
-
     // A full settlement pays off the whole remaining balance. Cross-currency
     // matches always do (paymentAmountInvoiceCurrency is clamped to
     // invoice.remaining_amount above); same-currency does when the bank amount
@@ -205,6 +213,11 @@ export const POST = withRouteContext(
       })
     }
 
+    // Verifikat header description, shared by every booking branch below.
+    const desc = invoice.supplier?.name
+      ? `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}, ${invoice.supplier.name}`
+      : `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}`
+
     let journalEntryId: string | null = null
     let journalEntryError: string | null = null
 
@@ -226,9 +239,6 @@ export const POST = withRouteContext(
           })
         }
         const sourceType = useCashEntry ? 'supplier_invoice_cash_payment' : 'supplier_invoice_paid'
-        const desc = invoice.supplier?.name
-          ? `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}, ${invoice.supplier.name}`
-          : `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}`
         const journalEntry = await createJournalEntry(supabase, companyId!, user.id, {
           fiscal_period_id: fiscalPeriodId,
           entry_date: transaction.date,
@@ -252,6 +262,32 @@ export const POST = withRouteContext(
           exchangeRateDifference !== 0 && fullSettlement ? actualBankSek : undefined,
         )
         if (journalEntry) journalEntryId = journalEntry.id
+      } else if (isPureSek) {
+        // SEK clearing through the shared builder: a sub-krona difference is
+        // booked to 3740 and 2440 is cleared in full (invoice → paid); an exact
+        // or ≥1 kr-short payment clears what moved. Byte-identical to the preview
+        // (same payment account + line descriptions). No FX here by definition.
+        const fiscalPeriodId = await findFiscalPeriod(supabase, companyId!, transaction.date)
+        if (!fiscalPeriodId) {
+          return errorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
+            requestId,
+            details: { paymentDate: transaction.date },
+          })
+        }
+        const { lines } = buildSupplierPaymentClearingLines({
+          apSek: invoice.remaining_amount,
+          bankSek: txAmountAbs,
+          paymentAccount,
+        })
+        const journalEntry = await createJournalEntry(supabase, companyId!, user.id, {
+          fiscal_period_id: fiscalPeriodId,
+          entry_date: transaction.date,
+          description: desc,
+          source_type: 'supplier_invoice_paid',
+          source_id: invoice.id,
+          lines,
+        })
+        if (journalEntry) journalEntryId = journalEntry.id
       } else {
         const journalEntry = await createSupplierInvoicePaymentEntry(
           supabase, companyId, user.id, invoice as SupplierInvoice,
@@ -271,10 +307,10 @@ export const POST = withRouteContext(
       }
     }
 
-    const newRemaining = Math.max(0, Math.round((invoice.remaining_amount - paymentAmountInvoiceCurrency) * 100) / 100)
-    const newPaidAmount = Math.round((invoice.paid_amount + paymentAmountInvoiceCurrency) * 100) / 100
-    const isFullyPaid = newRemaining <= 0
-    const newStatus = isFullyPaid ? 'paid' : 'partially_paid'
+    // Ledger update from the plan computed up front. An öre-absorbed settlement
+    // reports remaining 0 / status paid even though the bank paid a sub-krona
+    // less (or more) — the residual lives on 3740, not the supplier ledger.
+    const { newRemaining, newPaidAmount, isFullyPaid, newStatus } = paymentPlan.plan
 
     const { data: updatedRows, error: updateInvError } = await supabase
       .from('supplier_invoices')

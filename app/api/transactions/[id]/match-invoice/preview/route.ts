@@ -18,7 +18,7 @@ import { NextResponse } from 'next/server'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
-import { roundOre } from '@/lib/money'
+import { roundOre, ORE_ROUNDING_SETTLEMENT_MAX } from '@/lib/money'
 import { getRevenueAccount, getOutputVatAccount } from '@/lib/bookkeeping/invoice-entries'
 import { buildInvoicePaymentClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
 import { fetchExchangeRate } from '@/lib/currency/riksbanken'
@@ -170,7 +170,13 @@ export const GET = withRouteContext(
     // a guess — the dialog blocks confirm until a manual rate is entered and
     // the POST recomputes the real figure.
     const fxRateUnavailable = fxConversion.required && 'error' in fxConversion
-    const isFullyPaid = !fxRateUnavailable && newRemaining <= 0
+    // Pure-SEK whole-krona settlements absorb a sub-krona remainder as
+    // öresavrundning (3740) and settle in full — mirror that here so the
+    // preview's fully-paid signal matches the committed verifikat.
+    const pureSek = transaction.currency === 'SEK' && invoice.currency === 'SEK'
+    const isFullyPaid =
+      !fxRateUnavailable &&
+      (newRemaining <= 0 || (pureSek && newRemaining < ORE_ROUNDING_SETTLEMENT_MAX))
 
     const invoiceAlreadyBooked = !!(invoice as { journal_entry_id?: string | null }).journal_entry_id
     const useCashEntry = !invoiceAlreadyBooked && accountingMethod === 'cash' && isFullyPaid

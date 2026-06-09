@@ -1826,6 +1826,7 @@
     "amount_diff": "Differens: {amount}",
     "different_currencies": " (olika valutor)",
     "partial_payment_note": " — fakturan blir delbetald.",
+    "ore_rounding_note": "Differens {amount} bokförs som öresavrundning (konto 3740). Fakturan markeras som betald.",
     "fx_title": "Valutaomräkning",
     "fx_rate_description": "Riksbankens mittkurs {date}: 1 {invoiceCurrency} = {rate} SEK",
     "fx_paid_in_invoice_currency": "Inbetalning motsvarar: {amount}",
