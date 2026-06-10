@@ -109,6 +109,20 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
     load()
   }, [id])
 
+  // Refetch when the tab regains focus. AGI can be generated out-of-band — via
+  // the MCP server, the public API, or another browser tab — and this page
+  // would otherwise keep showing a stale "AGI-fil har inte genererats ännu"
+  // (and a stale "AGI-XML saknas" error in the panel below) until a full
+  // reload. Reconciling agi_generated_at on visibilitychange picks up that
+  // generation without the user hard-refreshing.
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === 'visible') loadRun()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [id])
+
   async function handleAction(action: string, method: string = 'POST') {
     setActionLoading(action)
     const res = await fetch(`/api/salary/runs/${id}/${action}`, { method })

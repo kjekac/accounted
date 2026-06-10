@@ -2105,6 +2105,13 @@
     "vat_label": "VAT",
     "row_label": "Row {index}",
     "add_row": "Add row",
+    "add_text_row": "Add text row",
+    "text_row_label": "Free text",
+    "text_row_placeholder": "Explanatory text – leave empty for a blank row",
+    "remove_row_aria": "Remove row",
+    "remove_row": "Remove row",
+    "row_actions_aria": "Row actions",
+    "drag_handle_aria": "Drag to move the row",
     "notes_card_title": "Notes",
     "notes_card_description": "Optional message on the invoice",
     "notes_placeholder": "E.g. payment terms or thanks for the collaboration...",
@@ -2172,7 +2179,27 @@
     "validation_customer_required": "Select a customer",
     "validation_invoice_date_required": "Invoice date required",
     "validation_due_date_required": "Due date required",
-    "validation_min_one_row": "At least one row required"
+    "validation_min_one_row": "At least one row required",
+    "deduction_menu_label": "Tax reduction",
+    "deduction_none": "None",
+    "deduction_rot": "ROT (30%)",
+    "deduction_rut": "RUT (50%)",
+    "deduction_work_type_placeholder": "Select work type",
+    "deduction_hours_placeholder": "Labor hours",
+    "deduction_labor_only_warning": "Skatteverket requires that only labor costs are included in the ROT/RUT base. Materials must be invoiced separately. Only apply a tax reduction to lines that are 100% labor.",
+    "deduction_card_title": "Tax reduction details",
+    "deduction_card_description": "ROT/RUT deductions are claimed from Skatteverket via the invoice model (fakturamodellen). The customer must approve the payout, so the details must match the buyer exactly.",
+    "deduction_personnummer_label": "Personal identity number (personnummer)",
+    "deduction_personnummer_placeholder": "YYYYMMDD-NNNN",
+    "deduction_personnummer_hint": "Encrypted before storage. Only the last four digits are shown on the invoice.",
+    "deduction_housing_label": "Property designation (fastighetsbeteckning)",
+    "deduction_housing_placeholder": "e.g. Stockholm Vasastan 1:23",
+    "deduction_housing_hint": "Required for ROT deductions (not needed for RUT).",
+    "deduction_cap_over": "The invoice's deduction exceeds the annual cap",
+    "deduction_cap_check": "The customer needs to check their remaining allowance themselves.",
+    "deduction_summary_label": "Tax reduction ROT/RUT",
+    "to_pay_label": "Amount to pay",
+    "total_incl_vat_label": "Total incl. VAT"
   },
   "invoice_review": {
     "assigned_number_prefix": "Will be assigned invoice number",
@@ -2538,6 +2565,7 @@
   },
   "invoice_link_voucher": {
     "intro": "Pick an existing posted journal entry that credits accounts receivable (1510). No new entry is created — you only link the existing one as the payment.",
+    "intro_cash": "Pick an existing posted journal entry that records the payment into a cash/bank account (e.g. 1930). No new entry is created — you only link the existing one as the payment.",
     "search_placeholder": "Search by voucher number or description…",
     "confidence_high": "Strong match",
     "confidence_medium": "Likely match",
@@ -2545,6 +2573,7 @@
     "period_locked": "Locked period",
     "empty_title": "No matching journal entries found",
     "empty_description": "No posted entry credits 1510 in this invoice's currency and date window. Post a new payment instead, or correct the prior bookkeeping first.",
+    "empty_description_cash": "No posted entry debits a cash/bank account (19xx) in this invoice's currency and date window. Post a new payment instead, or correct the prior bookkeeping first.",
     "confirmation": "This links voucher {voucher} ({amount}) as the payment for the invoice.",
     "no_new_je_note": "No new bookkeeping is created — the existing journal entry is the payment posting.",
     "cancel": "Cancel",
@@ -3508,7 +3537,8 @@
     "col_unit": "Unit",
     "col_price": "Price excl. VAT",
     "col_vat": "VAT",
-    "col_status": "Status"
+    "col_status": "Status",
+    "activate_and_save": "Activate and save"
   },
   "article_detail": {
     "back": "Back to articles",
@@ -3543,7 +3573,8 @@
     "deactivate_confirm_description": "The article is hidden from lists and invoice pickers but its history is kept. You can reactivate it later.",
     "deactivate_confirm_label": "Deactivate",
     "deactivated_title": "Article deactivated",
-    "deactivate_failed_title": "Could not deactivate article"
+    "deactivate_failed_title": "Could not deactivate article",
+    "activate_and_save": "Activate and save"
   },
   "form_article": {
     "type_label": "Type *",

@@ -114,6 +114,39 @@ describe('getErrorMessage — English locale uses registry English (C9)', () => 
   })
 })
 
+describe('getErrorMessage — accumulated validation details', () => {
+  it('surfaces the specific per-item reasons instead of the generic 400 message', () => {
+    const msg = getErrorMessage(
+      {
+        error: 'Valideringsfel — korrigera innan godkännande',
+        details: ['Tomas Tysén: Bankuppgifter saknas (clearingnummer och/eller kontonummer)'],
+        warnings: [],
+      },
+      { context: 'salary', statusCode: 400 },
+    )
+    expect(msg).toContain('Tomas Tysén')
+    expect(msg).toContain('Bankuppgifter saknas')
+    expect(msg).toContain('Valideringsfel')
+    // Must NOT collapse to the generic HTTP-400 fallback.
+    expect(msg).not.toBe('Förfrågan innehåller ogiltiga uppgifter.')
+  })
+
+  it('joins multiple items and caps the list with an overflow hint', () => {
+    const details = Array.from({ length: 7 }, (_, i) => `Anställd ${i + 1}: Bankuppgifter saknas`)
+    const msg = getErrorMessage({ error: 'Valideringsfel', details }, { statusCode: 400 })
+    expect(msg).toContain('Anställd 1')
+    expect(msg).toContain('Anställd 5')
+    expect(msg).toContain('•')
+    expect(msg).toContain('(+2 till)')
+    expect(msg).not.toContain('Anställd 6')
+  })
+
+  it('ignores a non-string details array and falls through to the status fallback', () => {
+    const msg = getErrorMessage({ error: 'oklart fel', details: [{ x: 1 }] }, { statusCode: 400 })
+    expect(msg).toBe('Förfrågan innehåller ogiltiga uppgifter.')
+  })
+})
+
 describe('getErrorMessage — existing patterns still work', () => {
   it('regex match for "Entry date ... outside fiscal period" on plain string', () => {
     const msg = getErrorMessage('Entry date 2024-06-15 is outside fiscal period "FY 2025"')

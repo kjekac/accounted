@@ -21,6 +21,9 @@ export interface ActivateAccountsDialogProps {
   // for a number that isn't in the BAS catalogue. The host should close this
   // dialog and open AddAccountDialog prefilled with the number.
   onCreateUnknown?: (accountNumber: string) => void
+  // Confirm button label. Defaults to the bookkeeping wording; non-booking
+  // hosts (e.g. the article register) pass their own.
+  confirmLabel?: string
 }
 
 interface BasLookupRow {
@@ -35,6 +38,7 @@ export function ActivateAccountsDialog({
   onConfirm,
   onCancel,
   onCreateUnknown,
+  confirmLabel,
 }: ActivateAccountsDialogProps) {
   const [rows, setRows] = useState<BasLookupRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -149,7 +153,7 @@ export function ActivateAccountsDialog({
             ) : (
               <>
                 <Plus className="mr-2 h-4 w-4" />
-                Aktivera och bokför
+                {confirmLabel ?? 'Aktivera och bokför'}
               </>
             )}
           </Button>

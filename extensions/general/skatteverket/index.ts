@@ -1591,6 +1591,13 @@ export const skatteverketExtension: Extension = {
               { status: result.status },
             )
           }
+          // Unlocking abandons the granskningsunderlag, so the locally-cached
+          // `awaiting_signing` record no longer reflects SKV — the signing link
+          // it carries points at a released draft. Clear it (mirroring the
+          // DELETE /agi/underlag and /agi/sparad handlers) so the panel drops
+          // back to the pre-submission state instead of stranding the user on a
+          // stale "redo att signeras" box.
+          await ctx.settings.clear(`agi_submission_${period}`)
           return NextResponse.json({ data: result.data })
         } catch (err) {
           return handleSkvError(err)

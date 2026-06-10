@@ -633,17 +633,21 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
   const styles = createStyles(branding)
   const isCreditNote = !!invoice.credited_invoice_id
 
+  // Free-text / blank rows carry no amounts — exclude them from every VAT
+  // calculation. They still render as their own row in the line-items table.
+  const billableItems = items.filter((item) => item.line_type !== 'text')
+
   // Check if items have mixed VAT rates
-  const hasPerLineVat = items.some((item) => item.vat_rate !== undefined && item.vat_rate !== null)
+  const hasPerLineVat = billableItems.some((item) => item.vat_rate !== undefined && item.vat_rate !== null)
   const uniqueRates = hasPerLineVat
-    ? new Set(items.map((item) => item.vat_rate))
+    ? new Set(billableItems.map((item) => item.vat_rate))
     : new Set<number>()
   const showVatColumn = hasPerLineVat && uniqueRates.size > 1
 
   // Calculate per-rate VAT breakdown for totals
   const vatByRate = new Map<number, { base: number; vat: number }>()
   if (hasPerLineVat) {
-    for (const item of items) {
+    for (const item of billableItems) {
       const rate = item.vat_rate ?? 0
       const group = vatByRate.get(rate) || { base: 0, vat: 0 }
       group.base += Math.abs(item.line_total)
@@ -824,22 +828,32 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
             </View>
 
             {/* Table rows */}
-            {items.map((item, index) => (
-              <View key={index} style={styles.tableRow}>
-                <Text style={styles.colDescription}>{item.description}</Text>
-                <Text style={styles.colQty}>{item.quantity}</Text>
-                <Text style={styles.colUnit}>{item.unit}</Text>
-                {!isDeliveryNote && (
-                  <Text style={styles.colPrice}>{formatCurrency(item.unit_price, invoice.currency, lang)}</Text>
-                )}
-                {!isDeliveryNote && showVatColumn && (
-                  <Text style={styles.colVat}>{item.vat_rate ?? 0}%</Text>
-                )}
-                {!isDeliveryNote && (
-                  <Text style={styles.colTotal}>{formatCurrency(item.line_total, invoice.currency, lang)}</Text>
-                )}
-              </View>
-            ))}
+            {items.map((item, index) =>
+              item.line_type === 'text' ? (
+                // Free-text / blank row: description spans the full width, no
+                // numeric columns. An empty description renders as a spacer.
+                <View key={index} style={styles.tableRow}>
+                  <Text style={[styles.colDescription, { width: '100%' }]}>
+                    {item.description || ' '}
+                  </Text>
+                </View>
+              ) : (
+                <View key={index} style={styles.tableRow}>
+                  <Text style={styles.colDescription}>{item.description}</Text>
+                  <Text style={styles.colQty}>{item.quantity}</Text>
+                  <Text style={styles.colUnit}>{item.unit}</Text>
+                  {!isDeliveryNote && (
+                    <Text style={styles.colPrice}>{formatCurrency(item.unit_price, invoice.currency, lang)}</Text>
+                  )}
+                  {!isDeliveryNote && showVatColumn && (
+                    <Text style={styles.colVat}>{item.vat_rate ?? 0}%</Text>
+                  )}
+                  {!isDeliveryNote && (
+                    <Text style={styles.colTotal}>{formatCurrency(item.line_total, invoice.currency, lang)}</Text>
+                  )}
+                </View>
+              )
+            )}
           </View>
         </View>
 

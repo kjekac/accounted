@@ -81,6 +81,48 @@ async function seedPostedVoucher(params: {
   return id
 }
 
+/**
+ * Seed a posted voucher with one debit line and one credit line (balanced).
+ * Lets kontantmetoden tests build a cash-receipt verifikat (debit 1930 /
+ * credit 3001 — no 1510) and a non-matching one (debit 1510 / credit 3001).
+ */
+async function seedVoucherDebitCredit(params: {
+  userId: string
+  companyId: string
+  fiscalPeriodId: string
+  amount?: number
+  debitAccount: string
+  creditAccount: string
+}): Promise<string> {
+  const id = randomUUID()
+  const amount = params.amount ?? 1000
+  await getPool().query(
+    `INSERT INTO public.journal_entries
+       (id, user_id, company_id, fiscal_period_id, voucher_number, voucher_series,
+        entry_date, description, source_type, status)
+     VALUES ($1, $2, $3, $4, $5, 'A', '2026-05-05', 'Inbetalning', 'manual', 'posted')`,
+    [id, params.userId, params.companyId, params.fiscalPeriodId, Math.floor(Math.random() * 100000)],
+  )
+  await getPool().query(
+    `INSERT INTO public.journal_entry_lines
+       (journal_entry_id, account_number, debit_amount, credit_amount)
+     VALUES ($1, $2, $3, 0),
+            ($1, $4, 0, $3)`,
+    [id, params.debitAccount, amount, params.creditAccount],
+  )
+  return id
+}
+
+/** Flip a company onto kontantmetoden so the link RPC keys on the 19xx debit. */
+async function setCashMethod(companyId: string): Promise<void> {
+  await getPool().query(
+    `INSERT INTO public.company_settings (company_id, accounting_method)
+     VALUES ($1, 'cash')
+     ON CONFLICT (company_id) DO UPDATE SET accounting_method = 'cash'`,
+    [companyId],
+  )
+}
+
 describe('link_invoice_voucher pg-real guards', () => {
   it('partial unique index blocks linking the same voucher to the same invoice twice', async () => {
     const userId = await insertAuthUser()
@@ -412,5 +454,92 @@ describe('link_invoice_to_voucher RPC (atomic link — audit C2)', () => {
       [invoiceId],
     )
     expect(Number(pay[0].count)).toBe(1)
+  })
+})
+
+// ============================================================
+// link_invoice_to_voucher RPC — kontantmetoden branch
+// On cash method no 1510 is ever booked (revenue is recognised at payment),
+// so the RPC must key on the bank/cash DEBIT (19xx) instead of the AR credit.
+// Mirrors the accounting-method branch in lib/invoices/voucher-matching.ts.
+// ============================================================
+describe('link_invoice_to_voucher RPC (kontantmetoden — 19xx debit)', () => {
+  it('cash method: links against the 1930 debit of a receipt voucher (no 1510)', async () => {
+    const userId = await insertAuthUser()
+    const companyId = await insertCompany({ createdBy: userId })
+    await insertCompanyMember({ companyId, userId })
+    await setCashMethod(companyId)
+    const fiscalPeriodId = await insertFiscalPeriod({ userId, companyId })
+    const customerId = await seedCustomer({ userId, companyId })
+    const invoiceId = await seedInvoice({ userId, companyId, customerId, total: 1000 })
+    // Cash receipt: debit 1930 (bank) / credit 3001 (revenue) — no receivable.
+    const voucherId = await seedVoucherDebitCredit({
+      userId,
+      companyId,
+      fiscalPeriodId,
+      amount: 1000,
+      debitAccount: '1930',
+      creditAccount: '3001',
+    })
+
+    const result = await callLinkRpc({ invoiceId, voucherId, userId, companyId })
+    expect(result.ok).toBe(true)
+    expect(result.invoice_status).toBe('paid')
+    expect(Number(result.paid_amount)).toBe(1000)
+    expect(Number(result.remaining_amount)).toBe(0)
+
+    const { rows: pay } = await getPool().query(
+      `SELECT amount FROM public.invoice_payments WHERE invoice_id = $1 AND journal_entry_id = $2`,
+      [invoiceId, voucherId],
+    )
+    expect(pay).toHaveLength(1)
+    expect(Number(pay[0].amount)).toBe(1000)
+  })
+
+  it('cash method: rejects a voucher with no bank/cash debit (NO_AR_CREDIT)', async () => {
+    const userId = await insertAuthUser()
+    const companyId = await insertCompany({ createdBy: userId })
+    await insertCompanyMember({ companyId, userId })
+    await setCashMethod(companyId)
+    const fiscalPeriodId = await insertFiscalPeriod({ userId, companyId })
+    const customerId = await seedCustomer({ userId, companyId })
+    const invoiceId = await seedInvoice({ userId, companyId, customerId, total: 1000 })
+    // An AR-clearing voucher (debit 1510 / credit 3001): valid on accrual, but
+    // on cash there is no 19xx debit, so it must not match.
+    const voucherId = await seedVoucherDebitCredit({
+      userId,
+      companyId,
+      fiscalPeriodId,
+      amount: 1000,
+      debitAccount: '1510',
+      creditAccount: '3001',
+    })
+
+    const result = await callLinkRpc({ invoiceId, voucherId, userId, companyId })
+    expect(result.ok).toBe(false)
+    expect(result.code).toBe('LINK_VOUCHER_NO_AR_CREDIT')
+
+    const { rows: inv } = await getPool().query(
+      `SELECT status, paid_amount FROM public.invoices WHERE id = $1`,
+      [invoiceId],
+    )
+    expect(inv[0].status).toBe('sent')
+    expect(Number(inv[0].paid_amount)).toBe(0)
+  })
+
+  it('accrual default (no settings row): still keys on the 1510 credit', async () => {
+    // Regression guard: a company with no company_settings row must behave as
+    // accrual — the 1930-debit / 1510-credit voucher links via its AR credit.
+    const userId = await insertAuthUser()
+    const companyId = await insertCompany({ createdBy: userId })
+    await insertCompanyMember({ companyId, userId })
+    const fiscalPeriodId = await insertFiscalPeriod({ userId, companyId })
+    const customerId = await seedCustomer({ userId, companyId })
+    const invoiceId = await seedInvoice({ userId, companyId, customerId, total: 1000 })
+    const voucherId = await seedPostedVoucher({ userId, companyId, fiscalPeriodId, amount: 1000 })
+
+    const result = await callLinkRpc({ invoiceId, voucherId, userId, companyId })
+    expect(result.ok).toBe(true)
+    expect(result.invoice_status).toBe('paid')
   })
 })

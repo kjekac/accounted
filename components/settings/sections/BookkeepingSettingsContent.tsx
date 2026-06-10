@@ -9,6 +9,7 @@ import { SettingsLoadingSkeleton } from '@/components/settings/SettingsLoadingSk
 import { PeriodLockingSettings } from '@/components/settings/PeriodLockingSettings'
 import { VoucherSeriesManager } from '@/components/settings/VoucherSeriesManager'
 import { VoucherSeriesPerSourceTypeForm } from '@/components/settings/VoucherSeriesPerSourceTypeForm'
+import { applyDefaultSeriesToMap } from '@/lib/bookkeeping/voucher-series-resolver'
 import { PeriodiseringAutoDetectToggle } from '@/components/settings/PeriodiseringAutoDetectToggle'
 import { AccountingFrameworkForm } from '@/components/settings/AccountingFrameworkForm'
 import { useSettings } from '@/components/settings/useSettings'
@@ -46,6 +47,25 @@ export function BookkeepingSettingsContent() {
       accounting_method: accountingMethod,
       default_voucher_series: defaultVoucherSeries,
     }
+
+    // Write-through: the booking engine resolves the series from the
+    // per-source-type map, NOT from default_voucher_series. So when the user
+    // changes the global default, propagate it across the map — but only for
+    // types that were still following the previous default, leaving explicit
+    // per-type overrides (set via VoucherSeriesPerSourceTypeForm) untouched.
+    // Without this the "Standardserie" dropdown is a no-op for bookkeeping.
+    // Only runs when the series actually changed, so saving the form for an
+    // unrelated reason (e.g. the lock date) never rewrites the map.
+    const prevDefault = settings?.default_voucher_series || 'A'
+    const currentMap = settings?.default_voucher_series_per_source_type
+    if (currentMap && defaultVoucherSeries !== prevDefault) {
+      updates.default_voucher_series_per_source_type = applyDefaultSeriesToMap(
+        currentMap,
+        prevDefault,
+        defaultVoucherSeries,
+      )
+    }
+
     return {
       updates,
       onSuccess: (data: Record<string, unknown>) => {

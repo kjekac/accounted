@@ -5,7 +5,8 @@ import { validateBody } from '@/lib/api/validate'
 import { CreateArticleSchema } from '@/lib/api/schemas'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { ensureArticleNumber } from '@/lib/articles/ensure-article-number'
-import { isValidRevenueAccount } from '@/lib/articles/validate-revenue-account'
+import { checkRevenueAccount } from '@/lib/articles/validate-revenue-account'
+import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { Article } from '@/types'
 
@@ -50,9 +51,14 @@ export const POST = withRouteContext(
     const body = result.data
 
     // Guard the optional revenue-account override against the chart of accounts.
+    // A class-3 account that merely isn't activated yet gets the standard
+    // ACCOUNTS_NOT_IN_CHART envelope so the client can offer activate-and-retry.
     if (body.revenue_account) {
-      const ok = await isValidRevenueAccount(supabase, companyId!, body.revenue_account)
-      if (!ok) {
+      const status = await checkRevenueAccount(supabase, companyId!, body.revenue_account)
+      if (status === 'activatable') {
+        return accountsNotInChartResponse(new AccountsNotInChartError([body.revenue_account]))
+      }
+      if (status === 'invalid') {
         return errorResponseFromCode('ARTICLE_REVENUE_ACCOUNT_INVALID', log, { requestId })
       }
     }

@@ -167,6 +167,9 @@ function isSwedishUserMessage(message: string): boolean {
     /måste/i,
     /redan finns/i,
     /gick fel/i,
+    /valideringsfel/i,
+    /korrigera/i,
+    /bankuppgifter/i,
     /behörighet/i,
     /session/i,
     /förfrågan/i,
@@ -381,6 +384,23 @@ export function getErrorMessage(
       if (typeof structured.message === 'string' && structured.message.trim()) {
         return structured.message
       }
+    }
+
+    // Accumulated per-item validation list from routes that collect several
+    // problems before responding, e.g. the salary approve route:
+    //   { error: 'Valideringsfel …', details: ['Tomas Tysén: Bankuppgifter saknas …', …] }
+    // Surface the specific reasons — otherwise this shape falls all the way
+    // through to the generic HTTP-400 message and the user learns nothing.
+    if (
+      Array.isArray(obj.details) &&
+      obj.details.length > 0 &&
+      obj.details.every((d) => typeof d === 'string' && d.trim() !== '')
+    ) {
+      const items = (obj.details as string[]).map((d) => d.trim())
+      const shown = items.slice(0, 5).join(' • ')
+      const more = items.length > 5 ? ` (+${items.length - 5} till)` : ''
+      const lead = typeof obj.error === 'string' && obj.error.trim() ? `${obj.error.trim()}: ` : ''
+      return `${lead}${shown}${more}`
     }
 
     // Try Zod validation errors

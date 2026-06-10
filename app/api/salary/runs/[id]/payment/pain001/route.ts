@@ -4,6 +4,7 @@ import { ensureInitialized } from '@/lib/init'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import { generatePain001 } from '@/lib/salary/payment/pain001-generator'
+import { effectiveNetPayout } from '@/lib/salary/payment/effective-net'
 import { getBranding } from '@/lib/branding/service'
 import type { Pain001CompanyData, Pain001Employee } from '@/lib/salary/payment/pain001-generator'
 
@@ -78,8 +79,11 @@ export async function GET(
     return NextResponse.json({ error: 'Inga anställda i lönekörningen' }, { status: 400 })
   }
 
-  // Validate all employees have bank accounts
+  // Validate bank accounts — but only for employees who will actually appear
+  // in the file (positive payout). A zero-net employee is filtered out below,
+  // so missing bank details for them must not block the file.
   const missingBank = runEmployees.filter(sre => {
+    if (effectiveNetPayout(sre) <= 0) return false
     const emp = sre.employee as { clearing_number: string | null; bank_account_number: string | null } | null
     return !emp?.clearing_number || !emp?.bank_account_number
   })
@@ -98,11 +102,7 @@ export async function GET(
   }
 
   const employees: Pain001Employee[] = runEmployees
-    .map(sre => {
-      const effectiveNet =
-        sre.net_salary + (sre.tax_withheld - (sre.tax_withheld_override ?? sre.tax_withheld))
-      return { sre, effectiveNet }
-    })
+    .map(sre => ({ sre, effectiveNet: effectiveNetPayout(sre) }))
     .filter(({ effectiveNet }) => effectiveNet > 0)
     .map(({ sre, effectiveNet }) => {
       const emp = sre.employee as { first_name: string; last_name: string; clearing_number: string; bank_account_number: string }

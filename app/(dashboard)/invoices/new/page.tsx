@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase/client'
 import { useForm, useFieldArray, Controller } from 'react-hook-form'
+import { Reorder } from 'framer-motion'
+import { SortableRow } from '@/components/ui/sortable-row'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { addDays, format } from 'date-fns'
@@ -21,7 +23,18 @@ import { useToast } from '@/components/ui/use-toast'
 import { formatCurrency } from '@/lib/utils'
 import { getVatRules, getAvailableVatRates } from '@/lib/invoices/vat-rules'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
-import { Loader2, Plus, Trash2, ArrowLeft, Send, Eye, Landmark, Lock, AlertTriangle } from 'lucide-react'
+import { Loader2, Plus, Trash2, ArrowLeft, Send, Eye, Landmark, Lock, AlertTriangle, MoreVertical } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import { InvoiceReviewContent } from '@/components/invoices/InvoiceReviewContent'
@@ -68,10 +81,14 @@ export default function NewInvoicePage() {
 
   const schema = useMemo(() => {
     const itemSchema = z.object({
-      description: z.string().min(1, t('validation_description_required')),
-      quantity: z.number().min(0.01, t('validation_quantity_min')),
-      unit: z.string().min(1, t('validation_unit_required')),
-      unit_price: z.number().min(0, t('validation_price_positive')),
+      // 'text' rows carry only a (possibly empty) description — a free-text or
+      // blank spacer line. Product rows keep the original requirements,
+      // enforced in the refine below so the base shape stays uniform.
+      line_type: z.enum(['product', 'text']).optional(),
+      description: z.string(),
+      quantity: z.number(),
+      unit: z.string(),
+      unit_price: z.number(),
       vat_rate: z.number().min(0).max(25),
       // Article linkage (artikelregister). Optional — free-text lines omit them.
       article_id: z.string().nullable().optional(),
@@ -82,6 +99,20 @@ export default function NewInvoicePage() {
       work_type: z.string().nullable().optional(),
       housing_designation: z.string().nullable().optional(),
       apartment_number: z.string().nullable().optional(),
+    }).superRefine((item, ctx) => {
+      if (item.line_type === 'text') return
+      if (item.description.trim().length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['description'], message: t('validation_description_required') })
+      }
+      if (!(item.quantity >= 0.01)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['quantity'], message: t('validation_quantity_min') })
+      }
+      if (item.unit.trim().length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['unit'], message: t('validation_unit_required') })
+      }
+      if (!(item.unit_price >= 0)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['unit_price'], message: t('validation_price_positive') })
+      }
     })
     return z.object({
       customer_id: z.string().min(1, t('validation_customer_required')),
@@ -184,10 +215,22 @@ export default function NewInvoicePage() {
     setValue('due_date', format(addDays(new Date(), 30), 'yyyy-MM-dd'))
   }, [])
 
-  const { fields, append, remove } = useFieldArray({
+  const { fields, append, remove, move } = useFieldArray({
     control,
     name: 'items',
   })
+
+  // Drag-to-reorder (grip handle left of each row). framer-motion hands back
+  // the fully reordered array; we translate the single displacement into a
+  // react-hook-form move() so the registered inputs follow. The persisted
+  // sort_order is the array index at create time, so reordering here is all
+  // that's needed — no extra payload.
+  const handleItemsReorder = (newOrder: typeof fields) => {
+    const movedAt = newOrder.findIndex((f, i) => f.id !== fields[i]?.id)
+    if (movedAt === -1) return
+    const from = fields.findIndex((f) => f.id === newOrder[movedAt].id)
+    if (from !== -1 && from !== movedAt) move(from, movedAt)
+  }
 
   const watchItems = watch('items')
   const watchCurrency = watch('currency')
@@ -445,18 +488,20 @@ export default function NewInvoicePage() {
     ? getAvailableVatRates(selectedCustomer.customer_type, selectedCustomer.vat_number_validated)
     : []
   const isRateLocked = availableRates.length === 1
-  // Show a warning when a non-registered seller has picked any non-zero VAT
-  // rate. ML 16 kap. 23 § (faktureringsmoms): stated VAT is owed to
-  // Skatteverket regardless of registration, but the buyer cannot deduct it
-  // as input VAT — so we surface the consequence rather than block the input.
-  const hasNonZeroVat = watchItems.some((item) => (item?.vat_rate ?? 0) > 0)
-  const showNotRegisteredVatWarning = !vatRegistered && hasNonZeroVat
+  // A non-momsregistrerad company never charges VAT: hide the Moms column and
+  // book every line momsfritt. `vatRegistered` is the single switch the whole
+  // form keys off — no rate picker, no warning, no VAT in the totals/preview.
+  // The API enforces the same (forces 0% server-side), so a stale hidden field
+  // value can't smuggle VAT onto the invoice. With VAT shown the description
+  // keeps its 3/12 width; when hidden it widens to fill the freed columns.
+  const descColSpan = vatRegistered ? 'md:col-span-3' : 'md:col-span-5'
 
-  // Calculate per-item VAT
+  // Calculate per-item VAT. When not VAT-registered every rate is forced to 0
+  // so vatAmount stays 0 and total === subtotal.
   const vatByRate = new Map<number, { base: number; vat: number }>()
   let vatAmount = 0
   for (const item of watchItems) {
-    const rate = item.vat_rate ?? (vatRules?.rate || 25)
+    const rate = vatRegistered ? (item.vat_rate ?? (vatRules?.rate || 25)) : 0
     const lineTotal = (item.quantity || 0) * (item.unit_price || 0)
     const lineVat = Math.round(lineTotal * rate / 100 * 100) / 100
     vatAmount += lineVat
@@ -934,25 +979,124 @@ export default function NewInvoicePage() {
               <CardDescription>{t('items_card_description')}</CardDescription>
             </CardHeader>
             <CardContent>
-              {showNotRegisteredVatWarning && (
-                <div className="mb-4 flex items-start gap-3 rounded-lg border border-border bg-secondary/60 px-4 py-3 text-sm">
-                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />
-                  <p className="text-muted-foreground">
-                    Du är inte momsregistrerad. Om du ändå tar ut moms är du
-                    enligt ML 16 kap. 23 § skyldig att betala in den till
-                    Skatteverket, men din kund får inte dra av den som ingående
-                    moms. Om du har börjat bedriva momspliktig verksamhet bör
-                    du först registrera dig för moms.
-                  </p>
-                </div>
-              )}
               <div className="space-y-4">
+                <Reorder.Group
+                  as="div"
+                  axis="y"
+                  values={fields}
+                  onReorder={handleItemsReorder}
+                  className="space-y-4"
+                >
                 {fields.map((field, index) => {
+                  const isTextRow = watchItems[index]?.line_type === 'text'
                   const lineTotal = (watchItems[index]?.quantity || 0) * (watchItems[index]?.unit_price || 0)
-                  const lineVat = Math.round(lineTotal * (watchItems[index]?.vat_rate ?? 25) / 100 * 100) / 100
+                  const lineVat = vatRegistered && !isTextRow
+                    ? Math.round(lineTotal * (watchItems[index]?.vat_rate ?? 25) / 100 * 100) / 100
+                    : 0
+                  // Free-text / blank row: just a description field (may be left
+                  // empty for a spacer) and a delete button.
+                  if (isTextRow) {
+                    return (
+                      <SortableRow
+                        key={field.id}
+                        value={field}
+                        handleLabel={t('drag_handle_aria')}
+                        disabled={fields.length === 1}
+                      >
+                        <div className="rounded-lg border bg-card p-4 md:rounded-none md:border-0 md:bg-transparent md:p-0">
+                          <div className="flex items-end gap-2">
+                            <div className="flex-1 space-y-1">
+                              <Label className="text-xs text-muted-foreground">{t('text_row_label')}</Label>
+                              <Input
+                                placeholder={t('text_row_placeholder')}
+                                {...register(`items.${index}.description`)}
+                              />
+                            </div>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="shrink-0 min-h-[44px] min-w-[44px] text-muted-foreground hover:text-destructive"
+                              onClick={() => remove(index)}
+                              disabled={fields.length === 1}
+                              aria-label={t('remove_row_aria')}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </SortableRow>
+                    )
+                  }
+                  // Per-row action button. On real invoices it's a ⋮ menu that
+                  // holds both the ROT/RUT skattereduktion choice and delete;
+                  // proformas/delivery notes have no deduction model, so they
+                  // keep a plain trash button (a one-item menu would be noise).
+                  const renderRowActions = (triggerClassName: string) =>
+                    isInvoiceDoc ? (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className={triggerClassName}
+                            aria-label={t('row_actions_aria')}
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuLabel>{t('deduction_menu_label')}</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={watchItems[index]?.deduction_type ?? 'none'}
+                            onValueChange={(v) => {
+                              const next = v === 'none' ? null : (v as 'rot' | 'rut')
+                              setValue(`items.${index}.deduction_type`, next, { shouldDirty: true })
+                              if (next === null) {
+                                setValue(`items.${index}.work_type`, null)
+                                setValue(`items.${index}.labor_hours`, null)
+                                setValue(`items.${index}.housing_designation`, null)
+                                setValue(`items.${index}.apartment_number`, null)
+                              }
+                            }}
+                          >
+                            <DropdownMenuRadioItem value="none">{t('deduction_none')}</DropdownMenuRadioItem>
+                            <DropdownMenuRadioItem value="rot">{t('deduction_rot')}</DropdownMenuRadioItem>
+                            <DropdownMenuRadioItem value="rut">{t('deduction_rut')}</DropdownMenuRadioItem>
+                          </DropdownMenuRadioGroup>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-destructive focus:text-destructive"
+                            disabled={fields.length === 1}
+                            onSelect={() => remove(index)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            {t('remove_row')}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className={triggerClassName}
+                        onClick={() => remove(index)}
+                        disabled={fields.length === 1}
+                        aria-label={t('remove_row_aria')}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )
                   return (
-                    <div
+                    <SortableRow
                       key={field.id}
+                      value={field}
+                      handleLabel={t('drag_handle_aria')}
+                      disabled={fields.length === 1}
+                    >
+                    <div
                       className="rounded-lg border bg-card p-4 space-y-3 relative md:rounded-none md:border-0 md:bg-transparent md:p-0 md:space-y-0 md:grid md:grid-cols-12 md:gap-4 md:items-start"
                     >
                       {/* Article picker (artikelregister). Optional — leave on
@@ -1006,7 +1150,7 @@ export default function NewInvoicePage() {
 
                       {/* Description + mobile delete button */}
                       <div className="flex items-start gap-2 md:contents">
-                        <div className="flex-1 space-y-1 md:col-span-3 md:space-y-2">
+                        <div className={`flex-1 space-y-1 ${descColSpan} md:space-y-2`}>
                           <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">{t('description_label')}</Label>
                           <Input
                             placeholder={t('description_placeholder')}
@@ -1018,16 +1162,7 @@ export default function NewInvoicePage() {
                             </p>
                           )}
                         </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="shrink-0 min-h-[44px] min-w-[44px] -mr-2 -mt-1 md:hidden"
-                          onClick={() => remove(index)}
-                          disabled={fields.length === 1}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        {renderRowActions('shrink-0 min-h-[44px] min-w-[44px] -mr-2 -mt-1 md:hidden')}
                       </div>
 
                       {/* Antal, Enhet, à-pris */}
@@ -1075,154 +1210,118 @@ export default function NewInvoicePage() {
                         </div>
                       </div>
 
-                      {/* Moms */}
-                      <div className="space-y-1 md:col-span-2 md:space-y-2">
-                        <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">{t('vat_label')}</Label>
-                        <Controller
-                          name={`items.${index}.vat_rate`}
-                          control={control}
-                          render={({ field }) => (
-                            <Select
-                              value={String(field.value ?? 25)}
-                              onValueChange={(v) => field.onChange(Number(v))}
-                              disabled={isRateLocked}
-                            >
-                              <SelectTrigger>
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {availableRates.map((opt) => (
-                                  <SelectItem key={opt.rate} value={String(opt.rate)}>
-                                    {opt.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          )}
-                        />
-                      </div>
-
-                      {/* Desktop delete button */}
-                      <div className="hidden md:flex md:col-span-1 md:items-end">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => remove(index)}
-                          disabled={fields.length === 1}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-
-                      {/* ROT/RUT-avdrag per-row controls. Only shown on real
-                          invoices — proformas and delivery notes have no
-                          deduction model. Collapsed to a tiny segmented
-                          toggle by default; selecting ROT or RUT reveals the
-                          work-type picker. */}
-                      {isInvoiceDoc && (
-                        <div className="md:col-span-12 mt-2 md:mt-3">
+                      {/* Moms — hidden entirely when the company is not
+                          momsregistrerad (no VAT may be charged). */}
+                      {vatRegistered && (
+                        <div className="space-y-1 md:col-span-2 md:space-y-2">
+                          <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">{t('vat_label')}</Label>
                           <Controller
-                            name={`items.${index}.deduction_type`}
+                            name={`items.${index}.vat_rate`}
                             control={control}
-                            render={({ field }) => {
-                              const value = field.value ?? 'none'
-                              return (
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="text-xs text-muted-foreground">Skattereduktion:</span>
+                            render={({ field }) => (
+                              <Select
+                                value={String(field.value ?? 25)}
+                                onValueChange={(v) => field.onChange(Number(v))}
+                                disabled={isRateLocked}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {availableRates.map((opt) => (
+                                    <SelectItem key={opt.rate} value={String(opt.rate)}>
+                                      {opt.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
+                          />
+                        </div>
+                      )}
+
+                      {/* Desktop row actions (⋮ menu or trash). An invisible
+                          label spacer mirrors the field columns (same Label +
+                          space-y-2), so the button sits on the input row — not
+                          high against the labels, nor low at the row bottom. */}
+                      <div className="hidden md:col-span-1 md:block md:space-y-2">
+                        <Label className="invisible text-xs md:text-sm" aria-hidden="true">&nbsp;</Label>
+                        <div className="flex justify-end">
+                          {renderRowActions('')}
+                        </div>
+                      </div>
+
+                      {/* ROT/RUT-avdrag strip — only when a deduction is active
+                          on this row (chosen via the ⋮ menu). A leading tag shows
+                          which reduction applies; the work-type + hours are
+                          required for the Skatteverket claim. Rows with no
+                          deduction render nothing here and stay clean. */}
+                      {isInvoiceDoc && watchItems[index]?.deduction_type && (
+                        <div className="md:col-span-12 mt-2 md:mt-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="secondary" className="tabular-nums">
+                              {watchItems[index]?.deduction_type === 'rot' ? 'ROT(30)' : 'RUT(50)'}
+                            </Badge>
+                            <Controller
+                              name={`items.${index}.work_type`}
+                              control={control}
+                              render={({ field: workField }) => {
+                                const opts =
+                                  watchItems[index]?.deduction_type === 'rot'
+                                    ? ROT_WORK_TYPES
+                                    : RUT_WORK_TYPES
+                                return (
                                   <Select
-                                    value={value}
-                                    onValueChange={(v) => {
-                                      const next = v === 'none' ? null : (v as 'rot' | 'rut')
-                                      field.onChange(next)
-                                      if (next === null) {
-                                        setValue(`items.${index}.work_type`, null)
-                                        setValue(`items.${index}.labor_hours`, null)
-                                        setValue(`items.${index}.housing_designation`, null)
-                                        setValue(`items.${index}.apartment_number`, null)
-                                      }
-                                    }}
+                                    value={workField.value ?? ''}
+                                    onValueChange={(v) => workField.onChange(v || null)}
                                   >
-                                    <SelectTrigger className="h-8 w-32">
-                                      <SelectValue />
+                                    <SelectTrigger className="h-8 w-56">
+                                      <SelectValue placeholder={t('deduction_work_type_placeholder')} />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      <SelectItem value="none">Ingen</SelectItem>
-                                      <SelectItem value="rot">ROT (30%)</SelectItem>
-                                      <SelectItem value="rut">RUT (50%)</SelectItem>
+                                      {opts.map((w) => (
+                                        <SelectItem key={w.code} value={w.code}>
+                                          {w.label}
+                                        </SelectItem>
+                                      ))}
                                     </SelectContent>
                                   </Select>
-                                  {watchItems[index]?.deduction_type && (
-                                    <>
-                                      <Controller
-                                        name={`items.${index}.work_type`}
-                                        control={control}
-                                        render={({ field: workField }) => {
-                                          const opts =
-                                            watchItems[index]?.deduction_type === 'rot'
-                                              ? ROT_WORK_TYPES
-                                              : RUT_WORK_TYPES
-                                          return (
-                                            <Select
-                                              value={workField.value ?? ''}
-                                              onValueChange={(v) => workField.onChange(v || null)}
-                                            >
-                                              <SelectTrigger className="h-8 w-56">
-                                                <SelectValue placeholder="Välj arbetstyp" />
-                                              </SelectTrigger>
-                                              <SelectContent>
-                                                {opts.map((w) => (
-                                                  <SelectItem key={w.code} value={w.code}>
-                                                    {w.label}
-                                                  </SelectItem>
-                                                ))}
-                                              </SelectContent>
-                                            </Select>
-                                          )
-                                        }}
-                                      />
-                                      <Input
-                                        type="number"
-                                        step="0.5"
-                                        inputMode="decimal"
-                                        placeholder="Arbetstimmar"
-                                        className="h-8 w-32 text-right tabular-nums"
-                                        {...register(`items.${index}.labor_hours`, {
-                                          valueAsNumber: true,
-                                          setValueAs: (v) =>
-                                            v === '' || Number.isNaN(v) ? null : Number(v),
-                                        })}
-                                      />
-                                      {(() => {
-                                        const amt = computeDeduction({
-                                          unit_price: watchItems[index]?.unit_price || 0,
-                                          quantity: watchItems[index]?.quantity || 0,
-                                          deduction_type: watchItems[index]?.deduction_type,
-                                        })
-                                        return amt > 0 ? (
-                                          <span className="text-xs tabular-nums text-muted-foreground">
-                                            −{formatCurrency(amt, watchCurrency)}
-                                          </span>
-                                        ) : null
-                                      })()}
-                                    </>
-                                  )}
-                                </div>
-                              )
-                            }}
-                          />
+                                )
+                              }}
+                            />
+                            <Input
+                              type="number"
+                              step="0.5"
+                              inputMode="decimal"
+                              placeholder={t('deduction_hours_placeholder')}
+                              className="h-8 w-32 text-right tabular-nums"
+                              {...register(`items.${index}.labor_hours`, {
+                                valueAsNumber: true,
+                                setValueAs: (v) =>
+                                  v === '' || Number.isNaN(v) ? null : Number(v),
+                              })}
+                            />
+                            {(() => {
+                              const amt = computeDeduction({
+                                unit_price: watchItems[index]?.unit_price || 0,
+                                quantity: watchItems[index]?.quantity || 0,
+                                deduction_type: watchItems[index]?.deduction_type,
+                              })
+                              return amt > 0 ? (
+                                <span className="text-xs tabular-nums text-muted-foreground">
+                                  −{formatCurrency(amt, watchCurrency)}
+                                </span>
+                              ) : null
+                            })()}
+                          </div>
                           {/* Labor-only disclosure (Skatteverket fakturamodellen).
                               30%/50% applies to the full line total — the seller
                               must ensure the line is 100% labor; material has
                               to be invoiced separately. */}
-                          {watchItems[index]?.deduction_type && (
-                            <div className="mt-2 flex items-start gap-2 text-xs text-warning-foreground">
-                              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 text-warning shrink-0" />
-                              <p>
-                                Skatteverket kräver att endast arbetskostnad ingår i ROT/RUT-grundlaget. Material ska faktureras separat. Sätt endast skattereduktion på rader som är 100% arbete.
-                              </p>
-                            </div>
-                          )}
+                          <div className="mt-2 flex items-start gap-2 text-xs text-warning-foreground">
+                            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 text-warning shrink-0" />
+                            <p>{t('deduction_labor_only_warning')}</p>
+                          </div>
                         </div>
                       )}
 
@@ -1232,33 +1331,71 @@ export default function NewInvoicePage() {
                         <span className="font-medium tabular-nums">{formatCurrency(lineTotal + lineVat, watchCurrency)}</span>
                       </div>
                     </div>
+                    </SortableRow>
                   )
                 })}
+                </Reorder.Group>
 
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full md:w-auto"
-                  onClick={() =>
-                    append({
-                      description: '',
-                      quantity: 1,
-                      unit: 'st',
-                      unit_price: 0,
-                      vat_rate: availableRates[0]?.rate ?? 25,
-                      article_id: null,
-                      revenue_account: null,
-                      deduction_type: null,
-                      labor_hours: null,
-                      work_type: null,
-                      housing_designation: null,
-                      apartment_number: null,
-                    })
-                  }
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  {t('add_row')}
-                </Button>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full md:w-auto"
+                    onClick={() =>
+                      append({
+                        line_type: 'product',
+                        description: '',
+                        quantity: 1,
+                        unit: 'st',
+                        unit_price: 0,
+                        vat_rate: vatRegistered ? (availableRates[0]?.rate ?? 25) : 0,
+                        article_id: null,
+                        revenue_account: null,
+                        deduction_type: null,
+                        labor_hours: null,
+                        work_type: null,
+                        housing_designation: null,
+                        apartment_number: null,
+                      })
+                    }
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    {t('add_row')}
+                  </Button>
+                  {/* Free-text / blank row — explanatory text under an item, or
+                      an empty spacer. Carries no amounts and never books. Not
+                      offered for a received självfaktura: that is a faithful
+                      revenue-only transcription, and the self-billed endpoint
+                      (SelfBillingInvoiceItemSchema) has no line_type and rejects
+                      zero-amount rows. */}
+                  {!isSelfBilled && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="w-full md:w-auto text-muted-foreground"
+                      onClick={() =>
+                        append({
+                          line_type: 'text',
+                          description: '',
+                          quantity: 0,
+                          unit: '',
+                          unit_price: 0,
+                          vat_rate: 0,
+                          article_id: null,
+                          revenue_account: null,
+                          deduction_type: null,
+                          labor_hours: null,
+                          work_type: null,
+                          housing_designation: null,
+                          apartment_number: null,
+                        })
+                      }
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      {t('add_text_row')}
+                    </Button>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -1269,47 +1406,46 @@ export default function NewInvoicePage() {
             {isInvoiceDoc && hasAnyDeduction && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Underlag för skattereduktion</CardTitle>
-                  <CardDescription>
-                    ROT/RUT-avdrag begärs hos Skatteverket via fakturamodellen. Kunden behöver godkänna utbetalningen, så uppgifterna måste matcha köparen exakt.
-                  </CardDescription>
+                  <CardTitle>{t('deduction_card_title')}</CardTitle>
+                  <CardDescription>{t('deduction_card_description')}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="deduction_personnummer">
-                      Personnummer<RequiredMark />
+                      {t('deduction_personnummer_label')}<RequiredMark />
                     </Label>
                     <Input
                       id="deduction_personnummer"
-                      placeholder="ÅÅÅÅMMDD-NNNN"
+                      placeholder={t('deduction_personnummer_placeholder')}
                       autoComplete="off"
                       {...register('deduction_personnummer')}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Krypteras innan lagring. Endast de fyra sista siffrorna visas på fakturan.
+                      {t('deduction_personnummer_hint')}
                     </p>
                   </div>
                   {hasAnyRotLine && (
                     <div className="space-y-2">
                       <Label htmlFor="deduction_housing_designation">
-                        Fastighetsbeteckning<RequiredMark />
+                        {t('deduction_housing_label')}<RequiredMark />
                       </Label>
                       <Input
                         id="deduction_housing_designation"
-                        placeholder="t.ex. Stockholm Vasastan 1:23"
+                        placeholder={t('deduction_housing_placeholder')}
                         {...register('deduction_housing_designation')}
                       />
                       <p className="text-xs text-muted-foreground">
-                        Krävs för ROT-avdrag (RUT behöver inte detta fält).
+                        {t('deduction_housing_hint')}
                       </p>
                     </div>
                   )}
                   {(deductionByKind.rot > ROT_MAX || deductionByKind.rut > RUT_MAX) && (
                     <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                      Fakturans avdrag överstiger årstaket
+                      {t('deduction_cap_over')}
                       {deductionByKind.rot > ROT_MAX && ` (ROT ${ROT_MAX.toLocaleString('sv-SE')} kr)`}
                       {deductionByKind.rut > RUT_MAX && ` (RUT ${RUT_MAX.toLocaleString('sv-SE')} kr)`}
-                      . Kunden behöver kontrollera sitt återstående utrymme själv.
+                      {'. '}
+                      {t('deduction_cap_check')}
                     </div>
                   )}
                 </CardContent>
@@ -1458,7 +1594,9 @@ export default function NewInvoicePage() {
                 <span className="text-muted-foreground">{t('subtotal_label')}</span>
                 <span>{formatCurrency(subtotal, watchCurrency)}</span>
               </div>
-              {Array.from(vatByRate.entries())
+              {/* VAT rows — only when momsregistrerad. A non-registered company
+                  shows no moms line at all (subtotal === total). */}
+              {vatRegistered && Array.from(vatByRate.entries())
                 .sort(([a], [b]) => b - a)
                 .map(([rate, group]) => (
                   <div key={rate}>
@@ -1476,7 +1614,7 @@ export default function NewInvoicePage() {
                     )}
                   </div>
                 ))}
-              {vatByRate.size === 0 && (
+              {vatRegistered && vatByRate.size === 0 && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">{t('vat_label_short')}</span>
                   <span>{formatCurrency(0, watchCurrency)}</span>
@@ -1484,18 +1622,18 @@ export default function NewInvoicePage() {
               )}
               {hasAnyDeduction && (
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Skattereduktion ROT/RUT</span>
+                  <span className="text-muted-foreground">{t('deduction_summary_label')}</span>
                   <span className="tabular-nums">−{formatCurrency(deductionTotal, watchCurrency)}</span>
                 </div>
               )}
               <Separator />
               <div className="flex justify-between font-bold text-lg">
-                <span>{hasAnyDeduction ? 'Att betala' : t('total_label')}</span>
+                <span>{hasAnyDeduction ? t('to_pay_label') : t('total_label')}</span>
                 <span>{formatCurrency(hasAnyDeduction ? toPay : total, watchCurrency)}</span>
               </div>
               {hasAnyDeduction && (
                 <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>Totalt inkl. moms</span>
+                  <span>{t('total_incl_vat_label')}</span>
                   <span className="tabular-nums">{formatCurrency(total, watchCurrency)}</span>
                 </div>
               )}
@@ -1612,7 +1750,7 @@ export default function NewInvoicePage() {
             currency={(pendingData?.currency || 'SEK') as Currency}
             items={(pendingData?.items || []).map((item) => ({
               ...item,
-              vat_rate: item.vat_rate ?? (vatRules?.rate || 25),
+              vat_rate: vatRegistered ? (item.vat_rate ?? (vatRules?.rate || 25)) : 0,
             }))}
             subtotal={subtotal}
             vatAmount={vatAmount}

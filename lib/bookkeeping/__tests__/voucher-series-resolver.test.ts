@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  applyDefaultSeriesToMap,
   formatVoucher,
   parseVoucher,
   resolveDefaultSeriesForSource,
@@ -93,6 +94,47 @@ describe('resolveDefaultSeriesForSource', () => {
         'manual',
       ),
     ).toBe('A')
+  })
+})
+
+describe('applyDefaultSeriesToMap', () => {
+  it('moves types following the old default onto the new default', () => {
+    const result = applyDefaultSeriesToMap(
+      { manual: 'A', invoice_paid: 'A', invoice_cash_payment: 'A' },
+      'A',
+      'V',
+    )
+    expect(result).toEqual({ manual: 'V', invoice_paid: 'V', invoice_cash_payment: 'V' })
+  })
+
+  it('preserves explicit per-type overrides that differ from the old default', () => {
+    const result = applyDefaultSeriesToMap(
+      { manual: 'A', supplier_invoice_paid: 'B', salary_payment: 'C' },
+      'A',
+      'V',
+    )
+    // Only the type that was following the old default (A) moves; B and C stay.
+    expect(result).toEqual({ manual: 'V', supplier_invoice_paid: 'B', salary_payment: 'C' })
+  })
+
+  it('does not mutate the input map', () => {
+    const input = { manual: 'A', invoice_paid: 'A' }
+    applyDefaultSeriesToMap(input, 'A', 'V')
+    expect(input).toEqual({ manual: 'A', invoice_paid: 'A' })
+  })
+
+  it('returns an empty map when given null/undefined', () => {
+    expect(applyDefaultSeriesToMap(null, 'A', 'V')).toEqual({})
+    expect(applyDefaultSeriesToMap(undefined, 'A', 'V')).toEqual({})
+  })
+
+  it('is a no-op on values when old and new default are equal', () => {
+    const result = applyDefaultSeriesToMap(
+      { manual: 'A', supplier_invoice_paid: 'B' },
+      'A',
+      'A',
+    )
+    expect(result).toEqual({ manual: 'A', supplier_invoice_paid: 'B' })
   })
 })
 

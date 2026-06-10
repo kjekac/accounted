@@ -4,6 +4,7 @@ import { ensureInitialized } from '@/lib/init'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import { generateBgLb } from '@/lib/salary/payment/bg-lb-generator'
+import { effectiveNetPayout } from '@/lib/salary/payment/effective-net'
 import { validateBankgiroNumber } from '@/lib/bankgiro/luhn'
 import type { BgLbCompanyData, BgLbEmployee } from '@/lib/salary/payment/bg-lb-generator'
 
@@ -87,7 +88,11 @@ export async function GET(
     return NextResponse.json({ error: 'Inga anställda i lönekörningen' }, { status: 400 })
   }
 
+  // Only employees with a positive payout end up in the file (see filter
+  // below), so missing bank details must only block when they're actually
+  // being paid — a zero-net employee needs no destination account.
   const missingBank = runEmployees.filter((sre) => {
+    if (effectiveNetPayout(sre) <= 0) return false
     const emp = sre.employee as { clearing_number: string | null; bank_account_number: string | null } | null
     return !emp?.clearing_number || !emp?.bank_account_number
   })
@@ -105,13 +110,9 @@ export async function GET(
   }
 
   const employees: BgLbEmployee[] = runEmployees
-    .map((sre) => {
-      // Honor tax override on the bank payment file too — the net the
-      // employee actually receives depends on the effective tax.
-      const effectiveNet =
-        sre.net_salary + (sre.tax_withheld - (sre.tax_withheld_override ?? sre.tax_withheld))
-      return { sre, effectiveNet }
-    })
+    // Honor tax override on the bank payment file too — the net the employee
+    // actually receives depends on the effective tax.
+    .map((sre) => ({ sre, effectiveNet: effectiveNetPayout(sre) }))
     .filter(({ effectiveNet }) => effectiveNet > 0)
     .map(({ sre, effectiveNet }) => {
       const emp = sre.employee as {

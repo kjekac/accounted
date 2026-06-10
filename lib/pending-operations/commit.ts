@@ -650,7 +650,14 @@ async function commitCreateInvoice(
   const items = params.items as Array<{
     description: string; quantity: number; unit: string; unit_price: number; vat_rate?: number
     article_id?: string | null; revenue_account?: string | null
+    line_type?: 'product' | 'text'
   }>
+
+  // Free-text rows carry no amounts and never book. The MCP staging tool does
+  // not accept line_type today, but the totals math must stay identical to
+  // app/api/invoices/route.ts, which excludes text rows from subtotal, VAT,
+  // and the mixed-rate detection.
+  const billableItems = items.filter((item) => item.line_type !== 'text')
 
   const { data: customer, error: customerError } = await supabase
     .from('customers').select('*').eq('id', customerId).eq('company_id', companyId).single()
@@ -663,10 +670,22 @@ async function commitCreateInvoice(
   const availableRates = getAvailableVatRates(customer.customer_type, customer.vat_number_validated)
   const allowedRates = new Set(availableRates.map((r) => r.rate))
 
-  const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0)
+  // VAT registration gate (mirrors app/api/invoices/route.ts). A
+  // non-momsregistrerad company books no output VAT: force every line to 0%
+  // (momsfri → treatment 'exempt'). 0% is allowed for every customer type, so
+  // the allowedRates guard below still passes.
+  const { data: vatSettings } = await supabase
+    .from('company_settings')
+    .select('vat_registered')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  const notVatRegistered = vatSettings?.vat_registered === false
+  if (notVatRegistered) for (const item of items) item.vat_rate = 0
+
+  const subtotal = billableItems.reduce((sum, item) => sum + item.quantity * item.unit_price, 0)
 
   let vatAmount = 0
-  for (const item of items) {
+  for (const item of billableItems) {
     const itemRate = item.vat_rate !== undefined ? item.vat_rate : vatRules.rate
     if (!allowedRates.has(itemRate)) {
       return { error: `Momssats ${itemRate}% är inte tillåten för denna kundtyp`, status: 400 }
@@ -678,7 +697,7 @@ async function commitCreateInvoice(
   // Validate any per-line revenue-account override (defense in depth — the field
   // is frozen onto invoice_items and flows to generatePerRateLines()).
   const overrideAccounts = Array.from(
-    new Set(items.map((i) => i.revenue_account).filter((a): a is string => !!a)),
+    new Set(billableItems.map((i) => i.revenue_account).filter((a): a is string => !!a)),
   )
   for (const acct of overrideAccounts) {
     if (!(await isValidRevenueAccount(supabase, companyId, acct))) {
@@ -706,7 +725,7 @@ async function commitCreateInvoice(
     }
   }
 
-  const uniqueRates = new Set(items.map((item) => item.vat_rate ?? vatRules.rate))
+  const uniqueRates = new Set(billableItems.map((item) => item.vat_rate ?? vatRules.rate))
   const isMixedRate = uniqueRates.size > 1
 
   const { data: invoice, error: invoiceError } = await supabase
@@ -727,10 +746,10 @@ async function commitCreateInvoice(
       vat_amount_sek: vatAmountSek,
       total,
       total_sek: totalSek,
-      vat_treatment: vatRules.treatment,
+      vat_treatment: notVatRegistered ? 'exempt' : vatRules.treatment,
       vat_rate: isMixedRate ? null : (uniqueRates.values().next().value ?? vatRules.rate),
-      moms_ruta: vatRules.momsRuta,
-      reverse_charge_text: vatRules.reverseChargeText || null,
+      moms_ruta: notVatRegistered ? null : vatRules.momsRuta,
+      reverse_charge_text: notVatRegistered ? null : (vatRules.reverseChargeText || null),
       our_reference: (params.our_reference as string) || null,
       your_reference: (params.your_reference as string) || null,
       notes: (params.notes as string) || null,
@@ -741,12 +760,32 @@ async function commitCreateInvoice(
   if (invoiceError) return { error: invoiceError.message, status: 500 }
 
   const invoiceItems = items.map((item, index) => {
+    // Text rows store the description only and zero everything else. Keys must
+    // match the product branch exactly — PostgREST rejects a bulk insert whose
+    // objects have differing key sets.
+    if (item.line_type === 'text') {
+      return {
+        invoice_id: invoice.id,
+        sort_order: index,
+        line_type: 'text',
+        description: item.description ?? '',
+        quantity: 0,
+        unit: '',
+        unit_price: 0,
+        line_total: 0,
+        vat_rate: 0,
+        vat_amount: 0,
+        article_id: null,
+        revenue_account: null,
+      }
+    }
     const itemRate = item.vat_rate !== undefined ? item.vat_rate : vatRules.rate
     const lineTotal = item.quantity * item.unit_price
     const itemVat = Math.round(lineTotal * itemRate / 100 * 100) / 100
     return {
       invoice_id: invoice.id,
       sort_order: index,
+      line_type: 'product',
       description: item.description,
       quantity: item.quantity,
       unit: item.unit,
@@ -2218,6 +2257,7 @@ async function commitCreditInvoice(
 
   const creditItems = (original.items || []).map((item: {
     sort_order: number
+    line_type?: 'product' | 'text'
     description: string
     quantity: number
     unit: string
@@ -2230,6 +2270,7 @@ async function commitCreditInvoice(
   }) => ({
     invoice_id: creditNote.id,
     sort_order: item.sort_order,
+    line_type: item.line_type ?? 'product',
     description: item.description,
     quantity: -Math.abs(item.quantity),
     unit: item.unit,
@@ -2384,6 +2425,7 @@ async function commitConvertInvoice(
   const items = (proforma.items ?? []).map((item: Record<string, unknown>) => ({
     invoice_id: invoice.id,
     sort_order: item.sort_order,
+    line_type: item.line_type ?? 'product',
     description: item.description,
     quantity: item.quantity,
     unit: item.unit,

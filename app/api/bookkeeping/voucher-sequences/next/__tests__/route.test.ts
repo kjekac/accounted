@@ -31,8 +31,8 @@ function mockChain(result: ChainResult) {
   return chain
 }
 
-function mkReq() {
-  return new Request('http://localhost/api/bookkeeping/voucher-sequences/next')
+function mkReq(query = '') {
+  return new Request(`http://localhost/api/bookkeeping/voucher-sequences/next${query}`)
 }
 
 function mkParams() {
@@ -141,5 +141,93 @@ describe('GET /api/bookkeeping/voucher-sequences/next', () => {
 
     expect(response.status).toBe(200)
     expect(body.data).toEqual({ next: 13, series: 'V', fiscal_period_id: 'period-2' })
+  })
+
+  it('resolves the series per source_type, matching the booking engine', async () => {
+    mockAuth.mockResolvedValue({ data: { user: { id: 'user-1' } } })
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'fiscal_periods') {
+        return mockChain({ data: { id: 'period-1' }, error: null })
+      }
+      if (table === 'company_settings') {
+        return mockChain({
+          data: {
+            default_voucher_series: 'A',
+            default_voucher_series_per_source_type: { invoice_cash_payment: 'V' },
+          },
+          error: null,
+        })
+      }
+      if (table === 'voucher_sequences') {
+        return mockChain({ data: { last_number: 4 }, error: null })
+      }
+      throw new Error(`Unexpected table: ${table}`)
+    })
+
+    const response = await GET(mkReq('?source_type=invoice_cash_payment'), mkParams())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    // Uses the per-source-type map (V), NOT the global default (A).
+    expect(body.data).toEqual({ next: 5, series: 'V', fiscal_period_id: 'period-1' })
+  })
+
+  it('falls back to A when the source_type has no per-source-type mapping', async () => {
+    mockAuth.mockResolvedValue({ data: { user: { id: 'user-1' } } })
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'fiscal_periods') {
+        return mockChain({ data: { id: 'period-1' }, error: null })
+      }
+      if (table === 'company_settings') {
+        return mockChain({
+          data: {
+            default_voucher_series: 'V',
+            default_voucher_series_per_source_type: { invoice_paid: 'B' },
+          },
+          error: null,
+        })
+      }
+      if (table === 'voucher_sequences') {
+        return mockChain({ data: null, error: null })
+      }
+      throw new Error(`Unexpected table: ${table}`)
+    })
+
+    const response = await GET(mkReq('?source_type=invoice_cash_payment'), mkParams())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    // No mapping for invoice_cash_payment → engine-matching fallback of 'A'
+    // (the global default is intentionally NOT used here — no consolidation).
+    expect(body.data).toEqual({ next: 1, series: 'A', fiscal_period_id: 'period-1' })
+  })
+
+  it('rejects an unknown source_type with 400 before touching the database', async () => {
+    mockAuth.mockResolvedValue({ data: { user: { id: 'user-1' } } })
+
+    const response = await GET(mkReq('?source_type=not_a_source_type'), mkParams())
+
+    expect(response.status).toBe(400)
+    expect(mockFrom).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed date with 400 before touching the database', async () => {
+    mockAuth.mockResolvedValue({ data: { user: { id: 'user-1' } } })
+
+    const response = await GET(mkReq('?date=2026-13-99x'), mkParams())
+
+    expect(response.status).toBe(400)
+    expect(mockFrom).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed series with 400 before touching the database', async () => {
+    mockAuth.mockResolvedValue({ data: { user: { id: 'user-1' } } })
+
+    const response = await GET(mkReq('?series=AB'), mkParams())
+
+    expect(response.status).toBe(400)
+    expect(mockFrom).not.toHaveBeenCalled()
   })
 })

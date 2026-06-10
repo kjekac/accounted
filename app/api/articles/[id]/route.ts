@@ -4,7 +4,8 @@ import { ensureInitialized } from '@/lib/init'
 import { validateBody } from '@/lib/api/validate'
 import { UpdateArticleSchema } from '@/lib/api/schemas'
 import { withRouteContext } from '@/lib/api/with-route-context'
-import { isValidRevenueAccount } from '@/lib/articles/validate-revenue-account'
+import { checkRevenueAccount } from '@/lib/articles/validate-revenue-account'
+import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { Article } from '@/types'
 
@@ -53,9 +54,14 @@ export const PATCH = withRouteContext(
     if (!result.success) return result.response
     const body = result.data
 
+    // Same activate-and-retry contract as POST /api/articles: a class-3 account
+    // that just isn't activated yet returns ACCOUNTS_NOT_IN_CHART.
     if (body.revenue_account) {
-      const ok = await isValidRevenueAccount(supabase, companyId!, body.revenue_account)
-      if (!ok) {
+      const status = await checkRevenueAccount(supabase, companyId!, body.revenue_account)
+      if (status === 'activatable') {
+        return accountsNotInChartResponse(new AccountsNotInChartError([body.revenue_account]))
+      }
+      if (status === 'invalid') {
         return errorResponseFromCode('ARTICLE_REVENUE_ACCOUNT_INVALID', opLog, { requestId })
       }
     }

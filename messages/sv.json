@@ -2105,6 +2105,13 @@
     "vat_label": "Moms",
     "row_label": "Rad {index}",
     "add_row": "Lägg till rad",
+    "add_text_row": "Lägg till textrad",
+    "text_row_label": "Fritext",
+    "text_row_placeholder": "Förklarande text – lämna tom för en tomrad",
+    "remove_row_aria": "Ta bort rad",
+    "remove_row": "Ta bort rad",
+    "row_actions_aria": "Radåtgärder",
+    "drag_handle_aria": "Dra för att flytta raden",
     "notes_card_title": "Anteckningar",
     "notes_card_description": "Valfritt meddelande på fakturan",
     "notes_placeholder": "T.ex. betalningsvillkor eller tack för samarbetet...",
@@ -2172,7 +2179,27 @@
     "validation_customer_required": "Välj en kund",
     "validation_invoice_date_required": "Fakturadatum krävs",
     "validation_due_date_required": "Förfallodatum krävs",
-    "validation_min_one_row": "Minst en rad krävs"
+    "validation_min_one_row": "Minst en rad krävs",
+    "deduction_menu_label": "Skattereduktion",
+    "deduction_none": "Ingen",
+    "deduction_rot": "ROT (30%)",
+    "deduction_rut": "RUT (50%)",
+    "deduction_work_type_placeholder": "Välj arbetstyp",
+    "deduction_hours_placeholder": "Arbetstimmar",
+    "deduction_labor_only_warning": "Skatteverket kräver att endast arbetskostnad ingår i ROT/RUT-grundlaget. Material ska faktureras separat. Sätt endast skattereduktion på rader som är 100% arbete.",
+    "deduction_card_title": "Underlag för skattereduktion",
+    "deduction_card_description": "ROT/RUT-avdrag begärs hos Skatteverket via fakturamodellen. Kunden behöver godkänna utbetalningen, så uppgifterna måste matcha köparen exakt.",
+    "deduction_personnummer_label": "Personnummer",
+    "deduction_personnummer_placeholder": "ÅÅÅÅMMDD-NNNN",
+    "deduction_personnummer_hint": "Krypteras innan lagring. Endast de fyra sista siffrorna visas på fakturan.",
+    "deduction_housing_label": "Fastighetsbeteckning",
+    "deduction_housing_placeholder": "t.ex. Stockholm Vasastan 1:23",
+    "deduction_housing_hint": "Krävs för ROT-avdrag (RUT behöver inte detta fält).",
+    "deduction_cap_over": "Fakturans avdrag överstiger årstaket",
+    "deduction_cap_check": "Kunden behöver kontrollera sitt återstående utrymme själv.",
+    "deduction_summary_label": "Skattereduktion ROT/RUT",
+    "to_pay_label": "Att betala",
+    "total_incl_vat_label": "Totalt inkl. moms"
   },
   "invoice_review": {
     "assigned_number_prefix": "Tilldelas fakturanummer",
@@ -2538,6 +2565,7 @@
   },
   "invoice_link_voucher": {
     "intro": "Välj en befintlig verifikation som krediterar kundfordran (1510). Ingen ny verifikation skapas — du länkar bara den befintliga som betalning.",
+    "intro_cash": "Välj en befintlig verifikation som bokför betalningen mot ett likvidkonto (kassa/bank, t.ex. 1930). Ingen ny verifikation skapas — du länkar bara den befintliga som betalning.",
     "search_placeholder": "Sök på verifikatnummer eller beskrivning…",
     "confidence_high": "Hög träff",
     "confidence_medium": "Möjlig träff",
@@ -2545,6 +2573,7 @@
     "period_locked": "Låst period",
     "empty_title": "Inga matchande verifikationer hittades",
     "empty_description": "Det finns ingen bokförd verifikation som krediterar 1510 i fakturans valuta och period. Bokför istället en ny betalning, eller rätta tidigare bokföring först.",
+    "empty_description_cash": "Det finns ingen bokförd verifikation som debiterar ett likvidkonto (19xx) i fakturans valuta och period. Bokför istället en ny betalning, eller rätta tidigare bokföring först.",
     "confirmation": "Detta länkar verifikat {voucher} ({amount}) som betalning för fakturan.",
     "no_new_je_note": "Ingen ny bokföring skapas — den befintliga verifikationen utgör betalningsposten.",
     "cancel": "Avbryt",
@@ -3508,7 +3537,8 @@
     "col_unit": "Enhet",
     "col_price": "Pris exkl. moms",
     "col_vat": "Moms",
-    "col_status": "Status"
+    "col_status": "Status",
+    "activate_and_save": "Aktivera och spara"
   },
   "article_detail": {
     "back": "Tillbaka till artiklar",
@@ -3543,7 +3573,8 @@
     "deactivate_confirm_description": "Artikeln döljs i listor och fakturaval men historiken bevaras. Du kan aktivera den igen senare.",
     "deactivate_confirm_label": "Inaktivera",
     "deactivated_title": "Artikel inaktiverad",
-    "deactivate_failed_title": "Kunde inte inaktivera artikel"
+    "deactivate_failed_title": "Kunde inte inaktivera artikel",
+    "activate_and_save": "Aktivera och spara"
   },
   "form_article": {
     "type_label": "Typ *",

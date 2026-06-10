@@ -36,6 +36,25 @@ function toFormAmount(n: number): string {
 }
 
 /**
+ * Resolve the journal_entries.source_type used when booking an invoice payment.
+ *
+ * Mirrors the branching in app/api/invoices/[id]/mark-paid/route.ts: revenue is
+ * only recognised at payment (kontantmetoden / invoice_cash_payment) when the
+ * invoice has no prior issuance verifikat AND the company is on the cash method.
+ * Otherwise the payment clears the receivable (invoice_paid).
+ *
+ * Shared so the dialog's voucher preview and the route's actual booking always
+ * resolve the same series — they must not drift.
+ */
+export function resolveInvoicePaymentSourceType(opts: {
+  invoiceAlreadyBooked: boolean
+  accountingMethod: 'accrual' | 'cash'
+}): 'invoice_cash_payment' | 'invoice_paid' {
+  const useCashEntry = !opts.invoiceAlreadyBooked && opts.accountingMethod === 'cash'
+  return useCashEntry ? 'invoice_cash_payment' : 'invoice_paid'
+}
+
+/**
  * Propose journal entry lines for an invoice payment.
  *
  * Accrual: Debit paymentAccount, Credit 1510, optional exchange rate diff.
@@ -134,16 +153,18 @@ function proposeCashLines(
     return amount
   }
 
-  // Build credit lines per VAT rate group
+  // Build credit lines per VAT rate group. Free-text / blank rows carry no
+  // amounts and never book — drop them first.
   const creditLines: FormLine[] = []
+  const billableItems = (invoice.items ?? []).filter((item) => item.line_type !== 'text')
 
-  if (invoice.items && invoice.items.length > 0) {
-    const hasPerLineVat = invoice.items.some((item) => item.vat_rate !== undefined && item.vat_rate !== null)
+  if (billableItems.length > 0) {
+    const hasPerLineVat = billableItems.some((item) => item.vat_rate !== undefined && item.vat_rate !== null)
 
     if (!hasPerLineVat) {
       // Legacy: single rate from invoice level
       const revenueAccount = getRevenueAccount(invoice.vat_treatment, entityType)
-      const subtotal = invoice.items.reduce((sum, item) => sum + item.line_total, 0)
+      const subtotal = billableItems.reduce((sum, item) => sum + item.line_total, 0)
       creditLines.push({
         account_number: revenueAccount,
         debit_amount: '',
@@ -151,7 +172,7 @@ function proposeCashLines(
         line_description: (invoice.invoice_number ? `Försäljning faktura ${invoice.invoice_number}` : 'Försäljning faktura'),
       })
 
-      const totalVat = invoice.items.reduce((sum, item) => sum + (item.vat_amount || 0), 0)
+      const totalVat = billableItems.reduce((sum, item) => sum + (item.vat_amount || 0), 0)
       if (totalVat > 0) {
         const vatAccount = getOutputVatAccount(invoice.vat_treatment)
         creditLines.push({
@@ -164,7 +185,7 @@ function proposeCashLines(
     } else {
       // Group items by vat_rate
       const rateGroups = new Map<number, { subtotal: number; vatAmount: number }>()
-      for (const item of invoice.items) {
+      for (const item of billableItems) {
         const rate = item.vat_rate ?? 0
         const group = rateGroups.get(rate) || { subtotal: 0, vatAmount: 0 }
         group.subtotal += item.line_total

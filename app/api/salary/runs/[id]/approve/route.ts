@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { eventBus } from '@/lib/events'
+import { effectiveNetPayout } from '@/lib/salary/payment/effective-net'
 
 ensureInitialized()
 
@@ -44,8 +45,11 @@ export const POST = withRouteContext<{ params: Promise<{ id: string }> }>(
       if (!emp) continue
       const name = `${emp.first_name} ${emp.last_name}`
 
-      // Bank details required for payment
-      if (!emp.clearing_number || !emp.bank_account_number) {
+      // Bank details are only required when there's an actual payout. A zero
+      // net (nollkörning, or fully net-deducted) produces no payment-file line,
+      // so no destination account is needed — mirrors the pain.001 / BG-LB
+      // generators, which only include employees with effectiveNet > 0.
+      if (effectiveNetPayout(sre) > 0 && (!emp.clearing_number || !emp.bank_account_number)) {
         validationErrors.push(`${name}: Bankuppgifter saknas (clearingnummer och/eller kontonummer)`)
       }
 

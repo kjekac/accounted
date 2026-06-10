@@ -60,6 +60,10 @@ function generatePerRateLines(
   const lines: CreateJournalEntryLineInput[] = []
   const isForeign = currency != null && currency !== 'SEK'
 
+  // Free-text / blank rows carry no amounts and never book — drop them before
+  // grouping so they can't produce a zero-amount revenue line.
+  items = items.filter((item) => item.line_type !== 'text')
+
   // Helper: convert item amount to SEK when dealing with foreign currency
   const toSek = (amount: number): number => {
     if (!isForeign) return amount

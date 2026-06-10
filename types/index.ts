@@ -860,6 +860,12 @@ export interface InvoiceItem {
   // Order
   sort_order: number
 
+  // Line kind. 'product' is a normal billable line; 'text' is a free-text or
+  // blank spacer row that carries only a description — no amounts, excluded from
+  // totals and bookkeeping. Optional in TS for legacy rows (defaults to
+  // 'product' in Postgres).
+  line_type?: 'product' | 'text'
+
   // Description
   description: string
 
@@ -1073,6 +1079,9 @@ export interface CreateInvoiceInput {
 }
 
 export interface CreateInvoiceItemInput {
+  /** 'text' rows carry only a description (may be empty for a spacer) and are
+   *  excluded from totals and bookkeeping. Defaults to 'product'. */
+  line_type?: 'product' | 'text'
   description: string
   quantity: number
   unit: string

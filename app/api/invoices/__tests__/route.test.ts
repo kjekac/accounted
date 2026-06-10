@@ -188,6 +188,8 @@ describe('POST /api/invoices (create invoice)', () => {
 
     // Fetch customer
     enqueue({ data: customer, error: null })
+    // company_settings.vat_registered gate (registered → VAT flows as before)
+    enqueue({ data: { vat_registered: true }, error: null })
     // Insert invoice (number is null on insert; allocated immediately after items)
     enqueue({ data: createdInvoice, error: null })
     // Insert items
@@ -239,6 +241,8 @@ describe('POST /api/invoices (create invoice)', () => {
 
     // Fetch customer
     enqueue({ data: customer, error: null })
+    // company_settings.vat_registered gate (registered → VAT flows as before)
+    enqueue({ data: { vat_registered: true }, error: null })
     // Insert invoice (stays unnumbered — the allocation step is skipped)
     enqueue({ data: createdInvoice, error: null })
     // Insert items
@@ -288,6 +292,8 @@ describe('POST /api/invoices (create invoice)', () => {
     ])
 
     enqueue({ data: customer, error: null })
+    // company_settings.vat_registered gate (registered → VAT flows as before)
+    enqueue({ data: { vat_registered: true }, error: null })
     enqueue({ data: createdInvoice, error: null })
     // Items insertion fails
     enqueue({ data: null, error: { message: 'Items insert failed' } })
@@ -330,6 +336,8 @@ describe('POST /api/invoices (create invoice)', () => {
     ])
 
     enqueue({ data: customer, error: null })
+    // company_settings.vat_registered gate (registered → VAT flows as before)
+    enqueue({ data: { vat_registered: true }, error: null })
     enqueue({ data: createdInvoice, error: null })
     // Items insertion succeeds
     enqueue({ data: null, error: null })

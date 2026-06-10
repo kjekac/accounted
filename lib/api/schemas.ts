@@ -147,6 +147,14 @@ export const JournalEntrySourceTypeSchema = z.enum([
   'reminder_fee',
 ])
 
+/** Query params for GET /api/bookkeeping/voucher-sequences/next. */
+export const VoucherSequenceNextQuerySchema = z.object({
+  period_id: uuid.optional(),
+  series: z.string().regex(/^[A-Z]$/, 'Verifikationsserie måste vara en bokstav A–Z').optional(),
+  source_type: JournalEntrySourceTypeSchema.optional(),
+  date: isoDate.optional(),
+})
+
 export const AccountTypeSchema = z.enum([
   'asset', 'equity', 'liability', 'revenue', 'expense',
 ])
@@ -192,26 +200,46 @@ export const DocumentUploadSourceSchema = z.enum([
 // Invoice schemas
 // ============================================================
 
-export const CreateInvoiceItemSchema = z.object({
-  description: z.string().min(1, 'Item description is required'),
-  quantity: z.number().positive('Quantity must be positive'),
-  unit: z.string().min(1, 'Unit is required'),
-  unit_price: z.number(),
-  vat_rate: z.number().min(0).max(100).optional(),
-  // Article linkage. `article_id` ties the line to a catalog article (free-text
-  // lines omit it). `revenue_account` is the optional BAS class-3 override the
-  // engine books to; the API validates it against chart_of_accounts before use.
-  article_id: uuid.nullable().optional(),
-  revenue_account: revenueAccount.nullable().optional(),
-  // ROT/RUT-avdrag fields. `deduction_amount` is intentionally omitted from
-  // the client schema — the API computes it from rot-rut-rules.ts so a
-  // tampered client can't expand the 1513 receivable beyond the line total.
-  deduction_type: z.enum(['rot', 'rut']).nullable().optional(),
-  labor_hours: z.number().nonnegative().nullable().optional(),
-  work_type: z.string().max(64).nullable().optional(),
-  housing_designation: z.string().max(128).nullable().optional(),
-  apartment_number: z.string().max(32).nullable().optional(),
-})
+export const CreateInvoiceItemSchema = z
+  .object({
+    // 'text' = free-text or blank spacer row: description only, amounts ignored
+    // and excluded from totals/bookkeeping. Defaults to 'product'. Callers still
+    // send quantity/unit/unit_price for text rows (the form sends 0/''/0), so
+    // the inferred shape stays consistent for downstream code.
+    line_type: z.enum(['product', 'text']).optional(),
+    description: z.string().max(2000),
+    quantity: z.number(),
+    unit: z.string(),
+    unit_price: z.number(),
+    vat_rate: z.number().min(0).max(100).optional(),
+    // Article linkage. `article_id` ties the line to a catalog article (text
+    // rows omit it). `revenue_account` is the optional BAS class-3 override the
+    // engine books to; the API validates it against chart_of_accounts before use.
+    article_id: uuid.nullable().optional(),
+    revenue_account: revenueAccount.nullable().optional(),
+    // ROT/RUT-avdrag fields. `deduction_amount` is intentionally omitted from
+    // the client schema — the API computes it from rot-rut-rules.ts so a
+    // tampered client can't expand the 1513 receivable beyond the line total.
+    deduction_type: z.enum(['rot', 'rut']).nullable().optional(),
+    labor_hours: z.number().nonnegative().nullable().optional(),
+    work_type: z.string().max(64).nullable().optional(),
+    housing_designation: z.string().max(128).nullable().optional(),
+    apartment_number: z.string().max(32).nullable().optional(),
+  })
+  .superRefine((item, ctx) => {
+    // Free-text rows skip the product-line requirements (description may be
+    // empty for a spacer; quantity/unit/price are ignored).
+    if (item.line_type === 'text') return
+    if (item.description.trim().length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['description'], message: 'Item description is required' })
+    }
+    if (item.quantity <= 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['quantity'], message: 'Quantity must be positive' })
+    }
+    if (item.unit.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['unit'], message: 'Unit is required' })
+    }
+  })
 
 const optionalIsoDate = isoDate.or(z.literal('')).transform(v => v || undefined).optional()
 

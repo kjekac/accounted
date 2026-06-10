@@ -1,17 +1,26 @@
 import { NextResponse } from 'next/server'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse } from '@/lib/errors/get-structured-error'
+import { validateQuery } from '@/lib/api/validate'
+import { VoucherSequenceNextQuerySchema } from '@/lib/api/schemas'
+import { resolveDefaultSeriesForSource } from '@/lib/bookkeeping/voucher-series-resolver'
 
 export const GET = withRouteContext(
   'voucher_sequence.next',
   async (request, ctx) => {
     const { supabase, companyId, log, requestId } = ctx
 
-    const url = new URL(request.url)
-    const overridePeriodId = url.searchParams.get('period_id')
-    const overrideSeries = url.searchParams.get('series')
+    const query = validateQuery(request, VoucherSequenceNextQuerySchema, {
+      log,
+      operation: 'voucher_sequence.next',
+    })
+    if (!query.success) return query.response
+    const { period_id: overridePeriodId, series: overrideSeries, source_type: sourceType } = query.data
 
     const today = new Date().toISOString().split('T')[0]
+    // Vouchers are numbered per fiscal period, so the preview must reflect the
+    // period of the entry's date (e.g. a back-dated payment), not today's.
+    const date = query.data.date || today
 
     const [{ data: period, error: periodError }, { data: settings, error: settingsError }] =
       await Promise.all([
@@ -26,14 +35,14 @@ export const GET = withRouteContext(
               .from('fiscal_periods')
               .select('id')
               .eq('company_id', companyId)
-              .lte('period_start', today)
-              .gte('period_end', today)
+              .lte('period_start', date)
+              .gte('period_end', date)
               .maybeSingle(),
         overrideSeries
           ? Promise.resolve({ data: null, error: null })
           : supabase
               .from('company_settings')
-              .select('default_voucher_series')
+              .select('default_voucher_series, default_voucher_series_per_source_type')
               .eq('company_id', companyId)
               .maybeSingle(),
       ])
@@ -47,7 +56,15 @@ export const GET = withRouteContext(
       return errorResponse(settingsError, log, { requestId })
     }
 
-    const series = overrideSeries || settings?.default_voucher_series || 'A'
+    // When a source_type is supplied, resolve the series exactly as the booking
+    // engine does (per-source-type map → 'A'), so the preview can never disagree
+    // with the verifikat that actually gets created. Without a source_type, keep
+    // the legacy generic default for callers that just want "the next number".
+    const series = overrideSeries
+      ? overrideSeries
+      : sourceType
+        ? resolveDefaultSeriesForSource(settings, sourceType)
+        : settings?.default_voucher_series || 'A'
 
     if (!period) {
       return NextResponse.json({ data: { next: null, series, fiscal_period_id: null } })

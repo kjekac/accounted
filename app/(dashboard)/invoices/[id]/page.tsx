@@ -680,36 +680,47 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                 <div className="col-span-2 text-right">{t('th_amount')}</div>
               </div>
 
-              {/* Items — desktop */}
+              {/* Items — desktop. Free-text rows span the full width with no
+                  numeric columns; a blank one renders as a spacer. */}
               <div className="hidden sm:block space-y-4">
-                {invoice.items.map((item) => (
-                  <div key={item.id} className="grid grid-cols-12 gap-4 text-sm">
-                    <div className="col-span-5">{item.description}</div>
-                    <div className="col-span-2 text-right">{item.quantity}</div>
-                    <div className="col-span-1 text-center">{item.unit}</div>
-                    <div className="col-span-2 text-right">
-                      {formatCurrency(item.unit_price, invoice.currency)}
+                {invoice.items.map((item) =>
+                  item.line_type === 'text' ? (
+                    <div key={item.id} className="grid grid-cols-12 gap-4 text-sm">
+                      <div className="col-span-12 text-muted-foreground">{item.description || ' '}</div>
                     </div>
-                    <div className="col-span-2 text-right font-medium">
-                      {formatCurrency(item.line_total, invoice.currency)}
+                  ) : (
+                    <div key={item.id} className="grid grid-cols-12 gap-4 text-sm">
+                      <div className="col-span-5">{item.description}</div>
+                      <div className="col-span-2 text-right">{item.quantity}</div>
+                      <div className="col-span-1 text-center">{item.unit}</div>
+                      <div className="col-span-2 text-right">
+                        {formatCurrency(item.unit_price, invoice.currency)}
+                      </div>
+                      <div className="col-span-2 text-right font-medium">
+                        {formatCurrency(item.line_total, invoice.currency)}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                )}
               </div>
 
               {/* Items — mobile cards */}
               <div className="sm:hidden space-y-2">
-                {invoice.items.map((item) => (
-                  <div key={item.id} className="border rounded-lg p-3 text-sm space-y-1.5">
-                    <p className="font-medium">{item.description}</p>
-                    <div className="flex items-center justify-between text-muted-foreground">
-                      <span>{item.quantity} {item.unit} × {formatCurrency(item.unit_price, invoice.currency)}</span>
+                {invoice.items.map((item) =>
+                  item.line_type === 'text' ? (
+                    <p key={item.id} className="text-sm text-muted-foreground px-1">{item.description || ' '}</p>
+                  ) : (
+                    <div key={item.id} className="border rounded-lg p-3 text-sm space-y-1.5">
+                      <p className="font-medium">{item.description}</p>
+                      <div className="flex items-center justify-between text-muted-foreground">
+                        <span>{item.quantity} {item.unit} × {formatCurrency(item.unit_price, invoice.currency)}</span>
+                      </div>
+                      <p className="text-right font-medium">
+                        {formatCurrency(item.line_total, invoice.currency)}
+                      </p>
                     </div>
-                    <p className="text-right font-medium">
-                      {formatCurrency(item.line_total, invoice.currency)}
-                    </p>
-                  </div>
-                ))}
+                  )
+                )}
               </div>
 
               <Separator />

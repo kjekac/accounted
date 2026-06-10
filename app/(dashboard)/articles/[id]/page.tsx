@@ -1,15 +1,21 @@
 'use client'
 
-import { useState, useEffect, use } from 'react'
+import { useState, useEffect, useCallback, useRef, use } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
 import ArticleForm from '@/components/articles/ArticleForm'
+import { ActivateAccountsDialog } from '@/components/bookkeeping/ActivateAccountsDialog'
+import {
+  useSubmitWithAccountActivation,
+  throwOnStructuredError,
+} from '@/lib/hooks/use-submit-with-account-activation'
+import { getErrorMessage, type ErrorLocale } from '@/lib/errors/get-error-message'
 import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
 import {
   ArrowLeft,
@@ -44,6 +50,7 @@ export default function ArticleDetailPage({
   const { toast } = useToast()
   const { canWrite } = useCanWrite()
   const t = useTranslations('article_detail')
+  const errorLocale = useLocale() as ErrorLocale
   const [article, setArticle] = useState<Article | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isEditOpen, setIsEditOpen] = useState(false)
@@ -75,31 +82,46 @@ export default function ArticleDetailPage({
     }
   }
 
+  // Update runs through useSubmitWithAccountActivation so an
+  // ACCOUNTS_NOT_IN_CHART response (revenue account not yet activated) opens
+  // the standard activate-and-retry dialog — same UX as the journal entry form.
+  const pendingUpdateRef = useRef<CreateArticleInput | null>(null)
+  const submitUpdate = useCallback(async () => {
+    const response = await fetch(`/api/articles/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pendingUpdateRef.current),
+    })
+    return throwOnStructuredError(response)
+  }, [id])
+  const {
+    runSubmit: runUpdate,
+    dialog: activationDialog,
+    confirm: confirmActivation,
+    cancel: cancelActivation,
+  } = useSubmitWithAccountActivation(submitUpdate)
+
   async function handleUpdate(data: CreateArticleInput) {
     setIsUpdating(true)
+    pendingUpdateRef.current = data
     try {
-      const response = await fetch(`/api/articles/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      })
-
-      if (!response.ok) {
-        throw new Error('Update failed')
-      }
-
+      await runUpdate()
       toast({
         title: t('updated_title'),
         description: data.name,
       })
       setIsEditOpen(false)
       fetchArticle()
-    } catch {
-      toast({
-        title: t('update_failed_title'),
-        description: t('retry'),
-        variant: 'destructive',
-      })
+    } catch (err) {
+      // The user closing the activation dialog is not an error worth toasting.
+      if (!(err instanceof Error && err.message === 'cancelled')) {
+        const body = (err as { body?: unknown }).body
+        toast({
+          title: t('update_failed_title'),
+          description: getErrorMessage(body ?? err, { context: 'article', locale: errorLocale }),
+          variant: 'destructive',
+        })
+      }
     } finally {
       setIsUpdating(false)
     }
@@ -298,6 +320,14 @@ export default function ArticleDetailPage({
       )}
 
       <DestructiveConfirmDialog {...confirmDialogProps} />
+
+      <ActivateAccountsDialog
+        open={activationDialog.open}
+        accountNumbers={activationDialog.accountNumbers}
+        onConfirm={confirmActivation}
+        onCancel={cancelActivation}
+        confirmLabel={t('activate_and_save')}
+      />
 
       {/* Edit dialog */}
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>

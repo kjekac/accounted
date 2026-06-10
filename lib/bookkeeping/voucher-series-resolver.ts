@@ -61,6 +61,29 @@ export function resolveDefaultSeriesForSource(
 }
 
 /**
+ * Propagate a change to the global default voucher series across the
+ * per-source-type map. Source types that were still following the previous
+ * default move to the new default; explicit overrides (values that differ from
+ * the previous default) are preserved untouched.
+ *
+ * The booking engine resolves series from the per-source-type map, not from the
+ * global default, so the bookkeeping settings form calls this when the user
+ * changes the "Standardserie" dropdown — otherwise that control would be a
+ * no-op for bookkeeping. Pure; returns the next map (input is not mutated).
+ */
+export function applyDefaultSeriesToMap(
+  currentMap: VoucherSeriesMap | null | undefined,
+  prevDefault: string,
+  nextDefault: string,
+): VoucherSeriesMap {
+  const out: VoucherSeriesMap = {}
+  for (const [key, value] of Object.entries(currentMap || {})) {
+    out[key] = value === prevDefault ? nextDefault : value
+  }
+  return out
+}
+
+/**
  * Format a voucher (series + number) for UI display. Returns "—" when the
  * voucher number is null (e.g. a draft entry that has not been committed yet).
  *

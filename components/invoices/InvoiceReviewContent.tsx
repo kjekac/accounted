@@ -13,6 +13,8 @@ interface ReviewItem {
   unit: string
   unit_price: number
   vat_rate?: number
+  /** 'text' rows are free-text/blank lines — description only, no amounts. */
+  line_type?: 'product' | 'text'
 }
 
 interface InvoiceReviewContentProps {
@@ -62,9 +64,10 @@ export function InvoiceReviewContent({
     non_eu_business: t('customer_type_non_eu_business'),
   }
 
-  // Calculate per-rate VAT breakdown
+  // Calculate per-rate VAT breakdown (free-text rows carry no amounts).
   const vatByRate = new Map<number, number>()
   for (const item of items) {
+    if (item.line_type === 'text') continue
     const rate = item.vat_rate ?? 0
     const lineTotal = item.quantity * item.unit_price
     const lineVat = Math.round(lineTotal * rate / 100 * 100) / 100
@@ -118,36 +121,48 @@ export function InvoiceReviewContent({
             </tr>
           </thead>
           <tbody>
-            {items.map((item, index) => (
-              <tr key={index} className="border-b last:border-0">
-                <td className="py-2">{item.description}</td>
-                <td className="py-2 text-right">{item.quantity}</td>
-                <td className="py-2 text-center">{item.unit}</td>
-                <td className="py-2 text-right">{formatCurrency(item.unit_price, currency)}</td>
-                {showVatColumn && (
-                  <td className="py-2 text-right">{item.vat_rate ?? 0}%</td>
-                )}
-                <td className="py-2 text-right">
-                  {formatCurrency(item.quantity * item.unit_price, currency)}
-                </td>
-              </tr>
-            ))}
+            {items.map((item, index) =>
+              item.line_type === 'text' ? (
+                <tr key={index} className="border-b last:border-0">
+                  <td className="py-2 text-muted-foreground" colSpan={showVatColumn ? 6 : 5}>
+                    {item.description || ' '}
+                  </td>
+                </tr>
+              ) : (
+                <tr key={index} className="border-b last:border-0">
+                  <td className="py-2">{item.description}</td>
+                  <td className="py-2 text-right">{item.quantity}</td>
+                  <td className="py-2 text-center">{item.unit}</td>
+                  <td className="py-2 text-right">{formatCurrency(item.unit_price, currency)}</td>
+                  {showVatColumn && (
+                    <td className="py-2 text-right">{item.vat_rate ?? 0}%</td>
+                  )}
+                  <td className="py-2 text-right">
+                    {formatCurrency(item.quantity * item.unit_price, currency)}
+                  </td>
+                </tr>
+              )
+            )}
           </tbody>
         </table>
       </div>
       <div className="sm:hidden space-y-2">
-        {items.map((item, index) => (
-          <div key={index} className="border rounded-lg p-3 text-sm space-y-1.5">
-            <p className="font-medium">{item.description}</p>
-            <div className="flex items-center justify-between text-muted-foreground">
-              <span>{item.quantity} {item.unit} × {formatCurrency(item.unit_price, currency)}</span>
-              {showVatColumn && <span className="text-xs">{t('mobile_vat_suffix', { rate: item.vat_rate ?? 0 })}</span>}
+        {items.map((item, index) =>
+          item.line_type === 'text' ? (
+            <p key={index} className="text-sm text-muted-foreground px-1">{item.description || ' '}</p>
+          ) : (
+            <div key={index} className="border rounded-lg p-3 text-sm space-y-1.5">
+              <p className="font-medium">{item.description}</p>
+              <div className="flex items-center justify-between text-muted-foreground">
+                <span>{item.quantity} {item.unit} × {formatCurrency(item.unit_price, currency)}</span>
+                {showVatColumn && <span className="text-xs">{t('mobile_vat_suffix', { rate: item.vat_rate ?? 0 })}</span>}
+              </div>
+              <p className="text-right font-medium">
+                {formatCurrency(item.quantity * item.unit_price, currency)}
+              </p>
             </div>
-            <p className="text-right font-medium">
-              {formatCurrency(item.quantity * item.unit_price, currency)}
-            </p>
-          </div>
-        ))}
+          )
+        )}
       </div>
 
       {/* Totals */}

@@ -98,9 +98,10 @@ export async function POST(
     return NextResponse.json({ error: invoiceError.message }, { status: 500 })
   }
 
-  const items = (proforma.items || []).map((item: { sort_order: number; description: string; quantity: number; unit: string; unit_price: number; line_total: number }) => ({
+  const items = (proforma.items || []).map((item: { sort_order: number; line_type?: 'product' | 'text'; description: string; quantity: number; unit: string; unit_price: number; line_total: number }) => ({
     invoice_id: invoice.id,
     sort_order: item.sort_order,
+    line_type: item.line_type ?? 'product',
     description: item.description,
     quantity: item.quantity,
     unit: item.unit,

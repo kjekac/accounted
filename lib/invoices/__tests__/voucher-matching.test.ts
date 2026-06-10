@@ -42,6 +42,7 @@ describe('validateVoucherForInvoiceLink', () => {
   it('rejects when the voucher is missing', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     const invoice = setup()
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({ data: null, error: null }) // journal_entries.maybeSingle → null
     const result = await validateVoucherForInvoiceLink(
       supabase as never,
@@ -56,6 +57,7 @@ describe('validateVoucherForInvoiceLink', () => {
   it('rejects when the voucher is not posted', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     const invoice = setup()
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({
       data: {
         id: 'je-1',
@@ -79,9 +81,10 @@ describe('validateVoucherForInvoiceLink', () => {
     if (!result.ok) expect(result.code).toBe('LINK_VOUCHER_NOT_POSTED')
   })
 
-  it('rejects when the voucher has no AR credit', async () => {
+  it('rejects when the voucher has no AR credit (accrual)', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     const invoice = setup()
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({
       data: {
         id: 'je-1',
@@ -111,9 +114,85 @@ describe('validateVoucherForInvoiceLink', () => {
     if (!result.ok) expect(result.code).toBe('LINK_VOUCHER_NO_AR_CREDIT')
   })
 
+  it('cash method: accepts the same 1930-debit voucher that accrual rejects', async () => {
+    // Kontantmetoden books debit 19xx / credit 30xx and never touches 1510, so
+    // the matcher keys on the bank/cash debit instead of an AR credit.
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    const invoice = setup()
+    enqueue({ data: { accounting_method: 'cash' } }) // resolveAccountingMethod
+    enqueue({
+      data: {
+        id: 'je-1',
+        voucher_series: 'A',
+        voucher_number: 5,
+        entry_date: '2026-05-01',
+        description: '',
+        status: 'posted',
+        source_type: 'manual',
+        fiscal_period_id: 'fp-1',
+        company_id: 'company-1',
+      },
+    })
+    enqueue({
+      data: [
+        { account_number: '1930', debit_amount: 1000, credit_amount: 0, currency: 'SEK' },
+        { account_number: '3001', debit_amount: 0, credit_amount: 1000, currency: 'SEK' },
+      ],
+    })
+    enqueue({ data: [] }) // invoice_payments already-linked lookup
+    const result = await validateVoucherForInvoiceLink(
+      supabase as never,
+      'company-1',
+      invoice as never,
+      'je-1',
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.arCreditAmount).toBe(1000)
+      expect(result.paymentAmount).toBe(1000)
+      expect(result.isFullyPaid).toBe(true)
+    }
+  })
+
+  it('cash method: rejects when the voucher has no bank/cash debit', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    const invoice = setup()
+    enqueue({ data: { accounting_method: 'cash' } }) // resolveAccountingMethod
+    enqueue({
+      data: {
+        id: 'je-1',
+        voucher_series: 'A',
+        voucher_number: 5,
+        entry_date: '2026-05-01',
+        description: '',
+        status: 'posted',
+        source_type: 'manual',
+        fiscal_period_id: 'fp-1',
+        company_id: 'company-1',
+      },
+    })
+    enqueue({
+      data: [
+        // An AR-clearing voucher (1510 credit) — valid on accrual, but on cash
+        // there is no 19xx debit so it must not match.
+        { account_number: '1510', debit_amount: 0, credit_amount: 1000, currency: 'SEK' },
+        { account_number: '3001', debit_amount: 1000, credit_amount: 0, currency: 'SEK' },
+      ],
+    })
+    const result = await validateVoucherForInvoiceLink(
+      supabase as never,
+      'company-1',
+      invoice as never,
+      'je-1',
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.code).toBe('LINK_VOUCHER_NO_AR_CREDIT')
+  })
+
   it('rejects when the voucher amount exceeds the remaining', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     const invoice = setup()
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({
       data: {
         id: 'je-1',
@@ -146,6 +225,7 @@ describe('validateVoucherForInvoiceLink', () => {
   it('rejects when the line currency does not match the invoice', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     const invoice = setup(makeInvoice({ remaining_amount: 1000, total: 1000, currency: 'EUR' }))
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({
       data: {
         id: 'je-1',
@@ -177,6 +257,7 @@ describe('validateVoucherForInvoiceLink', () => {
   it('rejects when the voucher is already linked to this invoice', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     const invoice = setup()
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({
       data: {
         id: 'je-1',
@@ -209,6 +290,7 @@ describe('validateVoucherForInvoiceLink', () => {
   it('returns ok=true with full-pay flag when amount equals remaining', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     const invoice = setup()
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({
       data: {
         id: 'je-1',
@@ -247,6 +329,7 @@ describe('validateVoucherForInvoiceLink', () => {
   it('returns ok=true with partial-pay flag when amount is less than remaining', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     const invoice = setup(makeInvoice({ remaining_amount: 1000, total: 1000, currency: 'SEK' }))
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({
       data: {
         id: 'je-1',
@@ -308,6 +391,7 @@ describe('findMatchingVouchersForInvoice', () => {
       total: 1000,
       due_date: '2026-05-01',
     })
+    enqueue({ data: { accounting_method: 'accrual' } }) // resolveAccountingMethod
     enqueue({ data: null, error: { message: 'db error' } })
     const result = await findMatchingVouchersForInvoice(
       supabase as never,
@@ -315,6 +399,53 @@ describe('findMatchingVouchersForInvoice', () => {
       invoice as never,
     )
     expect(result).toEqual([])
+  })
+
+  it('cash method: surfaces a verifikat that debits a bank account (19xx), no 1510 needed', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    const invoice = makeInvoice({
+      remaining_amount: 1000,
+      total: 1000,
+      currency: 'SEK',
+      due_date: '2026-05-01',
+      invoice_number: 'F-1',
+    })
+    enqueue({ data: { accounting_method: 'cash' } }) // resolveAccountingMethod
+    // journal_entries query with embedded lines (kontantmetoden: 19xx debit > 0)
+    enqueue({
+      data: [
+        {
+          id: 'je-1',
+          voucher_series: 'A',
+          voucher_number: 7,
+          entry_date: '2026-05-01',
+          description: 'Betalning faktura F-1',
+          status: 'posted',
+          source_type: 'manual',
+          fiscal_period_id: 'fp-1',
+          company_id: 'company-1',
+          journal_entry_lines: [
+            {
+              id: 'l1',
+              account_number: '1930',
+              debit_amount: 1000,
+              credit_amount: 0,
+              currency: 'SEK',
+            },
+          ],
+        },
+      ],
+    })
+    enqueue({ data: [] }) // invoice_payments already-linked lookup
+    enqueue({ data: [] }) // fiscal_periods lock lookup
+    const result = await findMatchingVouchersForInvoice(
+      supabase as never,
+      'company-1',
+      invoice as never,
+    )
+    expect(result).toHaveLength(1)
+    expect(result[0].journal_entry_id).toBe('je-1')
+    expect(result[0].ar_credit_amount).toBe(1000)
   })
 })
 

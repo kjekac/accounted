@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback, Suspense } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef, Suspense } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -22,6 +22,11 @@ import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage, type ErrorLocale } from '@/lib/errors/get-error-message'
 import { Plus, Search, Package, Lock, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 import ArticleForm from '@/components/articles/ArticleForm'
+import { ActivateAccountsDialog } from '@/components/bookkeeping/ActivateAccountsDialog'
+import {
+  useSubmitWithAccountActivation,
+  throwOnStructuredError,
+} from '@/lib/hooks/use-submit-with-account-activation'
 import { EmptyState } from '@/components/ui/empty-state'
 import { PageHeader } from '@/components/ui/page-header'
 import { formatCurrency } from '@/lib/utils'
@@ -116,33 +121,49 @@ function ArticlesPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function handleCreateArticle(data: CreateArticleInput) {
-    setIsCreating(true)
-
+  // Create runs through useSubmitWithAccountActivation so an ACCOUNTS_NOT_IN_CHART
+  // response (revenue account not yet activated) opens the standard
+  // activate-and-retry dialog instead of failing — same UX as the journal entry form.
+  const pendingCreateRef = useRef<CreateArticleInput | null>(null)
+  const submitCreate = useCallback(async () => {
     const response = await fetch('/api/articles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      body: JSON.stringify(pendingCreateRef.current),
     })
+    return (await throwOnStructuredError(response)) as { data: Article }
+  }, [])
+  const {
+    runSubmit: runCreate,
+    dialog: activationDialog,
+    confirm: confirmActivation,
+    cancel: cancelActivation,
+  } = useSubmitWithAccountActivation(submitCreate)
 
-    const result = await response.json()
-
-    if (!response.ok) {
-      toast({
-        title: t('create_failed_title'),
-        description: getErrorMessage(result, { context: 'article', locale: errorLocale }),
-        variant: 'destructive',
-      })
-    } else {
+  async function handleCreateArticle(data: CreateArticleInput) {
+    setIsCreating(true)
+    pendingCreateRef.current = data
+    try {
+      const result = await runCreate()
       toast({
         title: t('created_title'),
         description: t('created_description', { name: data.name }),
       })
       setArticles([...articles, result.data])
       setIsDialogOpen(false)
+    } catch (err) {
+      // The user closing the activation dialog is not an error worth toasting.
+      if (!(err instanceof Error && err.message === 'cancelled')) {
+        const body = (err as { body?: unknown }).body
+        toast({
+          title: t('create_failed_title'),
+          description: getErrorMessage(body ?? err, { context: 'article', locale: errorLocale }),
+          variant: 'destructive',
+        })
+      }
+    } finally {
+      setIsCreating(false)
     }
-
-    setIsCreating(false)
   }
 
   const filteredArticles = useMemo(() => {
@@ -408,6 +429,14 @@ function ArticlesPageInner() {
           </div>
         </>
       )}
+
+      <ActivateAccountsDialog
+        open={activationDialog.open}
+        accountNumbers={activationDialog.accountNumbers}
+        onConfirm={confirmActivation}
+        onCancel={cancelActivation}
+        confirmLabel={t('activate_and_save')}
+      />
     </div>
   )
 }

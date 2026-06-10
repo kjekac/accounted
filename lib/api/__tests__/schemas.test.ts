@@ -397,6 +397,38 @@ describe('CreateInvoiceItemSchema', () => {
     const result = CreateInvoiceItemSchema.safeParse(validInvoiceItem({ quantity: 'ten' }))
     expect(result.success).toBe(false)
   })
+
+  it('rejects a product row with an empty description', () => {
+    const result = CreateInvoiceItemSchema.safeParse(validInvoiceItem({ description: '   ' }))
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a product row with non-positive quantity', () => {
+    const result = CreateInvoiceItemSchema.safeParse(validInvoiceItem({ quantity: 0 }))
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a free-text row with an empty description and zero amounts', () => {
+    const result = CreateInvoiceItemSchema.safeParse({
+      line_type: 'text',
+      description: '',
+      quantity: 0,
+      unit: '',
+      unit_price: 0,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('accepts a free-text row carrying explanatory text', () => {
+    const result = CreateInvoiceItemSchema.safeParse({
+      line_type: 'text',
+      description: 'Arbetet utfört enligt offert 2026-04',
+      quantity: 0,
+      unit: '',
+      unit_price: 0,
+    })
+    expect(result.success).toBe(true)
+  })
 })
 
 describe('CreateCreditNoteSchema', () => {

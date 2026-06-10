@@ -4,6 +4,7 @@ import {
   createInvoiceCashEntry,
 } from '@/lib/bookkeeping/invoice-entries'
 import { createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
+import { resolveInvoicePaymentSourceType } from '@/lib/bookkeeping/propose-payment-lines'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { MarkInvoicePaidSchema } from '@/lib/api/schemas'
 import { ensureInitialized } from '@/lib/init'
@@ -164,7 +165,10 @@ export const POST = withRouteContext(
               details: { paymentDate },
             })
           }
-          const sourceType = useCashEntry ? 'invoice_cash_payment' : 'invoice_paid'
+          const sourceType = resolveInvoicePaymentSourceType({
+            invoiceAlreadyBooked,
+            accountingMethod,
+          })
           const input: CreateJournalEntryInput = {
             fiscal_period_id: fiscalPeriodId,
             entry_date: paymentDate,

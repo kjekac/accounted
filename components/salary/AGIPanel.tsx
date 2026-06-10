@@ -73,6 +73,8 @@ interface SubmissionState {
   inlamningId?: number
   tillstand?: string
   meddelande?: string
+  /** ISO timestamp the submission record was last written by the extension. */
+  updatedAt?: string
 }
 
 /** Subset of SkatteverketAGIKontrollresultat we use in the panel. */
@@ -196,6 +198,19 @@ export function AGIPanel(props: AGIPanelProps) {
     return () => window.removeEventListener('message', handleMessage)
   }, [fetchStatus])
 
+  // Drop a stale "AGI-XML saknas" error once the run's AGI is (re)generated.
+  // That error is set when "Skicka in underlag" runs before the XML exists; if
+  // the file is then generated out-of-band (MCP, the download button, another
+  // tab) the parent refreshes `agiGeneratedAt` and this clears the now-wrong
+  // message without forcing a full reload — mirroring the session-expired
+  // self-heal in fetchStatus above.
+  useEffect(() => {
+    if (!agiGeneratedAt) return
+    setError(prev =>
+      prev && /agi-xml saknas|inte genererats/i.test(prev) ? null : prev,
+    )
+  }, [agiGeneratedAt])
+
   // Background kvittens-polling timers (see scheduleKvittensPolls below).
   // Held in a ref so the unmount-cleanup effect can cancel them if the
   // user leaves the page mid-signing.
@@ -208,47 +223,95 @@ export function AGIPanel(props: AGIPanelProps) {
   }, [])
 
   /**
-   * Background-poll /agi/kvittenser at 30s, 2 min, and 5 min after the user
-   * receives a signing link. The kvittenser handler in the extension stamps
-   * salary_runs.agi_submitted_at when it observes a uuidKvittens, so this
-   * gives us a high-probability confirmation without depending on the user
-   * returning to the panel and clicking "Hämta kvittens" — which is critical
-   * for the audit trail (BFL 5 kap / BFNAR 2013:2): a NULL agi_submitted_at
-   * after a real filing would misrepresent the behandlingshistorik.
+   * Silently ask Skatteverket whether this period's granskningsunderlag has
+   * been signed. The kvittenser handler stamps salary_runs.agi_submitted_at
+   * and flips the local submission state to 'signed' the instant it sees a
+   * uuidKvittens — so a positive result transitions the panel out of
+   * awaiting_signing on its own (the action buttons then disappear via the
+   * isSigned gate). Returns true iff a signed kvittens was observed. No-ops
+   * (returns false) until we have the arbetsgivare id.
    *
-   * Each poll silently refreshes local submission state on success and
-   * stops scheduling further polls once a kvittens is observed.
+   * Shared by the post-link background timers (scheduleKvittensPolls) and the
+   * auto-detect effect that runs on mount / tab refocus.
+   */
+  const checkKvittens = useCallback(async (): Promise<boolean> => {
+    if (!arbetsgivare) return false
+    try {
+      const res = await fetch(
+        `/api/extensions/ext/skatteverket/agi/kvittenser?arbetsgivare=${encodeURIComponent(arbetsgivare)}&period=${period}`,
+      )
+      if (!res.ok) return false
+      const json = await res.json()
+      const signed = !!json.data?.kvittenser?.[0]?.uuidKvittens
+      await fetchSubmission()
+      if (signed) {
+        // Replace any lingering "Granskningsunderlag klart…" / stale error
+        // with an unambiguous confirmation. Mirrors handleCheckSubmitted.
+        setError(null)
+        setSuccess('AGI har signerats och lämnats in.')
+        onChange?.()
+      }
+      return signed
+    } catch {
+      return false
+    }
+  }, [arbetsgivare, period, fetchSubmission, onChange])
+
+  /**
+   * Background-poll /agi/kvittenser at 30s, 2 min, and 5 min after the user
+   * receives a signing link — a timer-based fallback to the focus-driven
+   * auto-detect below. The kvittenser handler stamps salary_runs.agi_submitted_at
+   * when it observes a uuidKvittens, critical for the audit trail (BFL 5 kap /
+   * BFNAR 2013:2): a NULL agi_submitted_at after a real filing would
+   * misrepresent the behandlingshistorik. Stops scheduling once observed.
    */
   const scheduleKvittensPolls = useCallback(() => {
     for (const t of kvittensTimers.current) clearTimeout(t)
     kvittensTimers.current = []
 
     const poll = async () => {
-      try {
-        const res = await fetch(
-          `/api/extensions/ext/skatteverket/agi/kvittenser?arbetsgivare=${encodeURIComponent(arbetsgivare)}&period=${period}`,
-        )
-        if (!res.ok) return
-        const json = await res.json()
-        const signed = !!json.data?.kvittenser?.[0]?.uuidKvittens
-        await fetchSubmission()
-        if (signed) {
-          // Cancel any remaining timers — the kvittens has been recorded
-          // server-side and further polls are wasted requests.
-          for (const t of kvittensTimers.current) clearTimeout(t)
-          kvittensTimers.current = []
-          onChange?.()
-        }
-      } catch {
-        // Silent: this is a background helper. The "Hämta kvittens" button
-        // remains the explicit recovery path.
+      // checkKvittens is silent on failure — the "Hämta kvittens" button
+      // remains the explicit recovery path.
+      const signed = await checkKvittens()
+      if (signed) {
+        // Cancel any remaining timers — the kvittens has been recorded
+        // server-side and further polls are wasted requests.
+        for (const t of kvittensTimers.current) clearTimeout(t)
+        kvittensTimers.current = []
       }
     }
 
     kvittensTimers.current.push(setTimeout(poll, 30_000))
     kvittensTimers.current.push(setTimeout(poll, 120_000))
     kvittensTimers.current.push(setTimeout(poll, 300_000))
-  }, [arbetsgivare, period, fetchSubmission, onChange])
+  }, [checkKvittens])
+
+  // Auto-detect a Mina Sidor BankID signature so the panel reflects "signed"
+  // without the user having to click "Hämta kvittens". While we sit in
+  // awaiting_signing the user has typically opened the signing link (which
+  // opens a new tab), signed on Skatteverket's site, and come back. We re-check
+  // the kvittens (a) once on entering awaiting_signing — covering a reload
+  // after signing — and (b) whenever the tab regains focus — covering the
+  // sign-in-the-other-tab-then-return flow. A found kvittens flips the local
+  // state to 'signed', hiding the signing actions. The ref makes the on-enter
+  // check fire once per episode even if checkKvittens's identity churns (its
+  // onChange dep is an unmemoized parent callback).
+  const signCheckedRef = useRef(false)
+  useEffect(() => {
+    if (submission?.status !== 'awaiting_signing') {
+      signCheckedRef.current = false
+      return
+    }
+    if (!signCheckedRef.current) {
+      signCheckedRef.current = true
+      checkKvittens()
+    }
+    function onVisible() {
+      if (document.visibilityState === 'visible') checkKvittens()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [submission?.status, checkKvittens])
 
   const handleDisconnect = useCallback(async () => {
     setActionLoading('disconnect')
@@ -568,6 +631,18 @@ export function AGIPanel(props: AGIPanelProps) {
   const underlagSubmitted = subState === 'underlag_submitted'
   const underlagRejected = subState === 'underlag_rejected'
   const isSigned = subState === 'signed' || !!agiSubmittedAt
+  // The submission state is keyed by PERIOD; AGI generation is keyed by RUN.
+  // If the run's AGI was (re)generated AFTER this signing draft was created,
+  // the locked underlag at Skatteverket reflects superseded figures and must
+  // not be signed — surface a warning and steer the user to unlock + resubmit
+  // rather than presenting it as ready to sign (avoids filing stale amounts).
+  const draftUpdatedAt = submission?.updatedAt ? new Date(submission.updatedAt) : null
+  const draftIsStale =
+    awaitingSigning &&
+    !!agiGeneratedAt &&
+    !!draftUpdatedAt &&
+    !Number.isNaN(draftUpdatedAt.getTime()) &&
+    new Date(agiGeneratedAt).getTime() > draftUpdatedAt.getTime()
   // Tokens issued before the agd scope was added to DEFAULT_SCOPES will
   // 403 with invalid_scope at submission time — surface that proactively
   // so the user reconnects before hitting the deadline rather than at it.
@@ -663,7 +738,9 @@ export function AGIPanel(props: AGIPanelProps) {
             }
             pendingText={
               awaitingSigning
-                ? 'Granskningsunderlag klart — väntar på BankID-signatur i Mina Sidor.'
+                ? draftIsStale
+                  ? 'Ett signeringsutkast finns hos Skatteverket men är inaktuellt — lås upp och skicka in underlaget på nytt.'
+                  : 'Granskningsunderlag klart — väntar på BankID-signatur i Mina Sidor.'
                 : underlagSubmitted
                   ? 'Underlag inläst hos Skatteverket. Skapa granskningsunderlag för att gå vidare till signering.'
                   : 'Inte skickad till Skatteverket ännu. Deadline: 12:e i månaden efter utbetalning (17:e i januari/augusti för arbetsgivare vars sammanlagda lönesumma understiger 40 MSEK per år).'
@@ -676,7 +753,7 @@ export function AGIPanel(props: AGIPanelProps) {
             below to surface a felrapport URL, which deserves a distinct
             treatment so the user understands they must fix errors before
             BankID signing is even possible. */}
-        {submission?.signeringslank && awaitingSigning && (
+        {submission?.signeringslank && awaitingSigning && !draftIsStale && (
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/40 dark:bg-amber-900/20">
             <p className="text-sm font-medium">Utkastet är låst och redo att signeras</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
@@ -690,6 +767,29 @@ export function AGIPanel(props: AGIPanelProps) {
             >
               Öppna signeringslänk <ExternalLink className="h-3.5 w-3.5" />
             </a>
+          </div>
+        )}
+
+        {/* Stale-draft guard — the signing draft at Skatteverket predates the
+            current run's AGI generation, so it carries superseded figures.
+            We deliberately do NOT surface "Öppna signeringslänk" here: signing
+            it would file the old amounts. The "Lås upp" button below releases
+            the SKV lock; the user then re-submits the freshly generated XML. */}
+        {awaitingSigning && draftIsStale && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-900/40 dark:bg-amber-900/20">
+            <p className="text-sm font-medium">Signeringsutkastet är inaktuellt</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              AGI:n genererades om{' '}
+              {agiGeneratedAt ? new Date(agiGeneratedAt).toLocaleString('sv-SE') : ''}{' '}
+              efter att det här signeringsutkastet skapades
+              {submission?.updatedAt
+                ? ` (${new Date(submission.updatedAt).toLocaleString('sv-SE')})`
+                : ''}
+              . Utkastet hos Skatteverket innehåller äldre siffror. Klicka{' '}
+              <span className="font-medium">Lås upp</span> och därefter{' '}
+              <span className="font-medium">Skicka in underlag</span> för att
+              signera rätt belopp.
+            </p>
           </div>
         )}
 

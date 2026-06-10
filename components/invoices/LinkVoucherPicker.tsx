@@ -43,6 +43,13 @@ interface LinkVoucherPickerProps {
   onCancel: () => void
   /** Defaults to 'customer_invoice' for back-compat with existing call sites. */
   mode?: VoucherPickerMode
+  /**
+   * Company accounting method. On 'cash' (kontantmetoden) the matcher searches
+   * bank/cash debits (19xx) instead of AR credits (1510), so the intro + empty
+   * copy switch to describe that. Defaults to 'accrual'. Only affects the
+   * customer-invoice mode's wording — the data path is decided server-side.
+   */
+  accountingMethod?: 'accrual' | 'cash'
 }
 
 function candidateAmount(c: VoucherCandidate): number {
@@ -72,9 +79,16 @@ export default function LinkVoucherPicker({
   onLinked,
   onCancel,
   mode = 'customer_invoice',
+  accountingMethod = 'accrual',
 }: LinkVoucherPickerProps) {
   const { toast } = useToast()
   const t = useTranslations('invoice_link_voucher')
+
+  // Kontantmetoden links against a bank/cash debit (19xx), not an AR credit —
+  // describe that. Only the customer-invoice copy varies by method.
+  const isCash = mode === 'customer_invoice' && accountingMethod === 'cash'
+  const introKey = isCash ? 'intro_cash' : 'intro'
+  const emptyDescriptionKey = isCash ? 'empty_description_cash' : 'empty_description'
 
   const apiBase =
     mode === 'supplier_invoice'
@@ -173,7 +187,7 @@ export default function LinkVoucherPicker({
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">{t('intro')}</p>
+      <p className="text-sm text-muted-foreground">{t(introKey)}</p>
 
       <div className="relative">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -194,7 +208,7 @@ export default function LinkVoucherPicker({
       ) : filtered.length === 0 ? (
         <div className="rounded-lg border border-dashed bg-muted/30 p-6 text-center">
           <p className="text-sm font-medium">{t('empty_title')}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{t('empty_description')}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t(emptyDescriptionKey)}</p>
         </div>
       ) : (
         <ul className="space-y-2 max-h-[320px] overflow-y-auto">

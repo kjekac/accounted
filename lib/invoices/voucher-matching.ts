@@ -1,19 +1,23 @@
 /**
  * Link an existing posted verifikat to a customer invoice as its payment row.
  *
- * Used when the GL already contains a verifikat that credits AR (default
- * 1510) — e.g. a SIE-imported payment voucher, a manually-entered cash
- * receipt, or any flow where the bookkeeping landed without invoice linkage.
- * No new journal entry is created. Only an invoice_payments row is inserted
- * pointing at the existing journal_entry_id, plus the invoice's
+ * The matching is accounting-method aware (company_settings.accounting_method):
+ *   • Faktureringsmetoden (accrual): match verifikat that CREDIT an AR account
+ *     (default 1510, covers 151x) — e.g. a SIE-imported payment voucher or a
+ *     manually-entered receipt that clears the receivable.
+ *   • Kontantmetoden (cash): no 1510 is ever booked (revenue is recognised at
+ *     payment — debit 19xx / credit 30xx+26xx), so instead match verifikat that
+ *     DEBIT a liquid-funds account (BAS class 19 — kassa/bank, covers
+ *     1910/1920/1930/1940…). That voucher IS the payment the user already
+ *     booked; linking just marks the invoice paid without a duplicate entry.
+ *
+ * No new journal entry is created in either case. Only an invoice_payments row
+ * is inserted pointing at the existing journal_entry_id, plus the invoice's
  * paid_amount/remaining_amount/status are advanced.
  *
- * Vouchers that book income directly (credit 30xx instead of 1510) are
- * rejected here with VOUCHER_NO_AR_CREDIT. The proper fix for those is a
- * storno+correction via gnubok_correct_entry — out of scope for this V1.
- *
  * Both the web API route and the MCP commit handler call into the same
- * `linkInvoiceToVoucher()` function so behaviour stays in lockstep.
+ * `linkInvoiceToVoucher()` function (→ link_invoice_to_voucher RPC) so
+ * behaviour stays in lockstep.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { eventBus } from '@/lib/events/bus'
@@ -29,8 +33,41 @@ import type { Invoice, Customer } from '@/types'
 
 const log = createLogger('voucher-matching')
 
-/** AR account range. Default 1510 (Kundfordringar) — covers all 151x. */
+/** AR account range. Default 1510 (Kundfordringar) — covers all 151x. Used on
+ *  faktureringsmetoden, where the issuance verifikat books the receivable. */
 const AR_ACCOUNT_PREFIX = '151'
+
+/** Liquid-funds range (Kassa och bank, BAS class 19 — 1910/1920/1930/1940…).
+ *  Used on kontantmetoden, where the payment verifikat debits a bank/cash
+ *  account instead of crediting 1510. */
+const CASH_ACCOUNT_PREFIX = '19'
+
+/**
+ * Read the company's accounting method. Defaults to 'accrual' when the settings
+ * row or column is absent — mirrors mark-paid / propose-payment-lines.
+ */
+async function resolveAccountingMethod(
+  supabase: SupabaseClient,
+  companyId: string
+): Promise<'accrual' | 'cash'> {
+  const { data, error } = await supabase
+    .from('company_settings')
+    .select('accounting_method')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) {
+    // A transient failure here would silently flip a cash company to the
+    // accrual (151x) search and render an empty candidate list — make the
+    // fallback visible so an intermittent empty state is diagnosable.
+    log.warn('accounting_method lookup failed; falling back to accrual', {
+      companyId,
+      message: error.message,
+    })
+  }
+  return (data as { accounting_method?: string } | null)?.accounting_method === 'cash'
+    ? 'cash'
+    : 'accrual'
+}
 
 /** ±90 days from the invoice's due_date as the default search window. */
 const DEFAULT_DATE_WINDOW_DAYS = 90
@@ -47,10 +84,12 @@ export interface VoucherCandidate {
   voucher_number: number | null
   entry_date: string
   description: string
-  /** Total credit to the AR account on this voucher (always positive). */
+  /** Matched amount on this voucher, always positive: the AR credit (151x) on
+   *  faktureringsmetoden, or the liquid-funds debit (19xx) on kontantmetoden.
+   *  Kept under this name for API/UI back-compat across both methods. */
   ar_credit_amount: number
   currency: string
-  /** Currency of the AR-credit line; nullable when the line stores SEK only. */
+  /** Currency of the matched line; nullable when the line stores SEK only. */
   ar_line_currency: string | null
   /** True when the voucher's fiscal period is closed or locked. */
   period_locked: boolean
@@ -94,9 +133,10 @@ interface CandidateContext {
 const EXCLUDED_SOURCE_TYPES = ['opening_balance', 'storno']
 
 /**
- * Find posted journal entries whose lines credit an AR account and could
- * plausibly be the payment for this invoice. Returns up to `limit` ranked
- * candidates.
+ * Find posted journal entries that could plausibly be the payment for this
+ * invoice and return up to `limit` ranked candidates. On faktureringsmetoden
+ * those are vouchers crediting an AR account (151x); on kontantmetoden they are
+ * vouchers debiting a liquid-funds account (19xx) — see the module header.
  *
  * The query is intentionally generous on filtering — we let the validator
  * make the final call at commit time. Ranking mirrors
@@ -116,84 +156,138 @@ export async function findMatchingVouchersForInvoice(
   const remainingAmount = computeRemaining(invoice)
   if (remainingAmount <= AMOUNT_TOLERANCE) return []
 
+  // Cash method: match the bank/cash DEBIT (19xx). Accrual: match the AR
+  // CREDIT (151x). The account prefix + side both switch on the method.
+  const isCash = (await resolveAccountingMethod(supabase, companyId)) === 'cash'
+  const accountPrefix = isCash ? CASH_ACCOUNT_PREFIX : AR_ACCOUNT_PREFIX
+  const amountColumn = isCash ? 'debit_amount' : 'credit_amount'
+
   const dueDate = new Date(invoice.due_date)
   const dateFrom = new Date(dueDate)
   dateFrom.setDate(dateFrom.getDate() - windowDays)
   const dateTo = new Date(dueDate)
   dateTo.setDate(dateTo.getDate() + windowDays)
 
-  const { data: lines, error } = await supabase
-    .from('journal_entry_lines')
+  // Pre-filter the matched side to a band around the invoice amount before the
+  // row cap applies. Without this, a cash company with many 19xx-debit lines
+  // (every bank receipt) overflows the cap and the relevant voucher can be
+  // dropped before it is ever scored. The band is a superset of every case
+  // scoreCandidate accepts (exact remaining/total + fuzzy ±1% capped 500 SEK),
+  // so it never hides a single-line match.
+  const hiAmount = Math.max(remainingAmount, invoice.total)
+  const loAmount = Math.min(remainingAmount, invoice.total)
+  const amountPad = Math.min(hiAmount * 0.01, 500) + 0.02
+  const amountFloor = Math.max(0, loAmount - amountPad)
+  const amountCeil = hiAmount + amountPad
+
+  // Drive the query from journal_entries, embedding the matched lines, NOT
+  // from journal_entry_lines joined up to the entry. PostgREST executes the
+  // FROM table first: driving from lines means scanning `account LIKE '19%'`
+  // across ALL tenants and running the lines RLS policy (a per-row EXISTS via
+  // current_active_company_id()) thousands of times — on a cash company every
+  // bank receipt is a 19xx debit, and the query blows the authenticated
+  // statement_timeout (8s). Driving from entries hits company+date+status
+  // indexes first (a handful of rows), so the per-line RLS check only runs for
+  // those entries' lines. Same result set, milliseconds instead of seconds.
+  let query = supabase
+    .from('journal_entries')
     .select(
       `
       id,
-      journal_entry_id,
-      account_number,
-      debit_amount,
-      credit_amount,
-      currency,
-      journal_entries!inner (
+      voucher_series,
+      voucher_number,
+      entry_date,
+      description,
+      status,
+      source_type,
+      fiscal_period_id,
+      company_id,
+      journal_entry_lines!inner (
         id,
-        voucher_series,
-        voucher_number,
-        entry_date,
-        description,
-        status,
-        source_type,
-        fiscal_period_id,
-        company_id
+        account_number,
+        debit_amount,
+        credit_amount,
+        currency
       )
       `
     )
-    .eq('journal_entries.company_id', companyId)
-    .eq('journal_entries.status', 'posted')
-    .like('account_number', `${AR_ACCOUNT_PREFIX}%`)
-    .gt('credit_amount', 0)
-    .gte('journal_entries.entry_date', dateFrom.toISOString().slice(0, 10))
-    .lte('journal_entries.entry_date', dateTo.toISOString().slice(0, 10))
+    .eq('company_id', companyId)
+    .eq('status', 'posted')
+    .gte('entry_date', dateFrom.toISOString().slice(0, 10))
+    .lte('entry_date', dateTo.toISOString().slice(0, 10))
+    .like('journal_entry_lines.account_number', `${accountPrefix}%`)
+  query = isCash
+    ? query.gt('journal_entry_lines.debit_amount', 0)
+    : query.gt('journal_entry_lines.credit_amount', 0)
+  const { data: entryRows, error } = await query
+    .gte(`journal_entry_lines.${amountColumn}`, amountFloor)
+    .lte(`journal_entry_lines.${amountColumn}`, amountCeil)
     .limit(limit * 10)
-  if (error || !lines) return []
+  if (error) {
+    // Surface transient failures instead of silently rendering "no candidates"
+    // — a swallowed error looks like a match that intermittently vanishes.
+    log.warn('voucher candidate query failed', {
+      companyId,
+      invoiceId: invoice.id,
+      message: error.message,
+    })
+  }
+  if (error || !entryRows) return []
 
-  // Group lines by journal_entry_id so we sum the AR credit per voucher.
+  // Sum the matched side per voucher (the embed already contains only the
+  // lines that passed the account/side/amount filters).
   const byEntry = new Map<
     string,
     { entry: VoucherRow; arCreditTotal: number; lineCurrency: string | null }
   >()
 
-  for (const raw of lines) {
-    const line = raw as unknown as JournalEntryLine & {
-      journal_entries: VoucherRow
+  for (const raw of entryRows) {
+    const entry = raw as unknown as VoucherRow & {
+      journal_entry_lines: Pick<
+        JournalEntryLine,
+        'id' | 'account_number' | 'debit_amount' | 'credit_amount' | 'currency'
+      >[]
     }
-    const entry = line.journal_entries
-    if (!entry) continue
     if (EXCLUDED_SOURCE_TYPES.includes(entry.source_type ?? '')) continue
 
-    const credit = Number(line.credit_amount ?? 0)
-    if (credit <= 0) continue
-
-    const existing = byEntry.get(entry.id)
-    if (existing) {
-      existing.arCreditTotal += credit
-    } else {
-      byEntry.set(entry.id, {
-        entry,
-        arCreditTotal: credit,
-        lineCurrency: line.currency,
-      })
+    let matchedTotal = 0
+    let lineCurrency: string | null = null
+    for (const line of entry.journal_entry_lines ?? []) {
+      // Matched amount = the bank/cash debit (cash) or AR credit (accrual).
+      const matched = isCash ? Number(line.debit_amount ?? 0) : Number(line.credit_amount ?? 0)
+      if (matched <= 0) continue
+      matchedTotal += matched
+      if (!lineCurrency) lineCurrency = line.currency
     }
+    if (matchedTotal <= 0) continue
+
+    byEntry.set(entry.id, { entry, arCreditTotal: matchedTotal, lineCurrency })
   }
 
   if (byEntry.size === 0) return []
 
-  // Drop entries already fully linked to *this* invoice.
+  // Fetch the already-linked payments (for dedup) and the fiscal-period locks
+  // (informational "låst period" badge) concurrently — both depend only on the
+  // grouped entries, so there is no reason to pay two sequential round-trips.
+  // Computing locks for entries that dedup later drops is harmless.
   const candidateEntryIds = Array.from(byEntry.keys())
-  const { data: existingLinks } = await supabase
-    .from('invoice_payments')
-    .select('journal_entry_id')
-    .eq('company_id', companyId)
-    .eq('invoice_id', invoice.id)
-    .in('journal_entry_id', candidateEntryIds)
+  const periodIds = Array.from(
+    new Set(Array.from(byEntry.values()).map((v) => v.entry.fiscal_period_id))
+  )
+  const [{ data: existingLinks }, { data: periods }] = await Promise.all([
+    supabase
+      .from('invoice_payments')
+      .select('journal_entry_id')
+      .eq('company_id', companyId)
+      .eq('invoice_id', invoice.id)
+      .in('journal_entry_id', candidateEntryIds),
+    supabase
+      .from('fiscal_periods')
+      .select('id, status')
+      .in('id', periodIds),
+  ])
 
+  // Drop entries already fully linked to *this* invoice.
   const alreadyLinked = new Set(
     (existingLinks ?? [])
       .map((row) => (row as { journal_entry_id: string | null }).journal_entry_id)
@@ -202,16 +296,8 @@ export async function findMatchingVouchersForInvoice(
   for (const id of alreadyLinked) byEntry.delete(id)
   if (byEntry.size === 0) return []
 
-  // Resolve fiscal period locks in one batched query so we can surface a
-  // "period locked" flag in the candidate preview. Linking is allowed in
-  // locked periods (no JE mutation) — this is just informational.
-  const periodIds = Array.from(
-    new Set(Array.from(byEntry.values()).map((v) => v.entry.fiscal_period_id))
-  )
-  const { data: periods } = await supabase
-    .from('fiscal_periods')
-    .select('id, status')
-    .in('id', periodIds)
+  // Linking is allowed in locked periods (no JE mutation) — this flag is just
+  // informational for the candidate preview.
   const lockedPeriods = new Set(
     (periods ?? [])
       .filter(
@@ -360,6 +446,10 @@ export async function validateVoucherForInvoiceLink(
     return { ok: false, code: 'LINK_VOUCHER_INVOICE_FULLY_PAID' }
   }
 
+  // Match the bank/cash debit (cash) or the AR credit (accrual) — see header.
+  const isCash = (await resolveAccountingMethod(supabase, companyId)) === 'cash'
+  const accountPrefix = isCash ? CASH_ACCOUNT_PREFIX : AR_ACCOUNT_PREFIX
+
   const { data: voucher, error: voucherError } = await supabase
     .from('journal_entries')
     .select('id, voucher_series, voucher_number, entry_date, description, status, source_type, fiscal_period_id, company_id')
@@ -391,10 +481,10 @@ export async function validateVoucherForInvoiceLink(
   let lineCurrency: string | null = null
   for (const raw of lines) {
     const line = raw as { account_number: string; debit_amount: number | null; credit_amount: number | null; currency: string | null }
-    if (!line.account_number?.startsWith(AR_ACCOUNT_PREFIX)) continue
-    const credit = Number(line.credit_amount ?? 0)
-    if (credit <= 0) continue
-    arCreditTotal += credit
+    if (!line.account_number?.startsWith(accountPrefix)) continue
+    const matched = isCash ? Number(line.debit_amount ?? 0) : Number(line.credit_amount ?? 0)
+    if (matched <= 0) continue
+    arCreditTotal += matched
     if (!lineCurrency) lineCurrency = line.currency
   }
   arCreditTotal = round2(arCreditTotal)

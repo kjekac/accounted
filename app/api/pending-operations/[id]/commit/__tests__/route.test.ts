@@ -255,6 +255,7 @@ describe('POST /api/pending-operations/:id/commit', () => {
         { data: pendingOp },                          // fetch pending op
         { data: { id: 'op-1' } },                     // CAS claim
         { data: customer },                           // fetch customer
+        { data: { vat_registered: true } },           // company_settings VAT registration gate
         { data: { id: 'inv-1', invoice_number: null } }, // insert invoice (no number — assigned at send)
         { data: null, error: null },                  // insert items
         { data: { id: 'inv-1', invoice_number: null, customer: customer, items: [] } }, // fetch complete invoice

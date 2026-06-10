@@ -12,11 +12,11 @@ export interface VatRateOption {
  * Swedish/EU-unvalidated customers can choose between 25%, 12%, 6%, and 0% (exempt).
  * Reverse charge and export customers are locked to 0%.
  *
- * The picker does NOT gate on the seller's VAT registration status. A
- * non-momsregistrerad seller is shown the same options as a registered one —
- * the form surfaces a warning at submit time (ML 16 kap. 23 § faktureringsmoms:
- * stated VAT is owed even by non-registered sellers, but the buyer cannot
- * deduct it as input VAT).
+ * This helper does NOT gate on the seller's VAT registration status — it only
+ * knows the customer side. The seller-side gate lives one level up: the invoice
+ * form hides the Moms column entirely when company_settings.vat_registered is
+ * false, and both the create route and the MCP commit force every line to 0%
+ * (momsfri) server-side, so a non-momsregistrerad company never books output VAT.
  */
 export function getAvailableVatRates(
   customerType: CustomerType,

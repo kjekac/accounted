@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -13,7 +13,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ChevronDown, Loader2, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
-import type { CreateArticleInput } from '@/types'
+import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
+import { AddAccountDialog } from '@/components/bookkeeping/AddAccountDialog'
+import type { BASAccount, CreateArticleInput } from '@/types'
 
 // Unit list mirrors the invoice line editor (app/(dashboard)/invoices/new/page.tsx).
 const UNITS = ['st', 'tim', 'dag', 'månad', 'km', 'kg'] as const
@@ -35,6 +37,28 @@ export default function ArticleForm({
 }: ArticleFormProps) {
   const { canWrite } = useCanWrite()
   const t = useTranslations('form_article')
+  // Active class-3 (revenue) accounts for the combobox. The combobox accepts
+  // unknown 4-digit numbers optimistically — the API answers with
+  // ACCOUNTS_NOT_IN_CHART for activatable BAS accounts, and the host page's
+  // ActivateAccountsDialog flow takes over (same UX as the journal entry form).
+  const [revenueAccounts, setRevenueAccounts] = useState<BASAccount[]>([])
+  // Inline account creation: what the user typed in the combobox when they hit
+  // "Skapa konto" — non-null opens AddAccountDialog prefilled with it.
+  const [createAccountPrefill, setCreateAccountPrefill] = useState<string | null>(null)
+
+  async function fetchRevenueAccounts() {
+    try {
+      const res = await fetch('/api/bookkeeping/accounts?class=3')
+      const body = await res.json()
+      setRevenueAccounts((body?.data as BASAccount[]) || [])
+    } catch {
+      // Non-fatal: the combobox degrades to free 4-digit entry.
+    }
+  }
+
+  useEffect(() => {
+    fetchRevenueAccounts()
+  }, [])
   // Open the advanced section by default when it already holds data, so an
   // edit never hides a value the user previously set.
   const [advancedOpen, setAdvancedOpen] = useState(
@@ -73,6 +97,7 @@ export default function ArticleForm({
     handleSubmit,
     watch,
     control,
+    setValue,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -232,13 +257,18 @@ export default function ArticleForm({
           <div className="space-y-4 pt-4">
             {/* Revenue account */}
             <div className="space-y-2">
-              <Label htmlFor="revenue_account">{t('revenue_account_label')}</Label>
-              <Input
-                id="revenue_account"
-                inputMode="numeric"
-                placeholder={t('revenue_account_placeholder')}
-                className="tabular-nums"
-                {...register('revenue_account')}
+              <Label>{t('revenue_account_label')}</Label>
+              <Controller
+                name="revenue_account"
+                control={control}
+                render={({ field }) => (
+                  <AccountCombobox
+                    value={field.value || ''}
+                    accounts={revenueAccounts}
+                    onChange={field.onChange}
+                    onCreateAccount={(prefill) => setCreateAccountPrefill(prefill)}
+                  />
+                )}
               />
               <p className="text-xs text-muted-foreground">{t('revenue_account_hint')}</p>
             </div>
@@ -332,6 +362,31 @@ export default function ArticleForm({
           )}
         </Button>
       </div>
+
+      {/* Inline custom-account creation (renders in a portal, outside the form).
+          After create: refresh the chart and select the new number as the
+          article's revenue account — mirrors the journal entry form. */}
+      <AddAccountDialog
+        open={createAccountPrefill != null}
+        onOpenChange={(next) => {
+          if (!next) setCreateAccountPrefill(null)
+        }}
+        initialAccountNumber={
+          createAccountPrefill && /^\d{1,4}$/.test(createAccountPrefill)
+            ? createAccountPrefill
+            : undefined
+        }
+        initialAccountName={
+          createAccountPrefill && !/^\d{1,4}$/.test(createAccountPrefill)
+            ? createAccountPrefill
+            : undefined
+        }
+        onCreated={async (account) => {
+          await fetchRevenueAccounts()
+          setValue('revenue_account', account.account_number, { shouldDirty: true })
+          setCreateAccountPrefill(null)
+        }}
+      />
     </form>
   )
 }
