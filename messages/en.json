@@ -918,7 +918,9 @@
     "toast_create_failed_title": "Could not create company",
     "toast_create_failed_description": "Try again or add it manually.",
     "toast_welcome_title": "Welcome!",
-    "toast_company_ready": "Your company is ready."
+    "toast_company_ready": "Your company is ready.",
+    "error_no_access": "You don't have access to this company.",
+    "error_switch_failed": "The company switch could not be saved. Please try again."
   },
   "companies_new": {
     "step1_title": "New company",
@@ -3421,7 +3423,9 @@
   "company_switcher": {
     "company_label": "Company",
     "default_company_name": "My business",
-    "add_company": "Add company"
+    "add_company": "Add company",
+    "error_no_access": "You don't have access to this company.",
+    "error_switch_failed": "The company switch could not be saved. Please try again."
   },
   "transactions": {
     "page_title": "Transactions",

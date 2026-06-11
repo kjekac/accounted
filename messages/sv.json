@@ -918,7 +918,9 @@
     "toast_create_failed_title": "Kunde inte skapa företag",
     "toast_create_failed_description": "Försök igen eller lägg till manuellt.",
     "toast_welcome_title": "Välkommen!",
-    "toast_company_ready": "Ditt företag är nu redo."
+    "toast_company_ready": "Ditt företag är nu redo.",
+    "error_no_access": "Du har inte tillgång till detta företag.",
+    "error_switch_failed": "Företagsbytet kunde inte sparas. Försök igen."
   },
   "companies_new": {
     "step1_title": "Nytt företag",
@@ -3421,7 +3423,9 @@
   "company_switcher": {
     "company_label": "Företag",
     "default_company_name": "Min verksamhet",
-    "add_company": "Lägg till företag"
+    "add_company": "Lägg till företag",
+    "error_no_access": "Du har inte tillgång till detta företag.",
+    "error_switch_failed": "Företagsbytet kunde inte sparas. Försök igen."
   },
   "transactions": {
     "page_title": "Transaktioner",

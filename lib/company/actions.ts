@@ -1,11 +1,17 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { setActiveCompany } from '@/lib/company/context'
+import { setActiveCompany, CompanyContextError } from '@/lib/company/context'
 import { revalidatePath } from 'next/cache'
 import { normalizeOrgNumber } from '@/lib/company-lookup/normalize-org-number'
 import type { CompanyLookupResult } from '@/lib/company-lookup/types'
 
+/**
+ * Switch the active company. Returns an error *code* (translated by the
+ * caller, same pattern as `org_number_invalid` below): 'not_member' when the
+ * user lacks membership, 'persist_failed' when the user_preferences write
+ * failed or could not be verified (#701).
+ */
 export async function switchCompany(companyId: string): Promise<{ error?: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -21,8 +27,14 @@ export async function switchCompany(companyId: string): Promise<{ error?: string
     // every React/router/fetch cache wholesale. revalidatePath would be a
     // no-op and would just race with the hard reload.
     return {}
-  } catch {
-    return { error: 'Du har inte tillgång till detta företag.' }
+  } catch (err) {
+    console.error('[switchCompany] failed', err)
+    if (err instanceof CompanyContextError && err.code === 'not_member') {
+      return { error: 'not_member' }
+    }
+    // persist_failed and anything unexpected: a retryable failure, not a
+    // permissions problem — don't tell the user they lack access.
+    return { error: 'persist_failed' }
   }
 }
 

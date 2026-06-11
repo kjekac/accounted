@@ -112,13 +112,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Kunde inte lägga till medlem.' }, { status: 500 })
   }
 
-  // Set active company
-  await serviceClient
+  // Set active company. Non-fatal on failure — the membership insert already
+  // succeeded and middleware falls back to it — but log so silent
+  // persistence failures (#701) are observable.
+  const { error: prefError } = await serviceClient
     .from('user_preferences')
     .upsert({
       user_id: user.id,
       active_company_id: companyInvite.company_id,
     }, { onConflict: 'user_id' })
+
+  if (prefError) {
+    console.error('[team/accept] failed to set active company', prefError)
+  }
 
   // Mark invite as accepted
   await serviceClient

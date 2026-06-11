@@ -4,6 +4,21 @@ import { cookies } from 'next/headers'
 const COMPANY_COOKIE = 'gnubok-company-id'
 
 /**
+ * Thrown by setActiveCompany so callers can tell a permissions problem
+ * ('not_member') apart from a failed/unverified database write
+ * ('persist_failed') and surface the right message to the user.
+ */
+export class CompanyContextError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'not_member' | 'persist_failed'
+  ) {
+    super(message)
+    this.name = 'CompanyContextError'
+  }
+}
+
+/**
  * Get the active company ID for the authenticated user.
  *
  * Resolution order: user_preferences → first non-archived membership.
@@ -105,18 +120,39 @@ export async function setActiveCompany(
     .single()
 
   if (!membership) {
-    throw new Error('User is not a member of this company')
+    throw new CompanyContextError('User is not a member of this company', 'not_member')
   }
 
-  // Update user_preferences — this is the authoritative value RLS reads
-  await supabase
+  // Update user_preferences — this is the authoritative value RLS reads.
+  // The write MUST be verified: an UPDATE filtered out by RLS affects zero
+  // rows without raising an error, which previously made failed switches
+  // look successful while middleware kept resolving the old company (#701).
+  // `.select().single()` reads the row back, so both an explicit error and
+  // a silent zero-row write surface as a thrown CompanyContextError.
+  const { data: persisted, error: upsertError } = await supabase
     .from('user_preferences')
     .upsert(
       { user_id: userId, active_company_id: companyId },
       { onConflict: 'user_id' }
     )
+    .select('active_company_id')
+    .single()
 
-  // Refresh the cookie as a compat hint
+  if (upsertError) {
+    throw new CompanyContextError(
+      `Failed to persist active company: ${upsertError.message}`,
+      'persist_failed'
+    )
+  }
+  if (persisted?.active_company_id !== companyId) {
+    throw new CompanyContextError(
+      'Active company write did not persist',
+      'persist_failed'
+    )
+  }
+
+  // Refresh the cookie as a compat hint — only after the DB write is
+  // confirmed, so the cookie can never diverge from user_preferences.
   const cookieStore = await cookies()
   cookieStore.set(COMPANY_COOKIE, companyId, {
     path: '/',

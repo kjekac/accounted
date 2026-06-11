@@ -7,11 +7,13 @@ import { useTranslations } from 'next-intl'
 import { cn } from '@/lib/utils'
 import { useCompany } from '@/contexts/CompanyContext'
 import { switchCompany } from '@/lib/company/actions'
+import { useToast } from '@/components/ui/use-toast'
 import { Check, ChevronsUpDown, Plus, Loader2 } from 'lucide-react'
 
 export default function CompanySwitcher() {
   const { company, companies, isSandbox } = useCompany()
   const t = useTranslations('company_switcher')
+  const { toast } = useToast()
   const [open, setOpen] = useState(false)
   const [isPending, setIsPending] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -82,6 +84,10 @@ export default function CompanySwitcher() {
     const result = await switchCompany(companyId)
     if (result.error) {
       setIsPending(false)
+      toast({
+        title: t(result.error === 'not_member' ? 'error_no_access' : 'error_switch_failed'),
+        variant: 'destructive',
+      })
       return
     }
     // Notify every other open tab of the same user so they hard-reload

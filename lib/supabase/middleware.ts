@@ -281,12 +281,19 @@ async function resolveCompanyForMiddleware(
 
   // Write the fallback back to user_preferences so future RLS lookups
   // see the same active company without needing this fallback scan.
-  await supabase
+  // Non-fatal on failure: resolution for this request already succeeded,
+  // the write-back is an optimization — but log it so silent persistence
+  // failures (#701) are observable.
+  const { error: writeBackError } = await supabase
     .from('user_preferences')
     .upsert(
       { user_id: userId, active_company_id: firstCompany.company_id },
       { onConflict: 'user_id' }
     )
+
+  if (writeBackError) {
+    console.error('[middleware] active company write-back failed', writeBackError)
+  }
 
   return { companyId: firstCompany.company_id, locale }
 }

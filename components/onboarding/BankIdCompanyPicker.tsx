@@ -89,7 +89,10 @@ export default function BankIdCompanyPicker({
     setSetup({ kind: 'opening', companyId })
     const result = await switchCompany(companyId)
     if (result.error) {
-      toast({ title: result.error, variant: 'destructive' })
+      toast({
+        title: t(result.error === 'not_member' ? 'error_no_access' : 'error_switch_failed'),
+        variant: 'destructive',
+      })
       setSetup({ kind: 'idle' })
       return
     }

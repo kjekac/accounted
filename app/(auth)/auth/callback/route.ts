@@ -113,11 +113,17 @@ export async function GET(request: NextRequest) {
               source: 'direct',
             })
 
-            // Set active company
-            await serviceClient.from('user_preferences').upsert({
+            // Set active company. Non-fatal on failure — middleware falls
+            // back to the membership created above — but log so silent
+            // persistence failures (#701) are observable.
+            const { error: prefError } = await serviceClient.from('user_preferences').upsert({
               user_id: user.id,
               active_company_id: invite.company_id,
             }, { onConflict: 'user_id' })
+
+            if (prefError) {
+              console.error('[auth/callback] failed to set active company', prefError)
+            }
 
             // Mark invite as accepted
             await serviceClient
