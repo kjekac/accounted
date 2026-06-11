@@ -17,8 +17,9 @@ Best for most users. No API key to manage — you authorise Accounted the same w
 1. In **claude.ai** (Settings → Connectors) or **Claude Desktop** (Settings → Connectors → Add custom connector), choose **Add custom connector**.
 2. Paste the connector URL:
    \`\`\`
-   https://app.gnubok.se/api/extensions/ext/mcp-server/mcp
+   https://app.gnubok.se/api/extensions/ext/mcp-server/mcp?client=claude-connector
    \`\`\`
+   _(The "?client=claude-connector" suffix is telemetry-only — it lets Accounted see you connected via claude.ai/Desktop. It changes nothing about behaviour or scopes; drop the query string if you prefer.)_
 3. Claude opens the Accounted OAuth 2.1 consent screen. Sign in and pick the company you want Claude to act on.
 4. On the consent screen you grant **read-only scopes by default** (list invoices, read reports, compute VAT). Write scopes (create invoice, categorise, book vouchers, run year-end) are **listed separately and must be ticked explicitly** — leave them unchecked for a read-only review session.
 5. Approve. Claude now lists the Accounted tools and you can start asking questions.
@@ -38,7 +39,8 @@ Best for Claude Desktop on a machine where you'd rather use a long-lived API key
          "command": "npx",
          "args": ["gnubok-mcp"],
          "env": {
-           "GNUBOK_API_KEY": "gnubok_sk_test_..."
+           "GNUBOK_API_KEY": "gnubok_sk_test_...",
+           "GNUBOK_CLIENT": "claude-desktop"
          }
        }
      }

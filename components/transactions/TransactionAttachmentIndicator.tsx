@@ -1,36 +1,64 @@
 'use client'
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
+import Link from 'next/link'
 import { Paperclip, Loader2 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/components/ui/use-toast'
 
 interface Props {
   documentId: string | null | undefined
+  /** The booked tx's journal entry — link target when the underlag lives only
+   *  at verifikat level (multi-doc entries, booking-dialog uploads). */
+  journalEntryId?: string | null
+  /** Underlag exists on the journal entry even though no doc is pinned to the
+   *  transaction row (computeJeUnderlagStatus === 'has'). */
+  hasJeDoc?: boolean
+  /** Booked, requires underlag, has none (computeJeUnderlagStatus === 'missing'). */
+  missing?: boolean
+  /** Opens the attach dialog from the negative state. Omit for viewers —
+   *  the badge then renders non-interactive. */
+  onAttach?: () => void
   className?: string
 }
 
+const badgeClass = 'h-4 gap-1 px-1.5 py-0 text-[10px] font-normal'
+// Enlarges the hit area beyond the 16px badge without shifting layout.
+const hitAreaClass = 'shrink-0 p-1 -m-1'
+
 /**
- * Compact "this transaction has an attached document" indicator.
- * Clicking fetches a signed download URL and opens the document in a new tab —
- * lets the user verify the attached receipt without first having to book the
- * transaction (which is when the doc gets linked to a journal entry).
+ * Per-row underlag status for the /transactions lists.
+ *
+ * - Pinned doc (transactions.document_id): clickable badge that fetches a
+ *   signed URL and opens the document in a new tab.
+ * - Verifikat-level doc only: same badge, links to the verifikat page (which
+ *   lists all attachments — handles multi-doc without a per-row fetch).
+ * - Missing on a booked row: discreet outline badge that doubles as the
+ *   attach affordance when onAttach is provided.
  */
-export function TransactionAttachmentIndicator({ documentId, className }: Props) {
+export function TransactionAttachmentIndicator({
+  documentId,
+  journalEntryId,
+  hasJeDoc,
+  missing,
+  onAttach,
+  className,
+}: Props) {
+  const t = useTranslations('tx_underlag')
   const { toast } = useToast()
   const [isLoading, setIsLoading] = useState(false)
-
-  if (!documentId) return null
 
   const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation()
     e.preventDefault()
-    if (isLoading) return
+    if (isLoading || !documentId) return
     setIsLoading(true)
     try {
       const res = await fetch(`/api/documents/${documentId}`)
       if (!res.ok) {
-        toast({ title: 'Kunde inte hämta underlaget', variant: 'destructive' })
+        toast({ title: t('open_failed'), variant: 'destructive' })
         return
       }
       const { data } = await res.json()
@@ -42,22 +70,68 @@ export function TransactionAttachmentIndicator({ documentId, className }: Props)
     }
   }
 
-  return (
-    <button
-      type="button"
-      onClick={handleOpen}
-      title="Underlag bifogat — klicka för att öppna"
-      aria-label="Öppna bifogat underlag"
-      className={cn(
-        'inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors shrink-0',
-        className
-      )}
-    >
-      {isLoading ? (
-        <Loader2 className="h-3 w-3 animate-spin" />
-      ) : (
+  if (documentId) {
+    return (
+      <button
+        type="button"
+        onClick={handleOpen}
+        title={t('attached_title')}
+        aria-label={t('attached_aria')}
+        className={cn(hitAreaClass, className)}
+      >
+        <Badge variant="secondary" className={badgeClass}>
+          {isLoading ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Paperclip className="h-3 w-3" />
+          )}
+          {t('attached_label')}
+        </Badge>
+      </button>
+    )
+  }
+
+  if (hasJeDoc && journalEntryId) {
+    return (
+      <Link
+        href={`/bookkeeping/${journalEntryId}`}
+        title={t('attached_title')}
+        aria-label={t('attached_aria')}
+        onClick={(e) => e.stopPropagation()}
+        className={cn(hitAreaClass, className)}
+      >
+        <Badge variant="secondary" className={badgeClass}>
+          <Paperclip className="h-3 w-3" />
+          {t('attached_label')}
+        </Badge>
+      </Link>
+    )
+  }
+
+  if (missing) {
+    const badge = (
+      <Badge variant="outline" className={cn(badgeClass, 'text-muted-foreground')}>
         <Paperclip className="h-3 w-3" />
-      )}
-    </button>
-  )
+        {t('missing_label')}
+      </Badge>
+    )
+    if (!onAttach) return <span className={cn('shrink-0', className)}>{badge}</span>
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          e.preventDefault()
+          onAttach()
+        }}
+        title={t('missing_title')}
+        aria-label={t('missing_title')}
+        className={cn(hitAreaClass, className)}
+      >
+        {badge}
+      </button>
+    )
+  }
+
+  return null
 }

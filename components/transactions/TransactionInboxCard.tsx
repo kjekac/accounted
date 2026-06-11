@@ -25,6 +25,7 @@ import {
   Link2,
   Loader2,
   MoreHorizontal,
+  Paperclip,
   Pencil,
   Split,
   Trash2,
@@ -43,6 +44,7 @@ import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-exten
 // upload functional but drop the "AI:n läser dokumentet" promise.
 const HAS_AI_EXTRACTION = ENABLED_EXTENSION_IDS.has('document-extraction')
 import { TransactionAttachmentIndicator } from './TransactionAttachmentIndicator'
+import { useCanWrite } from '@/lib/hooks/use-can-write'
 import type { TransactionWithInvoice, CategorizeHandler } from './transaction-types'
 
 interface TransactionInboxCardProps {
@@ -66,6 +68,9 @@ interface TransactionInboxCardProps {
   /** Open the existing-verifikat matcher — link the bank tx to an already-booked
    *  voucher (salary, Fortnox import, manual entry) with no new bokföring. */
   onOpenMatchVoucher?: (transaction: TransactionWithInvoice) => void
+  /** Open the attach-underlag dialog — pin an inbox document or a fresh upload
+   *  to the transaction (the tx→doc mirror of the Documents view's matcher). */
+  onOpenAttachDocument?: (transaction: TransactionWithInvoice) => void
   onOpenCategoryDialog: (transaction: TransactionWithInvoice) => void
   onDelete?: (id: string) => void
   /** Open the edit-title dialog. Only wired for editable (unbooked/unmatched) rows. */
@@ -84,6 +89,7 @@ export default function TransactionInboxCard({
   onOpenMatchInvoicePicker,
   onOpenSplitMatch,
   onOpenMatchVoucher,
+  onOpenAttachDocument,
   onOpenCategoryDialog,
   onDelete,
   onEditTitle,
@@ -91,6 +97,9 @@ export default function TransactionInboxCard({
   onAnimationComplete,
 }: TransactionInboxCardProps) {
   const t = useTranslations('tx_inbox_card')
+  // Attaching underlag is a write — hide the affordance from viewers so they
+  // don't dead-end on a 403 (mirrors the gate in TransactionHistoryList).
+  const { canWrite } = useCanWrite()
   const isProcessing = processingId === transaction.id
   const isDisabled = processingId !== null && processingId !== transaction.id
   const isIncome = transaction.amount > 0
@@ -224,10 +233,14 @@ export default function TransactionInboxCard({
   // invoice match was auto-detected: the user may want to point the bank line at
   // an existing salary/Fortnox/manual voucher instead of confirming a payment.
   const showMatchVoucherItem = isUnbooked && !!onOpenMatchVoucher
+  // "Matcha mot underlag" — pin an inbox doc / fresh upload to the tx. The
+  // tx→doc mirror of the Documents view's "Matcha mot transaktion".
+  const showAttachDocumentItem = isUnbooked && canWrite && !!onOpenAttachDocument
   const showSplitItem = showInvoiceMatchButton && !!onOpenSplitMatch
   const showEditItem = isTitleEditable && !!onEditTitle
   const showDeleteItem = canDelete && !!onDelete
-  const showOverflowMenu = showMatchVoucherItem || showSplitItem || showEditItem || showDeleteItem
+  const showOverflowMenu =
+    showMatchVoucherItem || showAttachDocumentItem || showSplitItem || showEditItem || showDeleteItem
 
   return (
     <motion.div
@@ -344,6 +357,17 @@ export default function TransactionInboxCard({
                           {t('match_voucher_btn')}
                         </DropdownMenuItem>
                       )}
+                      {showAttachDocumentItem && (
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onOpenAttachDocument!(transaction)
+                          }}
+                        >
+                          <Paperclip className="h-4 w-4" />
+                          {t('attach_document_btn')}
+                        </DropdownMenuItem>
+                      )}
                       {showSplitItem && (
                         <DropdownMenuItem
                           onClick={(e) => {
@@ -368,7 +392,7 @@ export default function TransactionInboxCard({
                       )}
                       {showDeleteItem && (
                         <>
-                          {(showMatchVoucherItem || showSplitItem || showEditItem) && <DropdownMenuSeparator />}
+                          {(showMatchVoucherItem || showAttachDocumentItem || showSplitItem || showEditItem) && <DropdownMenuSeparator />}
                           <DropdownMenuItem
                             className="text-destructive focus:text-destructive"
                             onClick={(e) => {

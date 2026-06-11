@@ -46,7 +46,7 @@ Restart Claude Desktop. The Accounted tools appear in the client and you can sta
 
 ## Alternative: claude.ai connector (no API key)
 
-If you use **claude.ai** or Claude Desktop's custom-connector flow, you can skip this bridge entirely and add Accounted as an OAuth 2.1 custom connector instead — paste the connector URL `https://app.gnubok.se/api/extensions/ext/mcp-server/mcp` and authorise on the Accounted consent screen (read-only scopes by default; write scopes are ticked explicitly).
+If you use **claude.ai** or Claude Desktop's custom-connector flow, you can skip this bridge entirely and add Accounted as an OAuth 2.1 custom connector instead — paste the connector URL `https://app.gnubok.se/api/extensions/ext/mcp-server/mcp?client=claude-connector` and authorise on the Accounted consent screen (read-only scopes by default; write scopes are ticked explicitly).
 
 ## Docs
 

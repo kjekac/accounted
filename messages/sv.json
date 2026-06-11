@@ -265,7 +265,15 @@
     "type_mark_invoice_paid": "Betald faktura",
     "type_send_invoice": "Skicka faktura",
     "type_mark_invoice_sent": "Markera skickad",
-    "type_match_transaction_invoice": "Fakturamatchning"
+    "type_match_transaction_invoice": "Fakturamatchning",
+    "origin_agent_chat": "Föreslaget av AI-assistenten via chatt",
+    "origin_mcp": "Föreslaget av AI-assistent via {label}",
+    "origin_api": "Föreslaget via API-integration",
+    "origin_cron": "Skapat av automatiskt jobb",
+    "explainer": "Godkänn utför bokföringen. Avvisa kastar bara förslaget — inget bokförs.",
+    "auto_expiry_note": "Förslag som inte hanteras utgår automatiskt efter 30 dagar — att inte göra något är säkert.",
+    "badge_auto_expired": "Utgick automatiskt",
+    "auto_expired_detail": "Utgick automatiskt efter 30 dagar utan åtgärd. Inget bokfördes."
   },
   "deadlines": {
     "title": "Deadlines",
@@ -1667,6 +1675,7 @@
     "match_supplier_invoice_btn": "Matcha Leverantörsfaktura {number}",
     "choose_template_btn": "Välj mall...",
     "match_voucher_btn": "Matcha mot befintlig verifikation",
+    "attach_document_btn": "Matcha mot underlag",
     "more_actions_aria": "Fler åtgärder",
     "delete_aria": "Ta bort transaktion",
     "edit_title_aria": "Ändra titel",
@@ -1723,6 +1732,26 @@
     "doc_link_failed_title": "Underlag kunde inte bifogas",
     "doc_link_failed_description": "{count} fil(er) kunde inte länkas till verifikationen. Försök igen via bokföringssidan.",
     "bank_line_description": "Företagskonto"
+  },
+  "tx_attach_dialog": {
+    "title": "Matcha mot underlag",
+    "description": "Koppla ett kvitto eller en faktura till transaktionen — välj från inkorgen eller ladda upp en ny fil.",
+    "pick_existing": "Välj befintligt underlag",
+    "selected_remove": "Ta bort valt underlag",
+    "already_attached_hint": "Transaktionen har redan ett underlag. Kopplar du ett nytt ersätts det befintliga.",
+    "confirm": "Koppla underlag",
+    "attaching": "Kopplar…",
+    "success_toast": "Underlag kopplat",
+    "error_toast": "Kunde inte koppla underlaget",
+    "cancel": "Avbryt"
+  },
+  "tx_underlag": {
+    "attached_label": "Underlag",
+    "attached_title": "Underlag bifogat — klicka för att öppna",
+    "attached_aria": "Öppna bifogat underlag",
+    "missing_label": "Underlag saknas",
+    "missing_title": "Verifikationen saknar underlag — klicka för att bifoga",
+    "open_failed": "Kunde inte hämta underlaget"
   },
   "tx_batch_selector": {
     "title_processing": "Bokför {done}/{total}...",
@@ -2007,6 +2036,7 @@
     "create_correction": "Skapa ändringsverifikation",
     "not_posted": "Ej bokförd",
     "possible_match_invoice": "Möjlig match: Faktura {number}",
+    "attach_document": "Matcha mot underlag",
     "book": "Bokför",
     "delete": "Ta bort",
     "delete_aria": "Ta bort transaktion",

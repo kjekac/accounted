@@ -694,4 +694,75 @@ describe('commitPendingOperation: attach_document_to_transaction', () => {
     const tablesTouched = (supabase.from as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0])
     expect(tablesTouched).toContain('invoice_inbox_items')
   })
+
+  it('auto-rejects 409 when the document already belongs to a different verifikation', async () => {
+    // Without this guard the attach would pin a consumed doc (undetachable
+    // per the transactions immutability trigger) and the later propagation
+    // would corrupt or be blocked by the doc-metadata immutability trigger.
+    // Mirrors the REST route's guard.
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'tx-1', document_id: null, journal_entry_id: 'je-1' }, error: null })
+    enqueue({ data: { id: 'doc-1', journal_entry_id: 'je-OTHER' }, error: null }) // doc fetch
+    enqueue({ data: null, error: null }) // dispatcher reject update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('rejected')
+    expect(result.http_status).toBe(409)
+  })
+
+  it('skips the propagation write on an idempotent re-attach (doc already on the same verifikation)', async () => {
+    // The period-lock trigger raises on ANY journal_entry_id write — even a
+    // same-value rewrite — so an unconditional re-run would fail an otherwise
+    // idempotent re-attach once the period locks.
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'tx-1', document_id: 'doc-1', journal_entry_id: 'je-1' }, error: null })
+    enqueue({ data: { id: 'doc-1', journal_entry_id: 'je-1' }, error: null }) // doc fetch — same JE
+    enqueue({ data: { journal_entry_id: 'je-1' }, error: null }) // tx UPDATE returning
+    enqueue({ data: null, error: null }) // invoice_inbox_items link
+    enqueue({ data: null, error: null }) // dispatcher commit update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('committed')
+    // document_attachments touched once (the doc fetch) — no propagation write.
+    const tablesTouched = (supabase.from as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0])
+    expect(tablesTouched.filter((t) => t === 'document_attachments')).toHaveLength(1)
+  })
+
+  it('maps a period-lock propagation failure to auto-reject 409', async () => {
+    // A retry could never succeed until the period is unlocked, so the
+    // generic 500 "försök igen" would be a false promise. Mirrors the REST
+    // route's mapping.
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'tx-1', document_id: null, journal_entry_id: null }, error: null })
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: 'je-7' }, error: null }) // tx UPDATE returning — booked meanwhile
+    enqueue({ data: null, error: null }) // invoice_inbox_items link
+    enqueue({
+      data: null,
+      error: { message: 'cannot link document in a locked/closed fiscal period' },
+    }) // propagation blocked by enforce_period_lock
+    enqueue({ data: null, error: null }) // dispatcher reject update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('rejected')
+    expect(result.http_status).toBe(409)
+  })
 })

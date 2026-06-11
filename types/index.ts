@@ -1687,7 +1687,9 @@ export type PendingOperationType =
   | 'submit_agi'
 export type PendingOperationStatus = 'pending' | 'committing' | 'committed' | 'rejected'
 
-export type PendingOperationActorType = 'user' | 'api_key' | 'mcp_oauth' | 'cron'
+// 'agent_chat' = the in-app AI chat (DB CHECK widened in migration
+// 20260519090000_actor_type_agent_chat).
+export type PendingOperationActorType = 'user' | 'api_key' | 'mcp_oauth' | 'cron' | 'agent_chat'
 export type PendingOperationRiskLevel = 'low' | 'medium' | 'high'
 
 export interface PendingOperationAgentMetadata {
@@ -2535,7 +2537,7 @@ export interface AuditLogEntry {
   table_name: string | null
   record_id: string | null
   actor_id: string | null
-  actor_type: 'user' | 'api_key' | 'mcp_oauth' | 'cron' | 'system' | null
+  actor_type: 'user' | 'api_key' | 'mcp_oauth' | 'cron' | 'agent_chat' | 'system' | null
   actor_label: string | null
   old_state: Record<string, unknown> | null
   new_state: Record<string, unknown> | null

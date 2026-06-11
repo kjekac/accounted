@@ -1453,11 +1453,24 @@ async function commitAttachDocumentToTransaction(
 
   const { data: doc, error: docError } = await supabase
     .from('document_attachments')
-    .select('id')
+    .select('id, journal_entry_id')
     .eq('id', documentId)
     .eq('company_id', companyId)
     .maybeSingle()
   if (docError || !doc) return { error: 'Document not found', status: 404 }
+
+  // A document that already serves as underlag for a DIFFERENT verifikation
+  // cannot be pinned here — propagating would either corrupt that link or be
+  // blocked by the document-metadata immutability trigger. Same verifikation
+  // is fine (idempotent re-attach; propagation below becomes a no-op).
+  // Mirrors the REST route in app/api/transactions/[id]/attach-document.
+  const docJournalEntryId = (doc.journal_entry_id as string | null) ?? null
+  if (docJournalEntryId && docJournalEntryId !== tx.journal_entry_id) {
+    return {
+      error: 'Underlaget är redan kopplat till en annan verifikation.',
+      status: 409,
+    }
+  }
 
   // Race-free read of journal_entry_id: use UPDATE ... RETURNING so the value
   // we propagate against reflects any concurrent categorize that committed
@@ -1511,13 +1524,29 @@ async function commitAttachDocumentToTransaction(
   }
 
   const journalEntryId = postUpdate.journal_entry_id as string | null
-  if (journalEntryId) {
+  // Skip when the doc already points at this verifikation: the period-lock
+  // trigger raises on ANY journal_entry_id write (even a same-value rewrite),
+  // so an unconditional re-run would 500 an otherwise idempotent re-attach
+  // once the period locks.
+  if (journalEntryId && docJournalEntryId !== journalEntryId) {
     const { error: linkErr } = await supabase
       .from('document_attachments')
       .update({ journal_entry_id: journalEntryId })
       .eq('id', documentId)
       .eq('company_id', companyId)
     if (linkErr) {
+      // The enforce_period_lock trigger blocks journal_entry_id writes when
+      // the target entry sits in a closed/locked period. Map to 409 — the
+      // dispatcher auto-rejects it, and a retry could never succeed until the
+      // period is unlocked, so "försök igen" would be a false promise.
+      const linkMsg = (linkErr as { message?: string }).message ?? ''
+      if (/locked\/closed fiscal period|Bokföringen är låst/i.test(linkMsg)) {
+        return {
+          error:
+            'Bilagan kopplades till transaktionen men verifikationens period är låst — den kunde inte länkas till verifikationen.',
+          status: 409,
+        }
+      }
       // Surface the propagation failure rather than logging-and-continuing.
       // BFL 5 kap 6 § requires the verifikation to reference its underlag, so
       // a "succeeded" attach that left document_attachments.journal_entry_id

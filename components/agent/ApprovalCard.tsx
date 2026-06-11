@@ -396,29 +396,36 @@ export default function ApprovalCard({
           </div>
         </div>
       ) : (
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            onClick={handleCommit}
-            disabled={isBusy || !canCommit}
-            className="flex-1"
-          >
-            {state === 'committing' ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              'Godkänn'
-            )}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowRejectForm(true)}
-            disabled={isBusy}
-            className="flex-1"
-          >
-            Avslå
-          </Button>
-        </div>
+        <>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={handleCommit}
+              disabled={isBusy || !canCommit}
+              className="flex-1"
+            >
+              {state === 'committing' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                'Godkänn'
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowRejectForm(true)}
+              disabled={isBusy}
+              className="flex-1"
+            >
+              Avslå
+            </Button>
+          </div>
+          {/* Keep in sync with EXPIRY_DAYS in
+              app/api/pending-operations/expire/cron/route.ts. */}
+          <p className="text-[11px] text-muted-foreground">
+            Om du inte gör något utgår förslaget automatiskt efter 30 dagar — inget bokförs.
+          </p>
+        </>
       )}
     </div>
   )

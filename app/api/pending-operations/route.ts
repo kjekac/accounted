@@ -23,12 +23,18 @@ export async function GET(request: Request) {
   if (!result.success) return result.response
   const { status, limit, offset } = result.data
 
+  // Terminal tabs (Godkända/Avvisade) order by when the op was RESOLVED, not
+  // created — auto-expired ops are ≥30 days old by construction, so a
+  // created_at ordering would bury a fresh expiry sweep below a month of
+  // newer rejections and the "Utgick automatiskt" context would never be seen.
+  const orderColumn = status === 'pending' ? 'created_at' : 'resolved_at'
+
   const { data, error, count } = await supabase
     .from('pending_operations')
     .select('*', { count: 'exact' })
     .eq('company_id', companyId)
     .eq('status', status)
-    .order('created_at', { ascending: false })
+    .order(orderColumn, { ascending: false, nullsFirst: false })
     .range(offset, offset + limit - 1)
 
   if (error) {

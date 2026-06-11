@@ -360,9 +360,12 @@ export function ApiKeysPanel() {
     })
   }
 
-  const mcpUrl = typeof window !== 'undefined'
+  const mcpBase = typeof window !== 'undefined'
     ? `${window.location.origin}/api/extensions/ext/mcp-server/mcp`
     : '/api/extensions/ext/mcp-server/mcp'
+  // Telemetry-only distribution-channel marker (server reads the `client` query
+  // param; never used for auth). Lets us measure which Claude surface connected.
+  const mcpUrl = (client: string) => `${mcpBase}?client=${client}`
 
   return (
     <div className="space-y-6">
@@ -465,7 +468,7 @@ export function ApiKeysPanel() {
                 path: (chunks) => <strong>{chunks}</strong>,
               })}
             </p>
-            <CopyBlock text={mcpUrl} copyAriaLabel={t('copy_aria')} />
+            <CopyBlock text={mcpUrl('claude-connector')} copyAriaLabel={t('copy_aria')} />
           </div>
 
           <div>
@@ -473,7 +476,8 @@ export function ApiKeysPanel() {
             <p className="text-xs text-muted-foreground mb-2">
               {t('terminal_runs_browser_login')}
             </p>
-            <CopyBlock text={`claude mcp add ${connectorName} --transport http ${mcpUrl}`} copyAriaLabel={t('copy_aria')} />
+            {/* URL is quoted — unquoted `?` in the query string trips zsh globbing. */}
+            <CopyBlock text={`claude mcp add ${connectorName} --transport http "${mcpUrl('claude-code')}"`} copyAriaLabel={t('copy_aria')} />
           </div>
 
           <div className="border-t pt-4">
@@ -500,7 +504,8 @@ export function ApiKeysPanel() {
       "command": "npx",
       "args": ["gnubok-mcp"],
       "env": {
-        "GNUBOK_API_KEY": "gnubok_sk_..."
+        "GNUBOK_API_KEY": "gnubok_sk_...",
+        "GNUBOK_CLIENT": "claude-desktop"
       }
     }
   }
@@ -513,7 +518,7 @@ export function ApiKeysPanel() {
                     {t('terminal_with_api_key')}
                   </p>
                   <CopyBlock text={`claude mcp add ${connectorName} --transport http \\
-  --url ${mcpUrl} \\
+  --url "${mcpUrl('claude-code')}" \\
   --header "Authorization: Bearer gnubok_sk_..."`} copyAriaLabel={t('copy_aria')} />
                 </div>
               </div>

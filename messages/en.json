@@ -265,7 +265,15 @@
     "type_mark_invoice_paid": "Paid invoice",
     "type_send_invoice": "Send invoice",
     "type_mark_invoice_sent": "Mark as sent",
-    "type_match_transaction_invoice": "Invoice match"
+    "type_match_transaction_invoice": "Invoice match",
+    "origin_agent_chat": "Suggested by the AI assistant via chat",
+    "origin_mcp": "Suggested by an AI assistant via {label}",
+    "origin_api": "Suggested via API integration",
+    "origin_cron": "Created by a scheduled job",
+    "explainer": "Approve executes the bookkeeping operation. Reject just discards the proposal — nothing is booked.",
+    "auto_expiry_note": "Unhandled proposals expire automatically after 30 days — doing nothing is safe.",
+    "badge_auto_expired": "Expired automatically",
+    "auto_expired_detail": "Expired automatically after 30 days without action. Nothing was booked."
   },
   "deadlines": {
     "title": "Deadlines",
@@ -1667,6 +1675,7 @@
     "match_supplier_invoice_btn": "Match supplier invoice {number}",
     "choose_template_btn": "Choose template...",
     "match_voucher_btn": "Match to existing voucher",
+    "attach_document_btn": "Match to document",
     "more_actions_aria": "More actions",
     "delete_aria": "Delete transaction",
     "edit_title_aria": "Edit title",
@@ -1723,6 +1732,26 @@
     "doc_link_failed_title": "Receipt could not be attached",
     "doc_link_failed_description": "{count} file(s) could not be linked to the journal entry. Try again from the bookkeeping page.",
     "bank_line_description": "Business account"
+  },
+  "tx_attach_dialog": {
+    "title": "Match to document",
+    "description": "Attach a receipt or invoice to the transaction — pick from the inbox or upload a new file.",
+    "pick_existing": "Choose existing document",
+    "selected_remove": "Remove selected document",
+    "already_attached_hint": "This transaction already has a document. Attaching a new one replaces it.",
+    "confirm": "Attach document",
+    "attaching": "Attaching…",
+    "success_toast": "Document attached",
+    "error_toast": "Could not attach the document",
+    "cancel": "Cancel"
+  },
+  "tx_underlag": {
+    "attached_label": "Document",
+    "attached_title": "Supporting document attached — click to open",
+    "attached_aria": "Open attached document",
+    "missing_label": "Missing document",
+    "missing_title": "The voucher has no supporting document — click to attach",
+    "open_failed": "Could not fetch the document"
   },
   "tx_batch_selector": {
     "title_processing": "Posting {done}/{total}...",
@@ -2007,6 +2036,7 @@
     "create_correction": "Create correction entry",
     "not_posted": "Not posted",
     "possible_match_invoice": "Possible match: Invoice {number}",
+    "attach_document": "Match to document",
     "book": "Post",
     "delete": "Delete",
     "delete_aria": "Delete transaction",

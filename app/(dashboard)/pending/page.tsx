@@ -170,6 +170,44 @@ const REJECTION_CATEGORY_LABELS: Record<PendingOperationRejectionCategory, strin
   other: 'Annat',
 }
 
+/**
+ * Human origin line for a staged operation. Many reviewers never used the AI
+ * chat themselves (a colleague or consultant did), so the raw actor_label is
+ * not enough context — spell out where the proposal came from.
+ */
+function originLabel(
+  op: PendingOperation,
+  t: (key: string, values?: Record<string, string>) => string,
+): string | null {
+  switch (op.actor_type) {
+    case 'agent_chat':
+      return t('origin_agent_chat')
+    // The claude.ai MCP connector mints a gnubok_sk_ key, so MCP traffic
+    // arrives as actor_type='api_key' with the key name as actor_label —
+    // keep the label so users with several integrations can tell which one
+    // staged the op. 'mcp_oauth' is declared but currently unreachable.
+    case 'mcp_oauth':
+    case 'api_key':
+      return op.actor_label
+        ? t('origin_mcp', { label: op.actor_label })
+        : t('origin_api')
+    case 'cron':
+      return t('origin_cron')
+    default:
+      return null
+  }
+}
+
+/**
+ * Rows the expiry cron auto-rejected (app/api/pending-operations/expire/cron).
+ * Strict on reason === 'expired' so commit-time auto-rejects (404/409, where
+ * reason is the error text) do NOT read as "expired".
+ */
+function isAutoExpired(op: PendingOperation): boolean {
+  const rd = op.result_data as { auto_rejected?: boolean; reason?: string } | null
+  return op.status === 'rejected' && rd?.auto_rejected === true && rd?.reason === 'expired'
+}
+
 function formatRelativeTime(dateStr: string): string {
   const now = new Date()
   const date = new Date(dateStr)
@@ -734,7 +772,12 @@ export default function PendingOperationsPage() {
     }
     switch (sourceFilter) {
       case 'agent':
-        return op.actor_type === 'api_key' || op.actor_type === 'mcp_oauth' || op.actor_type === 'cron'
+        return (
+          op.actor_type === 'api_key' ||
+          op.actor_type === 'mcp_oauth' ||
+          op.actor_type === 'cron' ||
+          op.actor_type === 'agent_chat'
+        )
       case 'high_risk':
         return op.risk_level === 'high'
       case 'all':
@@ -889,6 +932,14 @@ export default function PendingOperationsPage() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {/* First-time reviewers haven't necessarily used the AI chat that staged
+          these — say what the buttons do and that ignoring a proposal is safe. */}
+      {activeTab === 'pending' && (
+        <p className="text-xs text-muted-foreground">
+          {t('explainer')} {t('auto_expiry_note')}
+        </p>
+      )}
 
       <DataList>
         {showBulkControls && bulkEligible.length > 0 && (
@@ -1066,7 +1117,7 @@ export default function PendingOperationsPage() {
                       <DataListMetaSeparator />
                       <span className="inline-flex items-center gap-1">
                         <Bot className="h-3 w-3" />
-                        {/* The actor label doubles as the deep-link into the
+                        {/* The origin line doubles as the deep-link into the
                             originating conversation — no separate strip needed. */}
                         {conversationId ? (
                           <a
@@ -1074,10 +1125,10 @@ export default function PendingOperationsPage() {
                             className="hover:underline"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            {op.actor_label || op.actor_type}
+                            {originLabel(op, t) ?? op.actor_label ?? op.actor_type}
                           </a>
                         ) : (
-                          op.actor_label || op.actor_type
+                          originLabel(op, t) ?? op.actor_label ?? op.actor_type
                         )}
                       </span>
                     </>
@@ -1087,6 +1138,11 @@ export default function PendingOperationsPage() {
                   {op.risk_level === 'high' && (
                     <Badge variant="destructive" className="ml-1 h-4 px-1.5 py-0 text-[10px]">
                       {t('badge_high_risk')}
+                    </Badge>
+                  )}
+                  {isAutoExpired(op) && (
+                    <Badge variant="secondary" className="ml-1 h-4 px-1.5 py-0 text-[10px]">
+                      {t('badge_auto_expired')}
                     </Badge>
                   )}
                 </DataListMeta>
@@ -1100,6 +1156,13 @@ export default function PendingOperationsPage() {
                   <p className="mt-1 text-xs text-muted-foreground">
                     Avvisad: {REJECTION_CATEGORY_LABELS[op.rejection_category]}
                     {op.rejection_reason ? ` — "${op.rejection_reason}"` : ''}
+                  </p>
+                )}
+                {/* rejection_category is always NULL on auto-expired rows, so
+                    this never collides with the manual-rejection line above. */}
+                {isAutoExpired(op) && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t('auto_expired_detail')}
                   </p>
                 )}
               </DataListRow>

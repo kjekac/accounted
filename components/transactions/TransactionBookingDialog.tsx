@@ -23,7 +23,11 @@ interface TransactionBookingDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   transaction: TransactionWithInvoice | null
-  onBooked: (transactionId: string, journalEntryId: string) => void
+  onBooked: (
+    transactionId: string,
+    journalEntryId: string,
+    attachedDocumentId?: string | null,
+  ) => void
   preselectedTemplate?: BookingTemplateLibrary | null
 }
 
@@ -116,16 +120,23 @@ export default function TransactionBookingDialog({
     // files, and existing inbox documents picked via InboxDocumentPicker. For
     // picked docs, inbox_item_id stamps the inbox item as consumed so it drops
     // out of the active inbox — see app/api/documents/[id]/link/route.ts.
+    // transaction_id additionally pins the doc to the transaction row so the
+    // /transactions list shows the underlag indicator (first linked doc wins).
     const filesToLink = uploadedFiles.filter((f) => f.status === 'uploaded' && f.id)
     let linkFailCount = 0
+    let firstLinkedDocId: string | null = null
     for (const file of filesToLink) {
       try {
         const res = await fetch(`/api/documents/${file.id}/link`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ journal_entry_id: journalEntryId }),
+          body: JSON.stringify({
+            journal_entry_id: journalEntryId,
+            transaction_id: transactionId,
+          }),
         })
         if (!res.ok) linkFailCount++
+        else firstLinkedDocId ??= file.id ?? null
       } catch {
         linkFailCount++
       }
@@ -138,9 +149,11 @@ export default function TransactionBookingDialog({
           body: JSON.stringify({
             journal_entry_id: journalEntryId,
             inbox_item_id: doc.inbox_item_id,
+            transaction_id: transactionId,
           }),
         })
         if (!res.ok) linkFailCount++
+        else firstLinkedDocId ??= doc.document_id
       } catch {
         linkFailCount++
       }
@@ -153,10 +166,24 @@ export default function TransactionBookingDialog({
       })
     }
 
+    // The server pins only when the tx has no document_id yet (first linked
+    // doc wins) — mirror that here so the optimistic state never claims a
+    // pin the server refused to swap.
+    const pinnedDocId = transaction.document_id ? null : firstLinkedDocId
+    if (pinnedDocId) {
+      // Same event AgentChat dispatches after uploads — flips the inbox card's
+      // paperclip optimistically without a refetch.
+      window.dispatchEvent(
+        new CustomEvent('Accounted:transaction-document-linked', {
+          detail: { transaction_id: transactionId, document_id: pinnedDocId },
+        }),
+      )
+    }
+
     setUploadedFiles([])
     setPickedInboxDocs([])
     setShowUploadZone(false)
-    onBooked(transactionId, journalEntryId)
+    onBooked(transactionId, journalEntryId, pinnedDocId)
   }
 
   const attachedCount =

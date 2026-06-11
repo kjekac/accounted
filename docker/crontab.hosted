@@ -3,5 +3,6 @@
 0 6 * * *   curl -sf -H "Authorization: Bearer ${CRON_SECRET}" ${APP_URL}/api/deadlines/status/cron
 0 0 2 1 *   curl -sf -H "Authorization: Bearer ${CRON_SECRET}" ${APP_URL}/api/tax-deadlines/cron
 0 2 * * *   curl -sf -H "Authorization: Bearer ${CRON_SECRET}" ${APP_URL}/api/events/cleanup/cron
+30 2 * * *   curl -sf -H "Authorization: Bearer ${CRON_SECRET}" ${APP_URL}/api/pending-operations/expire/cron
 0 3 * * 0   curl -sf -H "Authorization: Bearer ${CRON_SECRET}" ${APP_URL}/api/documents/verify/cron
 0 4 * * *   curl -sf -H "Authorization: Bearer ${CRON_SECRET}" ${APP_URL}/api/sandbox/cleanup/cron

@@ -3,13 +3,14 @@ import { ensureInitialized } from '@/lib/init'
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
+import { LinkDocumentSchema } from '@/lib/api/schemas'
 
 ensureInitialized()
 
 /**
  * POST /api/documents/[id]/link — link a document to a journal entry.
  *
- * Body: { journal_entry_id: string, journal_entry_line_id?: string, inbox_item_id?: string }
+ * Body: { journal_entry_id: string, journal_entry_line_id?: string, inbox_item_id?: string, transaction_id?: string }
  *
  * When `inbox_item_id` is supplied (the "choose from inbox" flow), the inbox
  * item is stamped with the verifikat id after a successful link so it drops out
@@ -18,6 +19,14 @@ ensureInitialized()
  * write and happens first; the inbox stamp is operational housekeeping, so a
  * stamp failure is logged but does not fail the request (the doc is correctly
  * attached and the DB immutability trigger still blocks any double-link).
+ *
+ * When `transaction_id` is supplied (booking-flow callers that link underlag
+ * right after booking a bank transaction), the doc is also pinned to the
+ * transaction row (transactions.document_id) so the /transactions list shows
+ * the underlag indicator. Only set when the tx has no pin yet — first linked
+ * doc wins, and an existing räkenskapsinformation pin is never swapped (which
+ * would trip the immutability trigger). Same best-effort posture as the inbox
+ * stamp: a failure is logged but does not fail the request.
  */
 export const POST = withRouteContext(
   'document.link',
@@ -26,14 +35,19 @@ export const POST = withRouteContext(
     const { supabase, companyId, log, requestId } = ctx
     const opLog = log.child({ documentId: id })
 
-    const body = await request.json().catch(() => ({}))
-
-    if (!body.journal_entry_id) {
+    const parsed = LinkDocumentSchema.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) {
       return errorResponseFromCode('VALIDATION_ERROR', opLog, {
         requestId,
-        details: { field: 'journal_entry_id', reason: 'required' },
+        details: {
+          issues: parsed.error.issues.map((i) => ({
+            field: i.path.join('.'),
+            reason: i.message,
+          })),
+        },
       })
     }
+    const body = parsed.data
 
     try {
       const document = await linkToJournalEntry(
@@ -68,6 +82,25 @@ export const POST = withRouteContext(
           // mismatch as an observable warning rather than silently ignoring it.
           opLog.warn('inbox item stamp matched no rows (cross-resource mismatch)', {
             inboxItemId: body.inbox_item_id,
+          })
+        }
+      }
+
+      if (body.transaction_id) {
+        const { error: pinError } = await supabase
+          .from('transactions')
+          .update({ document_id: id })
+          .eq('id', body.transaction_id)
+          .eq('company_id', companyId!)
+          // Never swap an existing pin: keeps "first linked doc wins" semantics
+          // for multi-doc bookings and avoids the BFL immutability trigger.
+          .is('document_id', null)
+        if (pinError) {
+          // Non-fatal — the verifikat ↔ underlag link already succeeded; the
+          // pin is row-level UX on the /transactions list.
+          opLog.warn('transaction pin after link failed', {
+            transactionId: body.transaction_id,
+            reason: pinError.message,
           })
         }
       }

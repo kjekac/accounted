@@ -39,6 +39,7 @@ import SupplierInvoicePicker from '@/components/transactions/SupplierInvoicePick
 import MatchAllocationDialog from '@/components/transactions/MatchAllocationDialog'
 import BulkBookDialog from '@/components/transactions/BulkBookDialog'
 import TransactionBookingDialog from '@/components/transactions/TransactionBookingDialog'
+import TransactionAttachDocumentDialog from '@/components/transactions/TransactionAttachDocumentDialog'
 import QuickReviewDialog from '@/components/transactions/QuickReviewDialog'
 import EditTransactionTitleDialog from '@/components/transactions/EditTransactionTitleDialog'
 
@@ -59,6 +60,7 @@ import { formatCurrency, formatDate } from '@/lib/utils'
 import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, SupplierInvoice, Supplier, VatTreatment, EntityType, LinePatternEntry, BookingTemplateLibrary } from '@/types'
 import type { SuggestedTemplate } from '@/lib/transactions/category-suggestions'
 import { isImportedTransaction } from '@/lib/transactions/origin'
+import { computeJeUnderlagStatus, type JeUnderlagStatus } from '@/lib/transactions/underlag-status'
 
 type InvoiceWithCustomer = Invoice & { customer?: Customer }
 type SupplierInvoiceWithSupplier = SupplierInvoice & { supplier?: Supplier }
@@ -117,6 +119,18 @@ export default function TransactionsPage() {
   const [bookingDialogOpen, setBookingDialogOpen] = useState(false)
   const [bookingDialogTransaction, setBookingDialogTransaction] = useState<TransactionWithInvoice | null>(null)
   const [bookingDialogTemplate, setBookingDialogTemplate] = useState<BookingTemplateLibrary | null>(null)
+
+  // Attach-underlag dialog (tx→doc mirror of the Documents view's matcher)
+  const [attachDocTx, setAttachDocTx] = useState<TransactionWithInvoice | null>(null)
+  // Underlag status per booked journal_entry_id — drives the per-row
+  // "Underlag"/"Underlag saknas" badges in history view.
+  const [jeUnderlagStatus, setJeUnderlagStatus] = useState<Record<string, JeUnderlagStatus>>({})
+  // JE ids already requested (in-flight or done) so the enrichment effect
+  // never refetches on unrelated transactions-state changes.
+  const requestedJeIdsRef = useRef<{ companyId: string | null; ids: Set<string> }>({
+    companyId: null,
+    ids: new Set(),
+  })
 
   // Template picker dialog
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
@@ -415,6 +429,83 @@ export default function TransactionsPage() {
     setTransactions((prev) => [...prev, ...newTransactions])
     setIsLoadingMore(false)
   }
+
+  // Underlag-status enrichment for booked rows. Three RLS-scoped reads per
+  // 150-id chunk (PostgREST .in() URL-length convention, see
+  // lib/worklist/categories.ts): the JEs' source types, which JEs have a
+  // current-version document, and which are exempted via
+  // journal_entry_no_doc_required. Incremental — only fetches JE ids not yet
+  // requested, so loadMoreTransactions pages are covered without refetching.
+  // Soft-fails to "no badges" on error.
+  useEffect(() => {
+    if (!company) return
+    if (requestedJeIdsRef.current.companyId !== company.id) {
+      requestedJeIdsRef.current = { companyId: company.id, ids: new Set() }
+      setJeUnderlagStatus({})
+    }
+    const requested = requestedJeIdsRef.current.ids
+    const newIds = Array.from(
+      new Set(
+        transactions
+          .map((tx) => tx.journal_entry_id)
+          .filter((id): id is string => !!id && !requested.has(id)),
+      ),
+    )
+    if (newIds.length === 0) return
+    newIds.forEach((id) => requested.add(id))
+
+    const companyId = company.id
+    ;(async () => {
+      const IN_CLAUSE_CHUNK = 150
+      const merged: Record<string, JeUnderlagStatus> = {}
+      for (let i = 0; i < newIds.length; i += IN_CLAUSE_CHUNK) {
+        const chunk = newIds.slice(i, i + IN_CLAUSE_CHUNK)
+        const [entriesRes, docsRes, exemptRes] = await Promise.all([
+          supabase
+            .from('journal_entries')
+            .select('id, source_type')
+            // Same posted-only scope as countVerifikatMissingDocument:
+            // reversed/corrected entries fall out of the result set and the
+            // row renders no badge — a storno'd verifikation must never grow
+            // an "Underlag saknas" attach affordance.
+            .eq('status', 'posted')
+            .in('id', chunk)
+            .eq('company_id', companyId),
+          supabase
+            .from('document_attachments')
+            .select('journal_entry_id')
+            .in('journal_entry_id', chunk)
+            .eq('company_id', companyId)
+            .eq('is_current_version', true),
+          supabase
+            .from('journal_entry_no_doc_required')
+            .select('journal_entry_id')
+            .in('journal_entry_id', chunk)
+            .eq('company_id', companyId),
+        ])
+        // Soft-fail: keep the chunks that already succeeded.
+        if (entriesRes.error || docsRes.error || exemptRes.error) break
+        const jeIdsWithDocs = new Set(
+          (docsRes.data ?? []).map((d) => d.journal_entry_id as string),
+        )
+        const exemptIds = new Set(
+          (exemptRes.data ?? []).map((e) => e.journal_entry_id as string),
+        )
+        Object.assign(
+          merged,
+          computeJeUnderlagStatus(entriesRes.data ?? [], jeIdsWithDocs, exemptIds),
+        )
+      }
+      // The merge is an idempotent keyed write, so it stays valid across
+      // unrelated transactions-state changes (booking a row, deletes,
+      // load-more) — only a company switch invalidates it. No cleanup-based
+      // cancellation: that would orphan ids already marked as requested.
+      if (requestedJeIdsRef.current.companyId === companyId && Object.keys(merged).length > 0) {
+        setJeUnderlagStatus((prev) => ({ ...prev, ...merged }))
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, company])
 
   async function fetchCategorySuggestions(txIds: string[]) {
     if (txIds.length === 0) return
@@ -1435,13 +1526,24 @@ export default function TransactionsPage() {
     }
   }
 
-  function handleTransactionBooked(transactionId: string, journalEntryId: string) {
+  function handleTransactionBooked(
+    transactionId: string,
+    journalEntryId: string,
+    attachedDocumentId?: string | null,
+  ) {
     setExitingIds((prev) => new Set(prev).add(transactionId))
     setTimeout(() => {
       setTransactions((prev) =>
         prev.map((t) =>
           t.id === transactionId
-            ? { ...t, is_business: true, journal_entry_id: journalEntryId }
+            ? {
+                ...t,
+                is_business: true,
+                journal_entry_id: journalEntryId,
+                // Existing pin wins — the link route only pins when the tx
+                // had none (document_id IS NULL guard).
+                document_id: t.document_id ?? attachedDocumentId ?? null,
+              }
             : t
         )
       )
@@ -1455,6 +1557,26 @@ export default function TransactionsPage() {
     setBookingDialogTransaction(null)
     setBookingDialogTemplate(null)
     toast({ title: 'Bokförd' })
+  }
+
+  function openAttachDocumentDialog(transaction: TransactionWithInvoice) {
+    setAttachDocTx(transaction)
+  }
+
+  function handleDocumentAttached(transactionId: string, documentId: string) {
+    setTransactions((prev) =>
+      prev.map((t) => (t.id === transactionId ? { ...t, document_id: documentId } : t))
+    )
+    // Booked row: the attach route propagated the doc onto the verifikation,
+    // so flip the JE status optimistically too. Read the JE id off the
+    // dialog's own subject (attachDocTx), not the transactions snapshot —
+    // the list may have changed (load-more, booking) while the dialog was
+    // open, and a stale find() would silently skip the badge flip.
+    const jeId =
+      attachDocTx?.id === transactionId ? attachDocTx.journal_entry_id : null
+    if (jeId) {
+      setJeUnderlagStatus((prev) => ({ ...prev, [jeId]: 'has' }))
+    }
   }
 
   // Batch mode handlers
@@ -1885,6 +2007,7 @@ export default function TransactionsPage() {
                     onOpenMatchInvoicePicker={openInvoiceMatchPicker}
                     onOpenSplitMatch={openSplitMatchDialog}
                     onOpenMatchVoucher={openMatchVoucherDialog}
+                    onOpenAttachDocument={openAttachDocumentDialog}
                     onOpenCategoryDialog={openCategoryDialog}
                     onDelete={handleDeleteTransaction}
                     onEditTitle={openEditTitleDialog}
@@ -1909,8 +2032,10 @@ export default function TransactionsPage() {
           transactions={transactions}
           skvRows={skvRows}
           searchTerm={searchTerm}
+          jeUnderlagStatus={jeUnderlagStatus}
           onOpenMatchDialog={openMatchDialog}
           onOpenCategoryDialog={openCategoryDialog}
+          onOpenAttachDocument={openAttachDocumentDialog}
           onDelete={handleDeleteTransaction}
           onSkvBokfor={handleSkvBokfor}
           onSkvMatch={r => setSkvMatchTarget(r)}
@@ -2024,6 +2149,15 @@ export default function TransactionsPage() {
         transaction={bookingDialogTransaction}
         preselectedTemplate={bookingDialogTemplate}
         onBooked={handleTransactionBooked}
+      />
+
+      <TransactionAttachDocumentDialog
+        open={attachDocTx !== null}
+        onOpenChange={(o) => {
+          if (!o) setAttachDocTx(null)
+        }}
+        transaction={attachDocTx}
+        onAttached={handleDocumentAttached}
       />
 
       <Dialog open={templatePickerOpen} onOpenChange={setTemplatePickerOpen}>

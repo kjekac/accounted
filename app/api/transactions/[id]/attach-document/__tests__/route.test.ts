@@ -80,26 +80,121 @@ describe('POST /api/transactions/[id]/attach-document', () => {
   })
 
   it('attaches when both rows exist', async () => {
-    enqueue({ data: { id: 'tx-1' }, error: null }) // tx fetch
-    enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
-    enqueue({ data: null, error: null }) // transactions update
+    enqueue({ data: { id: 'tx-1', journal_entry_id: null }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: null }, error: null }) // transactions update (RETURNING)
     enqueue({ data: null, error: null }) // inbox-link best-effort update
     const res = await POST(
       makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
       createMockRouteParams({ id: 'tx-1' }),
     )
-    const { status, body } = await parseJsonResponse<{ data: { transaction_id: string; document_id: string } }>(res)
+    const { status, body } = await parseJsonResponse<{ data: { transaction_id: string; document_id: string; journal_entry_id: string | null } }>(res)
     expect(status).toBe(200)
     expect(body.data.transaction_id).toBe('tx-1')
     expect(body.data.document_id).toBe('11111111-1111-4111-8111-111111111111')
+    expect(body.data.journal_entry_id).toBeNull()
+    // Unbooked tx — document_attachments is only read (doc fetch), never
+    // written: no journal entry to propagate to.
+    const fromCalls = mockSupabase.from.mock.calls.map((c) => c[0])
+    expect(fromCalls.filter((t) => t === 'document_attachments')).toHaveLength(1)
+  })
+
+  it('propagates the link onto the verifikation when the transaction is booked', async () => {
+    enqueue({ data: { id: 'tx-1', journal_entry_id: 'je-1' }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: 'je-1' }, error: null }) // transactions update (RETURNING)
+    enqueue({ data: null, error: null }) // inbox-link best-effort update
+    enqueue({ data: null, error: null }) // document_attachments propagation
+    const res = await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    const { status, body } = await parseJsonResponse<{ data: { journal_entry_id: string } }>(res)
+    expect(status).toBe(200)
+    expect(body.data.journal_entry_id).toBe('je-1')
+    // doc fetch + propagation write
+    const fromCalls = mockSupabase.from.mock.calls.map((c) => c[0])
+    expect(fromCalls.filter((t) => t === 'document_attachments')).toHaveLength(2)
+  })
+
+  it('skips propagation when the doc already points at the same verifikation (idempotent re-attach)', async () => {
+    enqueue({ data: { id: 'tx-1', journal_entry_id: 'je-1' }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: 'je-1' }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: 'je-1' }, error: null }) // transactions update (RETURNING)
+    enqueue({ data: null, error: null }) // inbox-link best-effort update
+    const res = await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    const { status } = await parseJsonResponse(res)
+    expect(status).toBe(200)
+    // No propagation write — only the doc fetch touched document_attachments.
+    const fromCalls = mockSupabase.from.mock.calls.map((c) => c[0])
+    expect(fromCalls.filter((t) => t === 'document_attachments')).toHaveLength(1)
+  })
+
+  it('returns 409 when the document already belongs to a different verifikation', async () => {
+    enqueue({ data: { id: 'tx-1', journal_entry_id: 'je-1' }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: 'je-OTHER' }, error: null }) // doc fetch
+    const res = await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    const { status, body } = await parseJsonResponse<{ error: string }>(res)
+    expect(status).toBe(409)
+    expect(body.error).toContain('annan verifikation')
+  })
+
+  it('returns 409 when the verifikation period is locked during propagation', async () => {
+    enqueue({ data: { id: 'tx-1', journal_entry_id: 'je-1' }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: 'je-1' }, error: null }) // transactions update (RETURNING)
+    enqueue({ data: null, error: null }) // inbox-link best-effort update
+    enqueue({ data: null, error: { message: 'cannot link document in a locked/closed fiscal period' } }) // propagation blocked
+    const res = await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    const { status, body } = await parseJsonResponse<{ error: string }>(res)
+    expect(status).toBe(409)
+    expect(body.error).toContain('låst')
+  })
+
+  it('returns 500 with the idempotent-retry message when propagation fails', async () => {
+    enqueue({ data: { id: 'tx-1', journal_entry_id: 'je-1' }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: 'je-1' }, error: null }) // transactions update (RETURNING)
+    enqueue({ data: null, error: null }) // inbox-link best-effort update
+    enqueue({ data: null, error: { message: 'boom' } }) // propagation fails
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    const { status, body } = await parseJsonResponse<{ error: string }>(res)
+    expect(status).toBe(500)
+    expect(body.error).toContain('idempotent')
+    spy.mockRestore()
+  })
+
+  it('returns 404 when the update matches no row (concurrent delete)', async () => {
+    enqueue({ data: { id: 'tx-1', journal_entry_id: null }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null }) // doc fetch
+    enqueue({ data: null, error: null }) // transactions update returns no row
+    const res = await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    const { status } = await parseJsonResponse(res)
+    expect(status).toBe(404)
   })
 
   it('attempts to update invoice_inbox_items.matched_transaction_id after successful attach', async () => {
     // The side effect lets the inbox UI flip an item from "needs action" to
     // "Kopplad till transaktion" without an extra round-trip.
-    enqueue({ data: { id: 'tx-1' }, error: null }) // tx fetch
-    enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
-    enqueue({ data: null, error: null }) // transactions update
+    enqueue({ data: { id: 'tx-1', journal_entry_id: null }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: null }, error: null }) // transactions update (RETURNING)
     enqueue({ data: null, error: null }) // inbox-link update
 
     await POST(
@@ -112,9 +207,9 @@ describe('POST /api/transactions/[id]/attach-document', () => {
   })
 
   it('tolerates a failing inbox-link update — the document attach is the primary effect', async () => {
-    enqueue({ data: { id: 'tx-1' }, error: null }) // tx fetch
-    enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
-    enqueue({ data: null, error: null }) // transactions update
+    enqueue({ data: { id: 'tx-1', journal_entry_id: null }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: null }, error: null }) // transactions update (RETURNING)
     enqueue({ data: null, error: { message: 'rls denied' } }) // inbox-link fails
 
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})

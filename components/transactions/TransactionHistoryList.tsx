@@ -38,11 +38,13 @@ import {
   FileText,
   Loader2,
   MoreHorizontal,
+  Paperclip,
   Trash2,
 } from 'lucide-react'
 import { TransactionAttachmentIndicator } from './TransactionAttachmentIndicator'
 import CorrectionAffordance from '@/components/bookkeeping/CorrectionAffordance'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
+import type { JeUnderlagStatus } from '@/lib/transactions/underlag-status'
 import type { TransactionWithInvoice, HistoryFilter } from './transaction-types'
 import type {
   SkattekontoTransactionWithSuggestion,
@@ -59,8 +61,13 @@ interface TransactionHistoryListProps {
   transactions: TransactionWithInvoice[]
   skvRows?: SkattekontoTransactionWithSuggestion[]
   searchTerm?: string
+  /** Underlag status per journal_entry_id (computeJeUnderlagStatus) — drives
+   *  the per-row "Underlag"/"Underlag saknas" badges on booked rows. */
+  jeUnderlagStatus?: Record<string, JeUnderlagStatus>
   onOpenMatchDialog: (transaction: TransactionWithInvoice) => void
   onOpenCategoryDialog: (transaction: TransactionWithInvoice) => void
+  /** Open the attach-underlag dialog (pin an inbox doc / fresh upload). */
+  onOpenAttachDocument?: (transaction: TransactionWithInvoice) => void
   onDelete?: (id: string) => void
   onSkvBokfor?: (row: StoredSkattekontoTransaction) => void
   onSkvMatch?: (row: StoredSkattekontoTransaction) => void
@@ -73,8 +80,10 @@ export default function TransactionHistoryList({
   transactions,
   skvRows = [],
   searchTerm = '',
+  jeUnderlagStatus,
   onOpenMatchDialog,
   onOpenCategoryDialog,
+  onOpenAttachDocument,
   onDelete,
   onSkvBokfor,
   onSkvMatch,
@@ -177,8 +186,10 @@ export default function TransactionHistoryList({
               <BankHistoryRow
                 key={`bank-${item.data.id}`}
                 transaction={item.data}
+                jeUnderlagStatus={jeUnderlagStatus}
                 onOpenMatchDialog={onOpenMatchDialog}
                 onOpenCategoryDialog={onOpenCategoryDialog}
+                onOpenAttachDocument={onOpenAttachDocument}
                 onDelete={onDelete}
               />
             ) : (
@@ -213,13 +224,17 @@ export default function TransactionHistoryList({
 
 function BankHistoryRow({
   transaction,
+  jeUnderlagStatus,
   onOpenMatchDialog,
   onOpenCategoryDialog,
+  onOpenAttachDocument,
   onDelete,
 }: {
   transaction: TransactionWithInvoice
+  jeUnderlagStatus?: Record<string, JeUnderlagStatus>
   onOpenMatchDialog: (transaction: TransactionWithInvoice) => void
   onOpenCategoryDialog: (transaction: TransactionWithInvoice) => void
+  onOpenAttachDocument?: (transaction: TransactionWithInvoice) => void
   onDelete?: (id: string) => void
 }) {
   const t = useTranslations('tx_history')
@@ -236,6 +251,15 @@ function BankHistoryRow({
   const isLinkedToInvoice = !!transaction.invoice_id
   const hasInvoiceMatch =
     !isLinkedToInvoice && !!transaction.potential_invoice && !isBooked
+
+  // Underlag status — see computeJeUnderlagStatus. Unknown/not-yet-loaded JE
+  // renders neither badge (no false "saknas" flash while the enrichment loads).
+  const jeStatus = transaction.journal_entry_id
+    ? jeUnderlagStatus?.[transaction.journal_entry_id]
+    : undefined
+  const hasJeDoc = jeStatus === 'has'
+  const missingUnderlag = isBooked && !transaction.document_id && jeStatus === 'missing'
+  const showAttachItem = canWrite && !!onOpenAttachDocument
 
   // Primary status badge — pick the most informative one.
   const statusBadge = (() => {
@@ -319,7 +343,7 @@ function BankHistoryRow({
               </Link>
             </Button>
           )}
-          {(hasInvoiceMatch || (canDelete && onDelete) || (isBooked && canWrite)) && (
+          {(hasInvoiceMatch || (canDelete && onDelete) || (isBooked && canWrite) || showAttachItem) && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -340,6 +364,14 @@ function BankHistoryRow({
                     })}
                   </DropdownMenuItem>
                 )}
+                {/* Attach underlag — available on both booked rows (the route
+                    propagates the doc onto the verifikation) and unbooked. */}
+                {showAttachItem && (
+                  <DropdownMenuItem onSelect={() => onOpenAttachDocument!(transaction)}>
+                    <Paperclip className="h-3.5 w-3.5" />
+                    {t('attach_document')}
+                  </DropdownMenuItem>
+                )}
                 {isBooked && canWrite && transaction.journal_entry_id && (
                   <CorrectionAffordance journalEntryId={transaction.journal_entry_id}>
                     {({ open, isLoading }) => (
@@ -351,7 +383,7 @@ function BankHistoryRow({
                 )}
                 {canDelete && onDelete && (
                   <>
-                    {hasInvoiceMatch && <DropdownMenuSeparator />}
+                    {(hasInvoiceMatch || showAttachItem) && <DropdownMenuSeparator />}
                     <DropdownMenuItem
                       onSelect={() => onDelete(transaction.id)}
                       className="text-destructive focus:text-destructive"
@@ -369,7 +401,15 @@ function BankHistoryRow({
     >
       <div className="flex items-center gap-1.5 min-w-0">
         <DataListPrimary>{transaction.description}</DataListPrimary>
-        <TransactionAttachmentIndicator documentId={transaction.document_id} />
+        <TransactionAttachmentIndicator
+          documentId={transaction.document_id}
+          journalEntryId={transaction.journal_entry_id}
+          hasJeDoc={hasJeDoc}
+          missing={missingUnderlag}
+          onAttach={
+            showAttachItem ? () => onOpenAttachDocument!(transaction) : undefined
+          }
+        />
       </div>
       <DataListMeta>
         <span className="tabular-nums">{formatDate(transaction.date)}</span>
