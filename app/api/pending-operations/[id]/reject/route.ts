@@ -73,8 +73,21 @@ export async function POST(
   }
 
   if (op.status !== 'pending') {
+    // There is no auto-commit path (removed in 20260505190027), so a non-pending
+    // status here means the op was resolved explicitly — almost always the user
+    // pressed Godkänn in the /pending (Att göra) UI in parallel, or another
+    // client already rejected it. Spell that out so an agent doesn't read the
+    // generic 409 as "the system committed it behind my back".
+    const explained =
+      op.status === 'rejected'
+        ? 'Operation already rejected.'
+        : op.status === 'expired'
+          ? 'Operation already expired and can no longer be rejected.'
+          : `Operation already ${op.status} — it was approved explicitly (most likely via the ` +
+            'Att göra / pending UI in parallel), not auto-committed. It can no longer be rejected; ' +
+            'reverse or correct the resulting verifikat instead.'
     return NextResponse.json(
-      { error: `Operation already ${op.status}` },
+      { error: explained, status: op.status },
       { status: 409 }
     )
   }

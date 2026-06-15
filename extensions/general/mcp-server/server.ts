@@ -5808,13 +5808,17 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_get_reconciliation_status',
     title: 'Bank Reconciliation Status',
-    description: 'Bank reconciliation status: matched/unmatched counts, match rate, bank vs ledger balance, difference. Optional date range.',
+    description: 'Bank reconciliation for one cash account: matched/unmatched counts, bank vs ledger balance, difference. Defaults to 1930; pass account_number for 1940/1932 etc. Optional date range.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         date_from: { type: 'string', description: 'Start date YYYY-MM-DD' },
         date_to: { type: 'string', description: 'End date YYYY-MM-DD' },
+        account_number: {
+          type: 'string',
+          description: 'Cash-account BAS code to reconcile, e.g. "1940". Defaults to "1930".',
+        },
       },
     },
     outputSchema: { type: 'object' },
@@ -5827,7 +5831,37 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase) {
       const dateFrom = args.date_from as string | undefined
       const dateTo = args.date_to as string | undefined
-      return await getReconciliationStatus(supabase, companyId, dateFrom, dateTo)
+      const accountNumber = (args.account_number as string | undefined) || '1930'
+
+      // Pair the bank account with its currency + cash_account_id so EUR GL
+      // movements aren't compared against SEK transactions, and so a secondary
+      // same-currency account doesn't pool the primary's unassigned rows. Mirrors
+      // app/api/reconciliation/bank/status/route.ts.
+      const { data: cashAccount } = await supabase
+        .from('cash_accounts')
+        .select('id, currency, is_primary')
+        .eq('company_id', companyId)
+        .eq('ledger_account', accountNumber)
+        .maybeSingle()
+
+      if (!cashAccount && accountNumber !== '1930') {
+        throw new Error(`Okänt kassakonto ${accountNumber} för det här företaget`)
+      }
+
+      const currency = (cashAccount?.currency as string | undefined) ?? 'SEK'
+      const cashAccountId = cashAccount?.id as string | undefined
+      const includeUnassigned = cashAccount ? Boolean(cashAccount.is_primary) : true
+
+      return await getReconciliationStatus(
+        supabase,
+        companyId,
+        dateFrom,
+        dateTo,
+        accountNumber,
+        currency,
+        cashAccountId,
+        includeUnassigned,
+      )
     },
   },
 
@@ -8413,7 +8447,10 @@ export const tools: McpTool[] = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     async execute(args, companyId, userId, supabase, actor) {
       const entryDate = args.entry_date as string
-      const description = args.description as string
+      // Normalize like line_description (and gnubok_create_transactions) — coerce
+      // to string and trim, so a non-string or whitespace-only description is
+      // caught by the guard below instead of slipping into the preview/voucher.
+      const description = String(args.description ?? '').trim()
       const rawLines = args.lines as Array<Record<string, unknown>> | undefined
 
       if (!entryDate || !description || !Array.isArray(rawLines) || rawLines.length < 2) {
@@ -9436,7 +9473,18 @@ export const tools: McpTool[] = [
         .single()
 
       if (fetchError || !op) throw new Error('Pending operation not found')
-      if (op.status !== 'pending') throw new Error(`Operation already ${op.status}`)
+      if (op.status !== 'pending') {
+        // No auto-commit path exists (removed in 20260505190027). A non-pending
+        // status means the op was resolved explicitly — usually the user
+        // approved it in the Att göra / pending UI in parallel. Make that
+        // explicit so the agent doesn't read it as a silent auto-commit.
+        throw new Error(
+          op.status === 'rejected'
+            ? 'Operation already rejected.'
+            : `Operation already ${op.status} — approved explicitly (likely via the pending UI), ` +
+              'not auto-committed. Reverse or correct the resulting verifikat instead.',
+        )
+      }
 
       // Atomic claim — flips pending → rejected only when the row is still
       // pending AND in the caller's tenant (V8.3.1, CC6.3 tenant isolation).

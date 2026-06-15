@@ -6,11 +6,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 let resultIdx: number
 let results: Array<{ data?: unknown; error?: unknown }>
+let calls: Array<{ method: string; args: unknown[] }>
 
 function makeBuilder() {
   const b: Record<string, unknown> = {}
   for (const m of ['select', 'eq', 'in']) {
-    b[m] = vi.fn().mockReturnValue(b)
+    b[m] = vi.fn().mockImplementation((...args: unknown[]) => {
+      calls.push({ method: m, args })
+      return b
+    })
   }
   b.single = vi.fn().mockImplementation(async () => results[resultIdx++] ?? { data: null, error: null })
   b.then = (resolve: (v: unknown) => void) => resolve(results[resultIdx++] ?? { data: null, error: null })
@@ -32,6 +36,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   resultIdx = 0
   results = []
+  calls = []
   supabase = makeClient()
 })
 
@@ -206,6 +211,46 @@ describe('generateReconciliation', () => {
     // BFL 5 kap requires the period not be stamped Avstämd until the missing
     // exchange rate is filled in.
     expect(result.is_reconciled).toBe(false)
+  })
+
+  it('counts posted AND reversed 2440 lines (corrected invoice nets correctly)', async () => {
+    // Regression for the Arcim Technology AB false "Ej avstämd" gap: two supplier
+    // invoices were registered, corrected via the storno flow, and fully paid.
+    // The corrected registrations flip to status='reversed'. The leverantörs-
+    // reskontra shows 0 outstanding, and over posted+reversed the 2440 balance is
+    // 0 too — but a posted-only query saw only the storno + correction + payment
+    // legs and reported a phantom −41 121,25 kr debit. The query must include the
+    // reversed registration leg so both reconcile.
+    results = [
+      // 0: supplier_invoices — both paid, nothing outstanding
+      { data: [], error: null },
+      // 1: 2440 lines as returned by the posted+reversed query for one corrected,
+      //    paid invoice of 11 231,25: registration (reversed credit), storno
+      //    (debit), correction (credit), payment (debit). Net credit−debit = 0.
+      {
+        data: [
+          { debit_amount: 0, credit_amount: 11231.25, journal_entry_id: 'reg-reversed' },
+          { debit_amount: 11231.25, credit_amount: 0, journal_entry_id: 'storno' },
+          { debit_amount: 0, credit_amount: 11231.25, journal_entry_id: 'correction' },
+          { debit_amount: 11231.25, credit_amount: 0, journal_entry_id: 'payment' },
+        ],
+        error: null,
+      },
+    ]
+
+    const result = await generateReconciliation(supabase, 'company-1', 'period-1')
+
+    expect(result.supplier_ledger_total).toBe(0)
+    expect(result.account_2440_balance).toBe(0)
+    expect(result.difference).toBe(0)
+    expect(result.is_reconciled).toBe(true)
+
+    // Guard the actual fix: the 2440 query must include reversed entries, not
+    // filter to posted-only (which excluded the reversed registration leg).
+    const statusFilter = calls.find(
+      (c) => c.method === 'in' && c.args[0] === 'journal_entries.status',
+    )
+    expect(statusFilter?.args[1]).toEqual(['posted', 'reversed'])
   })
 
   it('uses Math.round for monetary precision', async () => {

@@ -41,24 +41,25 @@ export interface ReconciliationRunResult {
 export interface ReconciliationStatus {
   bank_transaction_total: number
   /**
-   * @deprecated Use `gl_1930_period_movement` for the reconciliation diff. This
-   * field is preserved for back-compat with persisted status snapshots produced
-   * before the IB-exclusion change; new consumers reading this to compute the
-   * "real" difference will be off by the IB amount whenever a SIE-imported
-   * opening balance exists on 1930. The `difference` field on this interface
-   * is computed against `gl_1930_period_movement`, not this.
+   * The real ledger balance on the bank account, incl. IB — computed from the
+   * SAME `['posted','reversed']` lines the trial balance and balance sheet sum,
+   * so this value is identical to what the balansräkning reports for this
+   * account. (Use `gl_1930_period_movement` for the reconciliation diff, since
+   * this figure still includes the opening balance.)
    */
   gl_1930_balance: number
-  /** Ledger movement on 1930 excluding opening_balance AND storno/correction
-   *  lines — i.e. only movements that have a bank-feed counterpart. */
+  /** Ledger movement on the bank account excluding only opening_balance — i.e.
+   *  the ledger balance minus IB. Storno/correction lines ARE included here
+   *  (they're part of the balance), so a corrected bank line reconciles against
+   *  its re-pointed feed transaction. This is what `difference` compares against. */
   gl_1930_period_movement: number
-  /** IB on 1930 within the date range — surfaced separately so reconciliation
-   *  doesn't treat it as an unmatched bank transaction. */
+  /** IB on the bank account within the date range — surfaced separately so
+   *  reconciliation doesn't treat it as an unmatched bank transaction. */
   gl_1930_opening_balance: number
-  /** Net of posted storno/correction lines on 1930 within the date range.
-   *  Excluded from gl_1930_period_movement (and from the unmatched-voucher set)
-   *  because a book-only correction has no counterpart in the bank feed. Surfaced
-   *  separately so the UI can explain why a corrected period still reconciles. */
+  /** Net of posted storno/correction lines on the bank account within the date
+   *  range. INFORMATIONAL ONLY — it is part of the ledger balance and is included
+   *  in gl_1930_period_movement, not subtracted from it. Surfaced so the UI can
+   *  show how much of the period's movement came from corrections. */
   gl_1930_correction_adjustment: number
   /** bankTotal − gl_1930_period_movement. Zero when every period transaction is matched. */
   difference: number
@@ -363,13 +364,16 @@ export async function getReconciliationStatus(
 
   const { data: transactions } = await txQuery
 
-  // Get GL bank account lines. Pull id/status/source_type from the join so we
-  // can (a) split out lines that have no bank-feed counterpart — opening_balance
-  // (prior year's closing balance) and storno/correction (book-only corrections)
-  // — and (b) identify reversed originals, whose still-linked bank transactions
-  // are superseded by the correction and must drop off the bank side too.
-  // 'reversed' is fetched alongside 'posted' precisely to resolve those links;
-  // reversed lines are NOT counted in any movement total.
+  // Get GL bank-account lines. We fetch posted AND reversed entries and count
+  // them TOGETHER — the exact inclusion rule the trial balance and balance sheet
+  // use (see lib/reports/trial-balance.ts, which sums `['posted','reversed']`).
+  // A reversed original stays in the ledger and is cancelled by its storno, so
+  // both legs must be summed; counting only the storno would leave a dangling
+  // half-correction. Using the identical rule here is what guarantees
+  // gl_1930_balance can never disagree with the balansräkning for this account —
+  // the headline bug this widget had (a corrected bank receipt showed one figure
+  // here and a different one on the balance sheet). source_type is still pulled
+  // so we can split out the opening balance and surface correction activity.
   let glQuery = supabase
     .from('journal_entry_lines')
     .select('debit_amount, credit_amount, journal_entries!inner(id, company_id, entry_date, status, source_type)')
@@ -399,41 +403,47 @@ export async function getReconciliationStatus(
     return (Number(line.debit_amount) || 0) - (Number(line.credit_amount) || 0)
   }
 
-  const allLines = (glLines || []) as GlLineRow[]
-  const postedLines = allLines.filter((l) => entryOf(l)?.status === 'posted')
+  // posted + reversed = the ledger balance, exactly as the trial balance counts
+  // it. The .in() filter on the query already excludes draft/cancelled.
+  const countedLines = (glLines || []) as GlLineRow[]
 
-  // Reversed originals retain their bank-transaction link (the storno flow never
-  // re-points it), so a transaction pointing at one is a superseded booking —
-  // drop it from the bank side to keep the comparison symmetric with the
-  // movement, which excludes the matching storno/correction below.
-  const reversedEntryIds = new Set<string>(
-    allLines
-      .filter((l) => entryOf(l)?.status === 'reversed')
-      .map((l) => entryOf(l)?.id)
-      .filter((id): id is string => Boolean(id))
+  // Bank side: every feed transaction in range, full stop. We deliberately do
+  // NOT special-case rows linked to a reversed entry any more. Because the GL
+  // side now counts the reversed original, its storno AND the correction
+  // together (just like the balance sheet), a corrected bank line nets to its
+  // true amount on both sides and reconciles on its own — whether correctEntry
+  // re-pointed the transaction to the live corrected entry or a legacy row still
+  // points at the reversed original, the result is identical. The previous
+  // "drop reversed-linked transactions" rule paired with the now-removed
+  // correction subtraction below; together with correctEntry re-pointing the
+  // transaction they manufactured a difference equal to a corrected amount.
+  const bankTotal = (transactions || []).reduce(
+    (sum, tx) => sum + (Number(tx.amount) || 0),
+    0
   )
 
-  // Calculate totals. Exclude transactions whose linked entry was reversed —
-  // their booking lives on in the correction, which is itself excluded from the
-  // movement, so counting the transaction would resurrect a phantom diff.
-  const bankTotal = (transactions || []).reduce((sum, tx) => {
-    if (tx.journal_entry_id && reversedEntryIds.has(tx.journal_entry_id)) return sum
-    return sum + (Number(tx.amount) || 0)
-  }, 0)
-
-  // gl_1930_balance keeps its historical meaning: the posted balance incl. IB.
-  const glBalance = postedLines.reduce((sum, line) => sum + lineAmount(line), 0)
-  const glOpeningBalance = postedLines
+  // gl_1930_balance: the real ledger balance on this account incl. IB —
+  // byte-for-byte the figure the balansräkning / saldobalans report.
+  const glBalance = countedLines.reduce((sum, line) => sum + lineAmount(line), 0)
+  // IB is last year's closing position, not a movement with a bank-feed
+  // counterpart — surfaced separately and excluded from the period movement.
+  const glOpeningBalance = countedLines
     .filter((l) => entryOf(l)?.source_type === 'opening_balance')
     .reduce((sum, line) => sum + lineAmount(line), 0)
-  const glCorrectionAdjustment = postedLines
+  // Net storno/correction activity on the account this period. Surfaced for
+  // transparency ONLY — it is part of the ledger balance and is INCLUDED in the
+  // movement, never subtracted. (Subtracting it while still counting the
+  // re-pointed bank transaction is exactly what produced the old phantom diff.)
+  const glCorrectionAdjustment = countedLines
     .filter((l) => {
       const st = entryOf(l)?.source_type
       return st === 'storno' || st === 'correction'
     })
     .reduce((sum, line) => sum + lineAmount(line), 0)
-  // Period movement = only the lines that have a bank-feed counterpart.
-  const glPeriodMovement = glBalance - glOpeningBalance - glCorrectionAdjustment
+  // Period movement = the ledger balance minus the opening balance. Everything
+  // else (real bookings, stornos and corrections alike) has — or should have —
+  // a bank-feed counterpart, so it stays in.
+  const glPeriodMovement = glBalance - glOpeningBalance
 
   const matchedCount = (transactions || []).filter(
     (tx) => tx.journal_entry_id !== null

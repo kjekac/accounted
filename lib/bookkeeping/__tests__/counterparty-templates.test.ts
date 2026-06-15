@@ -69,6 +69,23 @@ describe('counterparty-templates', () => {
     it('preserves meaningful content', () => {
       expect(normalizeCounterpartyName('HEMKÖP LINNÉ')).toBe('hemköp linné')
     })
+
+    it('collapses trailing personal initials and month labels to one merchant', () => {
+      // Regression: three identical ngrok bookings ("ngrok JW", "Ngrok Mars",
+      // "ngrok JW") splintered into separate counterparty names, so matching
+      // never learned. They must all normalize to the same canonical merchant.
+      expect(normalizeCounterpartyName('ngrok JW')).toBe('ngrok')
+      expect(normalizeCounterpartyName('Ngrok Mars')).toBe('ngrok')
+      expect(normalizeCounterpartyName('SPOTIFY januari')).toBe('spotify')
+      expect(normalizeCounterpartyName('ICA MAXI AK')).toBe('ica maxi')
+    })
+
+    it('does not strip multi-letter trailing words or 3+ letter brands', () => {
+      // Conservative guard: only 1–2 char all-caps initials and month tokens go.
+      expect(normalizeCounterpartyName('SWISH ANDERS JOHANSSON')).toBe('anders johansson')
+      expect(normalizeCounterpartyName('NORDEA SEB')).toBe('nordea seb') // SEB is 3 chars — kept
+      expect(normalizeCounterpartyName('KLARNA')).toBe('klarna')         // single token kept
+    })
   })
 
   // ── Confidence ─────────────────────────────────────────────

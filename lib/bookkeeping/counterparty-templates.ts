@@ -23,11 +23,48 @@ import type { SIEVoucher } from '@/lib/import/types'
 // ── Normalization ──────────────────────────────────────────────
 
 /**
+ * Month tokens (Swedish + English, abbreviated and full) that show up as a
+ * trailing period label on a bank-feed description ("Ngrok Mars", "Spotify
+ * januari") rather than as part of the merchant's identity.
+ */
+const TRAILING_MONTH_TOKENS = new Set([
+  'jan', 'feb', 'mar', 'apr', 'maj', 'may', 'jun', 'jul', 'aug', 'sep', 'sept',
+  'okt', 'oct', 'nov', 'dec',
+  'januari', 'februari', 'mars', 'april', 'juni', 'juli', 'augusti',
+  'september', 'oktober', 'november', 'december',
+])
+
+/**
+ * Strip trailing tokens that label *when/who* rather than *what merchant*:
+ * a month name, or a 1–2 letter all-caps personal initial ("ngrok JW",
+ * "ngrok JW", "Ngrok Mars" all describe the same merchant). Without this, one
+ * merchant splinters into many un-learnable variants and counterparty matching
+ * never fires (the reported ngrok bug: three prior bookings, zero matches).
+ *
+ * Conservative by design: only acts on a TRAILING token, only on 1–2 char
+ * all-caps initials (so 3-letter brands like SEB/ICA and any lowercased word
+ * survive), and always keeps at least one core token (never strips to empty).
+ */
+function stripTrailingNoiseTokens(s: string): string {
+  const tokens = s.trim().split(/\s+/).filter(Boolean)
+  while (tokens.length > 1) {
+    const last = tokens[tokens.length - 1]
+    const isMonth = TRAILING_MONTH_TOKENS.has(last.toLowerCase())
+    // Personal initials: 1–2 letters, all-caps in the ORIGINAL casing (run
+    // before normalizeMerchantName lowercases everything).
+    const isInitials = /^[A-ZÅÄÖ]{1,2}$/.test(last)
+    if (!isMonth && !isInitials) break
+    tokens.pop()
+  }
+  return tokens.join(' ')
+}
+
+/**
  * Normalize a transaction description to a canonical counterparty name.
  *
- * Strips bank transfer prefixes, trailing dates, invoice references,
- * and trailing digit sequences, then delegates to normalizeMerchantName()
- * for Swedish company suffix removal and lowercasing.
+ * Strips bank transfer prefixes, trailing dates, invoice references, trailing
+ * digit sequences, and trailing period/initials tokens, then delegates to
+ * normalizeMerchantName() for Swedish company suffix removal and lowercasing.
  */
 export function normalizeCounterpartyName(raw: string): string {
   const cleaned = raw
@@ -42,7 +79,9 @@ export function normalizeCounterpartyName(raw: string): string {
     .replace(/\s+\d{4,}\s*$/g, '')
     .trim()
 
-  return normalizeMerchantName(cleaned)
+  // Drop trailing month/initials tokens before merchant-name normalization so
+  // "ngrok JW" and "Ngrok Mars" collapse to the same canonical "ngrok".
+  return normalizeMerchantName(stripTrailingNoiseTokens(cleaned))
 }
 
 // ── Confidence ─────────────────────────────────────────────────

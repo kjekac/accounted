@@ -59,7 +59,15 @@ export async function generateReconciliation(
       return Math.round((sum + sek) * 100) / 100
     }, 0)
 
-  // Get account 2440 balance from posted journal entry lines in this period
+  // Get account 2440 balance from the ledger in this period. We count posted
+  // AND reversed entries together — the SAME inclusion rule the trial balance /
+  // balance sheet use. A corrected supplier invoice flips its original
+  // registration to status='reversed' (storno-service.ts); that reversed credit
+  // on 2440 is cancelled by the posted storno's debit, so BOTH legs must be
+  // summed or the report double-counts the payment debit and shows a phantom
+  // debit balance. (This is exactly the false −41 121,25 kr "Ej avstämd" gap a
+  // fully-paid, fully-corrected company hit: posted-only = −41 121,25, but
+  // posted+reversed = 0, matching the leverantörsreskontra.)
   const { data: journalLines } = await supabase
     .from('journal_entry_lines')
     .select(`
@@ -74,7 +82,7 @@ export async function generateReconciliation(
     .eq('account_number', '2440')
     .eq('journal_entries.company_id', companyId)
     .eq('journal_entries.fiscal_period_id', periodId)
-    .eq('journal_entries.status', 'posted')
+    .in('journal_entries.status', ['posted', 'reversed'])
 
   // Account 2440 is a liability: credit normal balance
   // Balance = credits - debits

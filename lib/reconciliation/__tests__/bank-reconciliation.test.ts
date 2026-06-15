@@ -828,60 +828,91 @@ describe('getReconciliationStatus', () => {
     expect(status.gl_1930_period_movement).toBe(200)
   })
 
-  it('nets a book-only correction (storno + rättelse) to a reconciled period', async () => {
-    // The reported bug: a correction made via the storno flow puts a posted
-    // storno AND a posted correction on 1930, while the original flips to
-    // 'reversed'. Both posted vouchers have no bank-feed counterpart. Before the
-    // fix they inflated the period movement and showed as omatchade
-    // verifikationer, manufacturing a phantom diff. They must be excluded from
-    // the movement so a fully-matched period reconciles.
+  it('reconciles a corrected bank receipt and keeps gl_1930_balance equal to the balance sheet', async () => {
+    // A +25000 deposit was booked to the wrong counter-account, then corrected
+    // via the storno flow: the original flips to 'reversed', a storno (credit
+    // 25000) and a correction (debit 25000) are posted, and correctEntry
+    // re-points the bank transaction to the live correction (je-corr).
+    //
+    // Reconciliation now sums posted+reversed on 1930 — exactly as the trial
+    // balance / balance sheet do — so the cluster nets to the true +25000 and
+    // the period reconciles. gl_1930_balance must equal what the balansräkning
+    // shows for 1930 (the bug this widget used to have was the two disagreeing).
     const { supabase, enqueue } = createQueueMockSupabase()
 
-    // 1) transactions: one real matched outflow of -9908.75
+    // 1) transactions: the +25000 deposit, re-pointed to the correction
     enqueue({
-      data: [{ amount: -9908.75, journal_entry_id: 'je-others', reconciliation_method: 'auto_exact' }],
+      data: [{ amount: 25000, journal_entry_id: 'je-corr', reconciliation_method: 'manual' }],
     })
-    // 2) GL lines on 1930: the matched outflow, plus the correction cluster.
-    //    Original (credit 25000) is status='reversed'; storno (debit 25000) and
-    //    correction (debit 25000) are posted. None of the cluster is linked.
-    enqueue({
-      data: [
-        { debit_amount: 0, credit_amount: 9908.75, journal_entries: { id: 'je-others', status: 'posted', source_type: 'bank_import' } },
-        { debit_amount: 0, credit_amount: 25000, journal_entries: { id: 'je-orig', status: 'reversed', source_type: 'manual' } },
-        { debit_amount: 25000, credit_amount: 0, journal_entries: { id: 'je-storno', status: 'posted', source_type: 'storno' } },
-        { debit_amount: 25000, credit_amount: 0, journal_entries: { id: 'je-corr', status: 'posted', source_type: 'correction' } },
-      ],
-    })
-    // 3) RPC: empty (migration excludes storno/correction; reversed isn't posted)
+    // 2) GL lines on 1930: reversed original (debit 25000), storno (credit
+    //    25000), correction (debit 25000). All three are summed.
+    const lines = [
+      { debit_amount: 25000, credit_amount: 0, journal_entries: { id: 'je-orig', status: 'reversed', source_type: 'bank_transaction' } },
+      { debit_amount: 0, credit_amount: 25000, journal_entries: { id: 'je-storno', status: 'posted', source_type: 'storno' } },
+      { debit_amount: 25000, credit_amount: 0, journal_entries: { id: 'je-corr', status: 'posted', source_type: 'correction' } },
+    ]
+    enqueue({ data: lines })
+    // 3) RPC: empty
     enqueue({ data: [] })
 
     const status = await getReconciliationStatus(supabase as never, 'company-1')
 
-    // Posted balance still includes the storno/correction (+50000) and the
-    // matched outflow (-9908.75); the reversed original is not posted.
-    expect(status.gl_1930_balance).toBe(40091.25)
-    // …but those +50000 are book-only and excluded from the period movement.
-    expect(status.gl_1930_correction_adjustment).toBe(50000)
-    expect(status.gl_1930_period_movement).toBe(-9908.75)
-    expect(status.bank_transaction_total).toBe(-9908.75)
+    // Balance-sheet-equivalent: posted+reversed summed = 25000 - 25000 + 25000.
+    const balanceSheet1930 = lines.reduce(
+      (s, l) => s + l.debit_amount - l.credit_amount,
+      0,
+    )
+    expect(status.gl_1930_balance).toBe(balanceSheet1930) // 25000 — matches BS
+    expect(status.gl_1930_correction_adjustment).toBe(0)  // storno + correction net
+    expect(status.gl_1930_period_movement).toBe(25000)
+    expect(status.bank_transaction_total).toBe(25000)
     expect(status.difference).toBe(0)
     expect(status.is_reconciled).toBe(true)
   })
 
-  it('does not create a new phantom when a matched deposit is later corrected', async () => {
-    // Case 2: a +25000 deposit was matched to an entry, then that entry was
-    // corrected. The deposit's link stays on the now-'reversed' original. The
-    // movement excludes the storno/correction, so to stay symmetric the deposit
-    // (linked to a reversed entry) must drop off the bank side too — otherwise
-    // we'd swap the old -50000 phantom for a +25000 one.
+  it('reconciles an amount correction even though the correction adjustment is non-zero', async () => {
+    // Regression for the de-reconcile bug: a 25000 receipt was booked as 24000,
+    // then corrected to 25000. The storno (credit 24000) and correction (debit
+    // 25000) net to +1000 on 1930, and correctEntry re-points the real 25000
+    // feed transaction to the correction. The OLD code subtracted that +1000
+    // correction bucket from the movement while still counting the re-pointed
+    // 25000 transaction → a phantom 1000 diff. The unified inclusion rule nets
+    // it correctly: gl_balance = 25000 = the feed, difference = 0.
     const { supabase, enqueue } = createQueueMockSupabase()
 
-    // 1) transactions: the +25000 deposit, still linked to the reversed original
+    enqueue({
+      data: [{ amount: 25000, journal_entry_id: 'je-corr', reconciliation_method: 'manual' }],
+    })
+    enqueue({
+      data: [
+        { debit_amount: 24000, credit_amount: 0, journal_entries: { id: 'je-orig', status: 'reversed', source_type: 'bank_transaction' } },
+        { debit_amount: 0, credit_amount: 24000, journal_entries: { id: 'je-storno', status: 'posted', source_type: 'storno' } },
+        { debit_amount: 25000, credit_amount: 0, journal_entries: { id: 'je-corr', status: 'posted', source_type: 'correction' } },
+      ],
+    })
+    enqueue({ data: [] })
+
+    const status = await getReconciliationStatus(supabase as never, 'company-1')
+
+    expect(status.gl_1930_balance).toBe(25000)
+    expect(status.gl_1930_correction_adjustment).toBe(1000) // -24000 + 25000
+    expect(status.gl_1930_period_movement).toBe(25000)
+    expect(status.bank_transaction_total).toBe(25000)
+    expect(status.difference).toBe(0)
+    expect(status.is_reconciled).toBe(true)
+  })
+
+  it('reconciles a legacy deposit still linked to the reversed original (no special-case drop)', async () => {
+    // Pre-relink data: the +25000 deposit was matched, the entry corrected, but
+    // the transaction was never re-pointed and still references the reversed
+    // original. With posted+reversed summed on the GL side and NO reversed-link
+    // dropping on the bank side, this still nets to zero — symmetric without any
+    // special case.
+    const { supabase, enqueue } = createQueueMockSupabase()
+
     enqueue({
       data: [{ amount: 25000, journal_entry_id: 'je-orig', reconciliation_method: 'manual' }],
     })
-    // 2) GL lines: reversed original (debit 25000), storno (credit 25000),
-    //    correction (debit 25000)
     enqueue({
       data: [
         { debit_amount: 25000, credit_amount: 0, journal_entries: { id: 'je-orig', status: 'reversed', source_type: 'bank_transaction' } },
@@ -889,15 +920,37 @@ describe('getReconciliationStatus', () => {
         { debit_amount: 25000, credit_amount: 0, journal_entries: { id: 'je-corr', status: 'posted', source_type: 'correction' } },
       ],
     })
-    // 3) RPC: empty
     enqueue({ data: [] })
 
     const status = await getReconciliationStatus(supabase as never, 'company-1')
 
-    // Deposit excluded (linked to a reversed entry); cluster excluded from movement.
-    expect(status.bank_transaction_total).toBe(0)
-    expect(status.gl_1930_period_movement).toBe(0)
+    expect(status.bank_transaction_total).toBe(25000) // counted, not dropped
+    expect(status.gl_1930_period_movement).toBe(25000)
     expect(status.difference).toBe(0)
     expect(status.is_reconciled).toBe(true)
+  })
+
+  it('flags a book-only entry that moves the bank balance with no feed counterpart', async () => {
+    // Intentional behaviour: a manual posting that moves 1930 without a matching
+    // bank-feed transaction (e.g. interest the feed import missed, booked debit
+    // 1930 / credit 8310) is a genuine reconciliation break — the GL balance no
+    // longer matches the statement. It must surface as a difference, not be
+    // silently swept under a "correction" exclusion.
+    const { supabase, enqueue } = createQueueMockSupabase()
+
+    enqueue({ data: [] }) // no bank-feed transactions
+    enqueue({
+      data: [
+        { debit_amount: 500, credit_amount: 0, journal_entries: { id: 'je-manual', status: 'posted', source_type: 'manual' } },
+      ],
+    })
+    enqueue({ data: [] })
+
+    const status = await getReconciliationStatus(supabase as never, 'company-1')
+
+    expect(status.gl_1930_period_movement).toBe(500)
+    expect(status.bank_transaction_total).toBe(0)
+    expect(status.difference).toBe(-500)
+    expect(status.is_reconciled).toBe(false)
   })
 })

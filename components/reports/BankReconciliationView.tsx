@@ -618,9 +618,9 @@ export function BankReconciliationView() {
               )}
               {status.gl_1930_correction_adjustment !== 0 && (
                 <p className="pt-2 text-xs text-muted-foreground">
-                  Rättelser och stornon på <AccountNumber number={accountNumber} /> i perioden:{' '}
+                  Varav rättelser och stornon på <AccountNumber number={accountNumber} /> i perioden:{' '}
                   <span className="font-mono">{formatCurrency(status.gl_1930_correction_adjustment)}</span>
-                  {' '}— bokföringsmässiga rättelser utan motsvarande bankhändelse, räknas inte i avstämningen.
+                  {' '}— ingår i det bokförda beloppet och i avstämningen, precis som i balansräkningen.
                 </p>
               )}
               <div className="flex gap-4 pt-2 text-xs text-muted-foreground">

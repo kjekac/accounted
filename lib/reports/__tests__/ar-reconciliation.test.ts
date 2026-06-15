@@ -6,11 +6,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 let resultIdx: number
 let results: Array<{ data?: unknown; error?: unknown }>
+let calls: Array<{ method: string; args: unknown[] }>
 
 function makeBuilder() {
   const b: Record<string, unknown> = {}
   for (const m of ['select', 'eq', 'in']) {
-    b[m] = vi.fn().mockReturnValue(b)
+    b[m] = vi.fn().mockImplementation((...args: unknown[]) => {
+      calls.push({ method: m, args })
+      return b
+    })
   }
   b.single = vi.fn().mockImplementation(async () => results[resultIdx++] ?? { data: null, error: null })
   b.then = (resolve: (v: unknown) => void) => resolve(results[resultIdx++] ?? { data: null, error: null })
@@ -32,6 +36,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   resultIdx = 0
   results = []
+  calls = []
   supabase = makeClient()
 })
 
@@ -230,6 +235,43 @@ describe('generateARReconciliation', () => {
     expect(result.ar_ledger_total).toBe(1500)
     expect(result.account_1510_balance).toBe(1500)
     expect(result.is_reconciled).toBe(true)
+  })
+
+  it('counts posted AND reversed 1510 lines (corrected invoice nets correctly)', async () => {
+    // Same fix as supplier-reconciliation: a corrected customer invoice flips its
+    // original to status='reversed'. The reversed leg must be summed with the
+    // posted storno/correction or a corrected, settled invoice shows a phantom
+    // gap against the kundreskontra.
+    results = [
+      // 0: invoices — single 5 000 SEK invoice still open
+      {
+        data: [{ total: 5000, paid_amount: 0, currency: 'SEK', exchange_rate: null }],
+        error: null,
+      },
+      // 1: 1510 lines as returned by posted+reversed: original (reversed debit
+      //    5000), storno (credit 5000), correction (debit 5000). Net = 5000.
+      {
+        data: [
+          { debit_amount: 5000, credit_amount: 0, journal_entry_id: 'reg-reversed' },
+          { debit_amount: 0, credit_amount: 5000, journal_entry_id: 'storno' },
+          { debit_amount: 5000, credit_amount: 0, journal_entry_id: 'correction' },
+        ],
+        error: null,
+      },
+    ]
+
+    const result = await generateARReconciliation(supabase, 'company-1', 'period-1')
+
+    expect(result.ar_ledger_total).toBe(5000)
+    expect(result.account_1510_balance).toBe(5000)
+    expect(result.difference).toBe(0)
+    expect(result.is_reconciled).toBe(true)
+
+    // Guard the actual fix: the 1510/1513 query must include reversed entries.
+    const statusFilter = calls.find(
+      (c) => c.method === 'in' && c.args[0] === 'journal_entries.status',
+    )
+    expect(statusFilter?.args[1]).toEqual(['posted', 'reversed'])
   })
 
   it('uses Math.round for monetary precision', async () => {

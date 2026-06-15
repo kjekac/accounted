@@ -62,12 +62,17 @@ export async function generateARReconciliation(
       return Math.round((sum + sek) * 100) / 100
     }, 0)
 
-  // Get AR receivable balance from posted journal entry lines in this period.
-  // We sum 1510 (Kundfordringar) AND 1513 (Kundfordringar – delad faktura) so
-  // the comparison stays correct under ROT/RUT fakturamodellen, where the
-  // customer portion sits on 1510 and the Skatteverket claim on 1513 — both
-  // are open AR receivable from the company's perspective. 1513 is zero today
-  // (no fakturamodellen postings yet) so this is a forward-looking defense.
+  // Get AR receivable balance from the ledger in this period. We sum 1510
+  // (Kundfordringar) AND 1513 (Kundfordringar – delad faktura) so the comparison
+  // stays correct under ROT/RUT fakturamodellen, where the customer portion sits
+  // on 1510 and the Skatteverket claim on 1513 — both are open AR receivable
+  // from the company's perspective. 1513 is zero today (no fakturamodellen
+  // postings yet) so this is a forward-looking defense.
+  //
+  // We count posted AND reversed entries together — the SAME inclusion rule the
+  // trial balance / balance sheet use. A corrected invoice flips its original to
+  // status='reversed'; that reversed leg is cancelled by the posted storno, so
+  // both must be summed or a corrected invoice manufactures a phantom gap.
   const { data: journalLines } = await supabase
     .from('journal_entry_lines')
     .select(`
@@ -82,7 +87,7 @@ export async function generateARReconciliation(
     .in('account_number', ['1510', '1513'])
     .eq('journal_entries.company_id', companyId)
     .eq('journal_entries.fiscal_period_id', periodId)
-    .eq('journal_entries.status', 'posted')
+    .in('journal_entries.status', ['posted', 'reversed'])
 
   // Both 1510 and 1513 are debit-normal assets: balance = debits - credits
   let account1510Balance = 0
