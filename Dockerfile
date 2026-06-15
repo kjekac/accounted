@@ -1,6 +1,10 @@
 # ── Stage 1: Base ──
 FROM node:22-alpine@sha256:968df39aedcea65eeb078fb336ed7191baf48f972b4479711397108be0966920 AS base
-RUN apk add --no-cache libc6-compat
+# `apk upgrade` patches OS packages (e.g. libssl3/libcrypto3) that have fixes
+# published after the pinned base digest was built, so the Trivy image scan in
+# CI doesn't fail on fixable Alpine CVEs. The digest stays pinned for a
+# reproducible starting point; only security patches float on top.
+RUN apk upgrade --no-cache && apk add --no-cache libc6-compat
 
 # ── Stage 2: Dependencies ──
 FROM base AS deps
@@ -44,7 +48,9 @@ WORKDIR /app
 
 # su-exec drops privileges in the entrypoint after the placeholder-substitution
 # step. Healthcheck uses BusyBox wget (already present in alpine), so no curl.
-RUN apk add --no-cache su-exec
+# `apk upgrade` patches OS packages (libssl3/libcrypto3, …) in the final image
+# that Trivy scans — the runner uses its own FROM, so it needs the upgrade too.
+RUN apk upgrade --no-cache && apk add --no-cache su-exec
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
