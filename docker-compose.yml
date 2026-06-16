@@ -15,23 +15,26 @@ services:
     init: true
     # tmpfs ordering matters — the parent /app/.next must be mounted before
     # any sub-mounts. The entrypoint cp's image-baked templates into these
-    # mounts at startup, then sed-substitutes, then chmod -R a-w.
+    # mounts at startup, then sed-substitutes the NEXT_PUBLIC_* placeholders,
+    # then drops the write bits.
     #
-    # mode=750: root-owned, group-readable. The entrypoint runs as root long
-    # enough to copy templates, substitute placeholders, and chown the cache
-    # directory to nextjs:nodejs (gid 1001). nodejs group members can read
-    # the partially-substituted bundle during startup; nothing else on the
-    # host can. After chmod a-w the served files are read-only for everyone.
+    # uid=1001 (nextjs), mode=750: the entrypoint runs UNPRIVILEGED as nextjs
+    # and owns these mounts, so it can populate them with no CAP_CHOWN/CAP_SETUID
+    # — which is what lets the container run under `cap_drop: ALL`. nodejs-group
+    # members can read the served bundle; nothing else on the host can.
     tmpfs:
       - /tmp
-      - /app/.next:uid=0,gid=1001,mode=750,size=400m
-      - /app/public:uid=0,gid=1001,mode=750,size=200m
+      - /app/.next:uid=1001,gid=1001,mode=750,size=400m
+      - /app/public:uid=1001,gid=1001,mode=750,size=200m
     mem_limit: 1g
     cpus: 2
     pids_limit: 200
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      # 127.0.0.1, not localhost: the app binds 0.0.0.0 (IPv4) but localhost can
+      # resolve to ::1 (IPv6), where nothing listens → false-unhealthy → the
+      # cron service (depends_on healthy) never starts.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 30s
       timeout: 5s
       start_period: 30s
