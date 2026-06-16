@@ -259,7 +259,7 @@ export function SupplierInvoiceReviewContent({
         </div>
         <div className="flex flex-wrap gap-1.5 sm:gap-2 shrink-0">
           {reverseCharge && (
-            <Badge variant="outline" className="border-orange-300 text-orange-700 dark:text-orange-400">
+            <Badge variant="warning">
               {t('reverse_charge_badge')}
             </Badge>
           )}
@@ -333,9 +333,9 @@ export function SupplierInvoiceReviewContent({
                       </p>
                     )}
                   </td>
-                  <td className="py-2 text-right font-mono">{formatAmount(item.amount)}</td>
+                  <td className="py-2 text-right tabular-nums">{formatAmount(item.amount)}</td>
                   <td className="py-2 text-right">{Math.round(displayRate * 100)}%</td>
-                  <td className="py-2 text-right font-mono">{formatAmount(vatAmount)}</td>
+                  <td className="py-2 text-right tabular-nums">{formatAmount(vatAmount)}</td>
                 </tr>
               )
             })}
@@ -408,7 +408,7 @@ export function SupplierInvoiceReviewContent({
           )}
         </p>
         <div className="hidden sm:block">
-          <table className="w-full text-sm font-mono">
+          <table className="w-full text-sm">
             <thead className="[&_th]:font-medium [&_th]:text-[11px] [&_th]:uppercase [&_th]:tracking-wider [&_th]:text-muted-foreground">
               <tr className="text-left">
                 <th className="pb-1 w-16">{t('col_account')}</th>
@@ -426,10 +426,10 @@ export function SupplierInvoiceReviewContent({
                   <td className="py-1 text-xs">
                     {ACCOUNT_LABELS[line.account_number] || line.description}
                   </td>
-                  <td className="py-1 text-right">
+                  <td className="py-1 text-right tabular-nums">
                     {line.debit > 0 ? formatAmount(line.debit) : ''}
                   </td>
-                  <td className="py-1 text-right">
+                  <td className="py-1 text-right tabular-nums">
                     {line.credit > 0 ? formatAmount(line.credit) : ''}
                   </td>
                 </tr>
@@ -438,8 +438,8 @@ export function SupplierInvoiceReviewContent({
             <tfoot>
               <tr className="border-t font-semibold">
                 <td className="pt-1" colSpan={2}>{t('sum_label')}</td>
-                <td className="pt-1 text-right">{formatAmount(totalDebit)}</td>
-                <td className="pt-1 text-right">{formatAmount(totalCredit)}</td>
+                <td className="pt-1 text-right tabular-nums">{formatAmount(totalDebit)}</td>
+                <td className="pt-1 text-right tabular-nums">{formatAmount(totalCredit)}</td>
               </tr>
             </tfoot>
           </table>
@@ -455,12 +455,12 @@ export function SupplierInvoiceReviewContent({
                   </span>
                 </div>
               </div>
-              <span className="font-mono text-xs shrink-0 ml-2">
+              <span className="tabular-nums text-xs shrink-0 ml-2">
                 {line.debit > 0 ? t('debit_short', { amount: formatAmount(line.debit) }) : t('credit_short', { amount: formatAmount(line.credit) })}
               </span>
             </div>
           ))}
-          <div className="flex justify-between pt-1 border-t font-semibold text-xs font-mono">
+          <div className="flex justify-between pt-1 border-t font-semibold text-xs tabular-nums">
             <span>{t('sum_label')}</span>
             <span>{t('debit_credit_short', { debit: formatAmount(totalDebit), credit: formatAmount(totalCredit) })}</span>
           </div>

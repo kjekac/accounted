@@ -212,8 +212,8 @@ export default function TransactionBookingDialog({
           <div
             className={`h-9 w-9 rounded-full flex items-center justify-center flex-shrink-0 ${
               isIncome
-                ? 'bg-success/10 text-success'
-                : 'bg-destructive/10 text-destructive'
+                ? 'text-success'
+                : 'text-destructive'
             }`}
           >
             {isIncome ? (
@@ -237,7 +237,7 @@ export default function TransactionBookingDialog({
           <button
             type="button"
             onClick={() => setShowUploadZone(!showUploadZone)}
-            className="flex items-center justify-between w-full px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors"
+            className="flex items-center justify-between w-full px-3 py-2 text-sm hover:bg-muted/50 transition-colors"
           >
             <div className="flex items-center gap-2">
               <Paperclip className="h-4 w-4 text-muted-foreground" />

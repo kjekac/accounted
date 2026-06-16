@@ -6,6 +6,13 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import AiFilledIndicator from '@/components/ui/ai-filled-indicator'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useToast } from '@/components/ui/use-toast'
 import {
   Inbox,
@@ -24,6 +31,7 @@ import {
   Search,
   Circle,
   X,
+  ChevronDown,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatCurrency } from '@/lib/utils'
@@ -664,7 +672,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
       }}
       onDrop={handleDrop}
     >
-    <div className="xl:h-full flex flex-col rounded-lg border bg-card xl:overflow-hidden shadow-sm">
+    <div className="xl:h-full flex flex-col rounded-lg border bg-card xl:overflow-hidden">
       {/* Top bar */}
       <header className="flex items-center justify-between gap-4 border-b px-4 py-2.5 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
@@ -1084,10 +1092,10 @@ function InboxRow({
             <AlertTriangle className="h-3 w-3 text-destructive shrink-0" aria-label="Fel vid bearbetning" />
           )}
           {isLinkedToTransaction && (
-            <Link2 className="h-3 w-3 text-emerald-600 shrink-0" aria-label="Kopplad till transaktion" />
+            <Link2 className="h-3 w-3 text-success shrink-0" aria-label="Kopplad till transaktion" />
           )}
           {isBooked && (
-            <Check className="h-3 w-3 text-emerald-600 shrink-0" aria-label="Bokförd" />
+            <Check className="h-3 w-3 text-success shrink-0" aria-label="Bokförd" />
           )}
         </div>
         <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -1144,7 +1152,7 @@ export function DocumentPreview({
     <div className="h-full w-full p-4 flex items-start justify-center overflow-hidden">
       {docMime?.startsWith('image/') ? (
         // Image: frame hugs the image, capped at the parent's visible box.
-        <div className="max-h-full max-w-3xl bg-background rounded-md border shadow-sm overflow-hidden flex">
+        <div className="max-h-full max-w-3xl bg-background rounded-md border overflow-hidden flex">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={docUrl}
@@ -1154,7 +1162,7 @@ export function DocumentPreview({
         </div>
       ) : (
         // PDF: iframe needs explicit height — frame fills the available pane.
-        <div className="h-full w-full max-w-3xl bg-background rounded-md border shadow-sm overflow-hidden">
+        <div className="h-full w-full max-w-3xl bg-background rounded-md border overflow-hidden">
           <iframe src={docUrl} className="w-full h-full border-0" title="Underlag" />
         </div>
       )}
@@ -1211,7 +1219,7 @@ function OnboardingCard({
   return (
     <div
       className={cn(
-        'relative rounded-xl border bg-card shadow-sm',
+        'relative rounded-lg border bg-card',
         compact ? 'mx-3 my-3 p-4 text-xs' : 'max-w-md mx-auto p-6'
       )}
     >
@@ -1228,7 +1236,7 @@ function OnboardingCard({
         <div className="flex items-center gap-2 flex-wrap">
           <h2
             className={cn(
-              'font-display font-medium tracking-tight',
+              'font-display tracking-tight',
               compact ? 'text-sm' : 'text-lg'
             )}
           >
@@ -1266,7 +1274,7 @@ function OnboardingCard({
             >
               <span className="shrink-0 mt-0.5">
                 {isDone ? (
-                  <Check className={cn('text-emerald-600', compact ? 'h-3.5 w-3.5' : 'h-4 w-4')} />
+                  <Check className={cn('text-success', compact ? 'h-3.5 w-3.5' : 'h-4 w-4')} />
                 ) : isCurrent ? (
                   <span
                     className={cn(
@@ -1647,19 +1655,36 @@ function FieldsRail({
             >
               Matcha mot transaktion
             </Button>
-            <Link href={`/supplier-invoices/new?inbox_item_id=${item.id}`} className="block">
-              <Button variant="outline" size="sm" className="w-full">
-                Skapa leverantörsfaktura
-              </Button>
-            </Link>
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full"
-              onClick={onBookDirect}
-            >
-              Bokför som verifikat
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="w-full justify-between">
+                  Andra sätt att bokföra
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-64">
+                <DropdownMenuItem asChild>
+                  <Link
+                    href={`/supplier-invoices/new?inbox_item_id=${item.id}`}
+                    className="flex flex-col items-start gap-1"
+                  >
+                    <span>Skapa leverantörsfaktura</span>
+                    <span className="text-xs text-muted-foreground">
+                      För leverantörsskulder du vill följa (periodisering).
+                    </span>
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={onBookDirect}
+                  className="flex flex-col items-start gap-1"
+                >
+                  <span>Bokför som verifikat</span>
+                  <span className="text-xs text-muted-foreground">
+                    För underlag som inte är en leverantörsfaktura (bankavgift, utlägg).
+                  </span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </>
         )}
         <Button
@@ -1802,6 +1827,10 @@ export function EditableFieldsList({
   const [drafts, setDrafts] = useState<Record<FieldKey, string>>(() =>
     Object.fromEntries(FIELD_DEFS.map((f) => [f.key, readField(data, f.key)])) as Record<FieldKey, string>
   )
+  // Per-field provenance: a populated field starts "AI-filled" (its value came
+  // from the extraction) and flips to user-verified once the user edits it —
+  // mirrors the create form's AiFilledIndicator. Reset when switching items.
+  const [edited, setEdited] = useState<Partial<Record<FieldKey, boolean>>>({})
   const timersRef = useRef<Partial<Record<FieldKey, ReturnType<typeof setTimeout>>>>({})
   // Last-known server values per field. Used to detect when the server
   // normalises a value (currency upper-cased, whitespace trimmed) so we can
@@ -1818,6 +1847,7 @@ export function EditableFieldsList({
     ) as Record<FieldKey, string>
     setDrafts(seeded)
     lastServerRef.current = seeded
+    setEdited({})
     return () => {
       for (const t of Object.values(timersRef.current)) {
         if (t) clearTimeout(t)
@@ -1905,6 +1935,7 @@ export function EditableFieldsList({
   const onChange = useCallback(
     (key: FieldKey, raw: string) => {
       setDrafts((prev) => ({ ...prev, [key]: raw }))
+      setEdited((prev) => (prev[key] ? prev : { ...prev, [key]: true }))
       const existing = timersRef.current[key]
       if (existing) clearTimeout(existing)
       timersRef.current[key] = setTimeout(() => {
@@ -1935,12 +1966,18 @@ export function EditableFieldsList({
     <div className="space-y-2">
       {FIELD_DEFS.map((f) => (
         <div key={f.key} className="flex flex-col gap-0.5">
-          <label
-            htmlFor={`field-${f.key}`}
-            className="text-[10px] uppercase tracking-wide text-muted-foreground/80"
-          >
-            {f.label}
-          </label>
+          <div className="flex items-center justify-between gap-2">
+            <label
+              htmlFor={`field-${f.key}`}
+              className="text-[10px] uppercase tracking-wide text-muted-foreground/80"
+            >
+              {f.label}
+            </label>
+            <AiFilledIndicator
+              active={drafts[f.key].trim() !== '' && !edited[f.key]}
+              title="Ifyllt av AI — kontrollera mot dokumentet"
+            />
+          </div>
           <Input
             id={`field-${f.key}`}
             type={f.type}

@@ -446,7 +446,7 @@ export default function TransactionInboxCard({
         {HAS_AI_EXTRACTION &&
           !isBatchMode &&
           (extraction.status === 'running' || extraction.status === 'failed') && (
-            <div className="mt-2 pt-2 border-t border-border/40">
+            <div className="mt-2 pt-2 border-t border-border">
               <ExtractionStatus
                 status={extraction.status}
                 elapsedMs={extraction.elapsedMs}

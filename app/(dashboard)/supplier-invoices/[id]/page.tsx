@@ -404,7 +404,7 @@ export default function SupplierInvoiceDetailPage() {
     return (
       <div className="space-y-6">
         <Skeleton className="h-8 w-48" />
-        <Card className="animate-pulse"><CardContent className="h-48" /></Card>
+        <Card><CardContent className="p-6"><Skeleton className="h-48 w-full" /></CardContent></Card>
       </div>
     )
   }
@@ -442,7 +442,7 @@ export default function SupplierInvoiceDetailPage() {
           </Button>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-              <h1 className="font-display text-2xl sm:text-3xl font-medium tracking-tight">
+              <h1 className="font-display text-2xl sm:text-3xl tracking-tight">
                 {t('arrival_header', { number: invoice.arrival_number })}
               </h1>
               <Badge variant={statusVariants[invoice.status] || 'secondary'}>
@@ -605,29 +605,29 @@ export default function SupplierInvoiceDetailPage() {
           <CardContent className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">{t('net_excl_vat')}</span>
-              <span className="font-mono">{formatAmount(invoice.subtotal)} {invoice.currency}</span>
+              <span className="tabular-nums">{formatAmount(invoice.subtotal)} {invoice.currency}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">{t('vat_label')}</span>
-              <span className="font-mono">{formatAmount(invoice.vat_amount)} {invoice.currency}</span>
+              <span className="tabular-nums">{formatAmount(invoice.vat_amount)} {invoice.currency}</span>
             </div>
             {rounding.applies && (
               <div className="flex justify-between">
                 <span className="text-muted-foreground">{t('ore_rounding')}</span>
-                <span className="font-mono">{formatAmount(rounding.roundingDelta)} {invoice.currency}</span>
+                <span className="tabular-nums">{formatAmount(rounding.roundingDelta)} {invoice.currency}</span>
               </div>
             )}
-            <div className="flex justify-between font-bold text-base pt-2 border-t">
+            <div className="flex justify-between font-semibold text-base pt-2 border-t">
               <span>{t('total_label')}</span>
-              <span className="font-mono">{formatAmount(rounding.displayed)} {invoice.currency}</span>
+              <span className="tabular-nums">{formatAmount(rounding.displayed)} {invoice.currency}</span>
             </div>
             <div className="flex justify-between pt-2">
               <span className="text-muted-foreground">{t('paid_label')}</span>
-              <span className="font-mono text-success">{formatAmount(invoice.paid_amount)} {invoice.currency}</span>
+              <span className="tabular-nums text-success">{formatAmount(invoice.paid_amount)} {invoice.currency}</span>
             </div>
             <div className="flex justify-between font-semibold">
               <span>{t('remaining_label')}</span>
-              <span className="font-mono">{formatAmount(invoice.remaining_amount)} {invoice.currency}</span>
+              <span className="tabular-nums">{formatAmount(invoice.remaining_amount)} {invoice.currency}</span>
             </div>
           </CardContent>
         </Card>
@@ -692,11 +692,11 @@ export default function SupplierInvoiceDetailPage() {
                     </td>
                     <td className="py-2 text-right">{item.quantity}</td>
                     <td className="py-2">{item.unit}</td>
-                    <td className="py-2 text-right font-mono">{formatAmount(item.unit_price)}</td>
+                    <td className="py-2 text-right tabular-nums">{formatAmount(item.unit_price)}</td>
                     <td className="py-2"><AccountNumber number={item.account_number} /></td>
                     <td className="py-2 text-right">{Math.round(item.vat_rate * 100)}%</td>
-                    <td className="py-2 text-right font-mono">{formatAmount(item.line_total)}</td>
-                    <td className="py-2 text-right font-mono">{formatAmount(item.vat_amount)}</td>
+                    <td className="py-2 text-right tabular-nums">{formatAmount(item.line_total)}</td>
+                    <td className="py-2 text-right tabular-nums">{formatAmount(item.vat_amount)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -721,11 +721,11 @@ export default function SupplierInvoiceDetailPage() {
                 )}
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>{item.quantity} {item.unit} × {formatAmount(item.unit_price)}</span>
-                  <span className="font-mono">{formatAmount(item.line_total)} kr</span>
+                  <span className="tabular-nums">{formatAmount(item.line_total)} kr</span>
                 </div>
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span><AccountNumber number={item.account_number} /> · {t('vat_inline', { rate: Math.round(item.vat_rate * 100) })}</span>
-                  <span className="font-mono">{t('vat_amount_inline', { amount: formatAmount(item.vat_amount) })}</span>
+                  <span className="tabular-nums">{t('vat_amount_inline', { amount: formatAmount(item.vat_amount) })}</span>
                 </div>
               </div>
             ))}
@@ -755,7 +755,7 @@ export default function SupplierInvoiceDetailPage() {
                   {payments.map((p) => (
                     <tr key={p.id} className="border-b last:border-0">
                       <td className="py-2 tabular-nums">{formatDate(p.payment_date)}</td>
-                      <td className="py-2 text-right font-mono">{formatAmount(p.amount)} {p.currency}</td>
+                      <td className="py-2 text-right tabular-nums">{formatAmount(p.amount)} {p.currency}</td>
                       <td className="py-2">
                         {p.journal_entry_id ? (
                           <Link href={`/bookkeeping/${p.journal_entry_id}`} className="text-primary hover:underline font-mono text-xs">

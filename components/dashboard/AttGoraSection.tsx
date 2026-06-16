@@ -205,7 +205,7 @@ export default function AttGoraSection({
               {bokforRows && (
                 <div>
                   <BandHeader>{t('band_bokfor')}</BandHeader>
-                  <div className="divide-y divide-border/50">
+                  <div className="divide-y divide-border">
                     {counts.book_transaction > 0 && (
                       <WorklistRow
                         href="/transactions"
@@ -305,7 +305,7 @@ export default function AttGoraSection({
               {granskaRows && (
                 <div>
                   <BandHeader>{t('band_granska')}</BandHeader>
-                  <div className="divide-y divide-border/50">
+                  <div className="divide-y divide-border">
                     {counts.supplier_invoice_approval > 0 && (
                       <WorklistRow
                         href="/supplier-invoices"
@@ -337,7 +337,7 @@ export default function AttGoraSection({
               {bevakaRows && (
                 <div>
                   <BandHeader>{t('band_bevaka')}</BandHeader>
-                  <div className="divide-y divide-border/50">
+                  <div className="divide-y divide-border">
                     {counts.overdue_invoice > 0 && (
                       <WorklistRow
                         href="/invoices?status=unpaid"

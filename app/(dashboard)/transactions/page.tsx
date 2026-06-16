@@ -13,6 +13,7 @@ import { ToastAction } from '@/components/ui/toast'
 import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
 import { DataList, DataListHeader, DataListEmpty } from '@/components/ui/data-list'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -1932,13 +1933,13 @@ export default function TransactionsPage() {
       {isLoading ? (
         <DataList>
           {[1, 2, 3].map((i) => (
-            <div key={i} className="flex items-center gap-3 px-4 py-3 animate-pulse">
-              <div className="h-5 w-5 rounded bg-muted" />
+            <div key={i} className="flex items-center gap-3 px-4 py-3">
+              <Skeleton className="h-5 w-5 rounded" />
               <div className="flex-1 space-y-2">
-                <div className="h-4 w-48 rounded bg-muted" />
-                <div className="h-3 w-24 rounded bg-muted" />
+                <Skeleton className="h-4 w-48 rounded" />
+                <Skeleton className="h-3 w-24 rounded" />
               </div>
-              <div className="h-5 w-20 rounded bg-muted" />
+              <Skeleton className="h-5 w-20 rounded" />
             </div>
           ))}
         </DataList>
@@ -2047,7 +2048,7 @@ export default function TransactionsPage() {
 
       {/* Batch mode floating action bar */}
       {isBatchMode && selectedIds.size > 0 && (
-        <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-background border rounded-xl shadow-lg px-4 py-3">
+        <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-background border rounded-lg shadow-lg px-4 py-3">
           {batchProgress ? (
             <>
               <Badge variant="secondary">

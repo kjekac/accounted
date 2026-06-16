@@ -9,6 +9,21 @@ import { formatCurrency, formatDate } from '@/lib/utils'
 import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
 
 /**
+ * Map the endpoint's 0–1 match confidence (attached only when candidates are
+ * ranked for a specific transaction) to a labelled strength badge, so the user
+ * can tell an exact-amount hit from a fuzzy guess before vouching for an
+ * immutable verifikat. Returns null when no confidence was attached.
+ */
+function confidenceBadge(
+  confidence: number | undefined,
+): { label: string; variant: 'success' | 'secondary' | 'outline' } | null {
+  if (confidence == null) return null
+  if (confidence >= 0.85) return { label: 'Stark träff', variant: 'success' }
+  if (confidence >= 0.6) return { label: 'Trolig träff', variant: 'secondary' }
+  return { label: 'Svag träff', variant: 'outline' }
+}
+
+/**
  * A posted journal entry line on a cash account (e.g. 1930) not yet linked to
  * any bank transaction — a candidate for manual reconciliation. Mirrors the
  * `UnlinkedGLLine` returned by GET /api/reconciliation/bank/unmatched-entries.
@@ -111,14 +126,24 @@ export function MatchVerifikationPicker({
 
   if (selected) {
     const amount = selected.debit_amount > 0 ? selected.debit_amount : -selected.credit_amount
+    // Suppress the match-strength badge on an already-matched verifikat so a
+    // green "Stark träff" can't visually encourage an accidental double-match —
+    // "Redan matchad" is the signal that matters there (N:1 stays opt-in).
+    const strength =
+      (selected.linked_transaction_count ?? 0) > 0 ? null : confidenceBadge(selected.confidence)
     return (
       <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-sm">
         <span className="font-mono text-xs shrink-0">{formatVoucher(selected)}</span>
         <span className="text-muted-foreground shrink-0 tabular-nums">{formatDate(selected.entry_date)}</span>
-        <span className="font-mono tabular-nums shrink-0">{formatCurrency(amount)}</span>
-        <span className="truncate text-muted-foreground">{selected.entry_description}</span>
+        <span className="tabular-nums shrink-0">{formatCurrency(amount)}</span>
+        <span className="truncate text-muted-foreground flex-1 min-w-0">{selected.entry_description}</span>
+        {strength && (
+          <Badge variant={strength.variant} className="shrink-0 text-[10px]">
+            {strength.label}
+          </Badge>
+        )}
         {(selected.linked_transaction_count ?? 0) > 0 && (
-          <Badge variant="secondary" className="ml-auto shrink-0 text-[10px]">
+          <Badge variant="secondary" className="shrink-0 text-[10px]">
             Redan matchad
           </Badge>
         )}
@@ -126,7 +151,7 @@ export function MatchVerifikationPicker({
           type="button"
           size="icon"
           variant="ghost"
-          className={`${(selected.linked_transaction_count ?? 0) > 0 ? '' : 'ml-auto'} h-6 w-6 shrink-0`}
+          className="h-6 w-6 shrink-0"
           onClick={() => onChange('')}
           disabled={disabled}
           aria-label="Avmarkera verifikation"
@@ -147,6 +172,8 @@ export function MatchVerifikationPicker({
       <div className="max-h-72 overflow-y-auto">
         {filtered.map((line) => {
           const amount = line.debit_amount > 0 ? line.debit_amount : -line.credit_amount
+          const strength =
+            (line.linked_transaction_count ?? 0) > 0 ? null : confidenceBadge(line.confidence)
           return (
             <button
               key={line.line_id}
@@ -166,10 +193,15 @@ export function MatchVerifikationPicker({
             >
               <span className="font-mono text-xs shrink-0 w-12">{formatVoucher(line)}</span>
               <span className="text-muted-foreground shrink-0 tabular-nums w-24">{formatDate(line.entry_date)}</span>
-              <span className="font-mono tabular-nums shrink-0 w-24 text-right">{formatCurrency(amount)}</span>
+              <span className="tabular-nums shrink-0 w-24 text-right">{formatCurrency(amount)}</span>
               <span className="truncate text-muted-foreground flex-1">
                 {line.line_description || line.entry_description}
               </span>
+              {strength && (
+                <Badge variant={strength.variant} className="shrink-0 text-[10px]">
+                  {strength.label}
+                </Badge>
+              )}
               {(line.linked_transaction_count ?? 0) > 0 && (
                 <Badge variant="secondary" className="shrink-0 text-[10px]">
                   Matchad

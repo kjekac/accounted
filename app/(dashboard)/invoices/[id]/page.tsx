@@ -536,12 +536,12 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           </Button>
           <div>
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-              <h1 className={cn('font-display text-2xl sm:text-3xl font-medium tracking-tight', !invoice.invoice_number && !isSelfBilled && 'italic text-muted-foreground')}>{isSelfBilled ? invoiceDisplayNumber(invoice as Invoice) : (invoice.invoice_number ?? '—')}</h1>
+              <h1 className={cn('font-display text-2xl sm:text-3xl tracking-tight', !invoice.invoice_number && !isSelfBilled && 'italic text-muted-foreground')}>{isSelfBilled ? invoiceDisplayNumber(invoice as Invoice) : (invoice.invoice_number ?? '—')}</h1>
               {isProforma && (
-                <Badge variant="secondary" className="bg-primary/10 text-primary">{t('badge_proforma')}</Badge>
+                <Badge variant="outline">{t('badge_proforma')}</Badge>
               )}
               {isDeliveryNote && (
-                <Badge variant="secondary" className="bg-success/10 text-success">{t('badge_delivery_note')}</Badge>
+                <Badge variant="success">{t('badge_delivery_note')}</Badge>
               )}
               {isSelfBilled && (
                 <Badge variant="outline">{t('badge_self_billed')}</Badge>
@@ -1123,8 +1123,8 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                                 </>
                               ) : (
                                 <>
-                                  <MessageSquare className="h-3 w-3 text-orange-600" />
-                                  <span className="text-xs text-orange-600">{t('reminder_objection')}</span>
+                                  <MessageSquare className="h-3 w-3 text-destructive" />
+                                  <span className="text-xs text-destructive">{t('reminder_objection')}</span>
                                 </>
                               )}
                             </div>
@@ -1190,9 +1190,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
 
           {/* Converted from proforma */}
           {convertedFromInvoice && (
-            <Card className="border-blue-300">
+            <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-blue-600">
+                <CardTitle className="flex items-center gap-2">
                   <FileText className="h-5 w-5" />
                   {t('converted_card_title')}
                 </CardTitle>
@@ -1217,66 +1217,41 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
               <CardHeader>
                 <CardTitle>{t('actions_card_title')}</CardTitle>
               </CardHeader>
+              {/* Secondary actions only. The primary next-step for every status
+                  (convert / finalize / send / mark-paid) lives in the header
+                  action row next to the status badge — this card holds the
+                  reversible/destructive alternatives so there is one obvious
+                  next step, not two competing copies of it. */}
               <CardContent className="space-y-2">
                 {isProforma && (
-                  <>
-                    <Button
-                      className="w-full"
-                      onClick={convertToInvoice}
-                      disabled={isConverting}
-                    >
-                      {isConverting ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <FileText className="mr-2 h-4 w-4" />
-                      )}
-                      {t('convert_to_invoice')}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full"
-                      onClick={() => updateStatus('cancelled')}
-                      disabled={isUpdating}
-                    >
-                      <XCircle className="mr-2 h-4 w-4" />
-                      {t('cancel_action')}
-                    </Button>
-                  </>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => updateStatus('cancelled')}
+                    disabled={isUpdating}
+                  >
+                    <XCircle className="mr-2 h-4 w-4" />
+                    {t('cancel_action')}
+                  </Button>
                 )}
                 {!isProforma && invoice.status === 'draft' && (
                   isUnnumberedDraft ? (
-                    <>
-                      {/* Unnumbered draft (saved via "Spara som utkast"): review
-                          and create it, or remove it without a trace. */}
-                      <Button
-                        className="w-full"
-                        onClick={openFinalizeDialog}
-                        disabled={isFinalizing}
-                      >
-                        <FileText className="mr-2 h-4 w-4" />
-                        {t('finalize_action')}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="w-full text-destructive hover:text-destructive"
-                        onClick={() => setShowDeleteDialog(true)}
-                        disabled={isDeleting}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        {t('remove_action')}
-                      </Button>
-                    </>
+                    <Button
+                      variant="outline"
+                      className="w-full text-destructive hover:text-destructive"
+                      onClick={() => setShowDeleteDialog(true)}
+                      disabled={isDeleting}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      {t('remove_action')}
+                    </Button>
                   ) : (
                     <>
-                      {!isDeliveryNote && customerHasEmail ? (
+                      {/* When the customer has an email the header offers "Send via
+                          email" as the primary; keep the manual-mark-sent path here
+                          as the secondary alternative (it is not in the header). */}
+                      {!isDeliveryNote && customerHasEmail && (
                         <>
-                          <Button
-                            className="w-full"
-                            onClick={() => openSendDialog('email')}
-                          >
-                            <Mail className="mr-2 h-4 w-4" />
-                            {t('send_via_email')}
-                          </Button>
                           <Button
                             variant="ghost"
                             className="w-full text-muted-foreground"
@@ -1287,27 +1262,6 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                           </Button>
                           <p className="text-[11px] text-muted-foreground/60 px-1 -mt-1">
                             {t('send_manual_hint_with_email')}
-                          </p>
-                        </>
-                      ) : (
-                        <>
-                          {!isDeliveryNote && (
-                            <div className="flex items-start gap-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg mb-2 dark:bg-yellow-950/30 dark:border-yellow-800">
-                              <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-500 mt-0.5 flex-shrink-0" />
-                              <p className="text-xs text-yellow-700 dark:text-yellow-400">
-                                {t('no_customer_email_warning')}
-                              </p>
-                            </div>
-                          )}
-                          <Button
-                            className="w-full"
-                            onClick={() => openSendDialog('manual')}
-                          >
-                            <Send className="mr-2 h-4 w-4" />
-                            {t('mark_sent_manually')}
-                          </Button>
-                          <p className="text-[11px] text-muted-foreground/60 px-1 -mt-1">
-                            {t('send_manual_hint_no_email')}
                           </p>
                         </>
                       )}
@@ -1323,25 +1277,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                     </>
                   )
                 )}
-                {(invoice.status === 'sent' || invoice.status === 'overdue') && isRealInvoice && (
-                  <>
-                    <Button
-                      className="w-full"
-                      onClick={() => setShowPaymentDialog(true)}
-                      disabled={isUpdating}
-                    >
-                      <CheckCircle className="mr-2 h-4 w-4" />
-                      {t('mark_as_paid')}
-                    </Button>
-                    <Link href={`/invoices/${invoice.id}/credit`} className="block">
-                      <Button variant="outline" className="w-full">
-                        <ReceiptText className="mr-2 h-4 w-4" />
-                        {t('create_credit_note')}
-                      </Button>
-                    </Link>
-                  </>
-                )}
-                {invoice.status === 'paid' && isRealInvoice && (
+                {((invoice.status === 'sent' || invoice.status === 'overdue' || invoice.status === 'paid') && isRealInvoice) && (
                   <Link href={`/invoices/${invoice.id}/credit`} className="block">
                     <Button variant="outline" className="w-full">
                       <ReceiptText className="mr-2 h-4 w-4" />

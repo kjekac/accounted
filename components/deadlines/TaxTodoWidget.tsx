@@ -112,7 +112,7 @@ export function TaxTodoWidget({ deadlines, onStatusChange }: TaxTodoWidgetProps)
   }
 
   return (
-    <Card className="border-warning/30 bg-warning/5">
+    <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg flex items-center gap-2">
@@ -134,18 +134,11 @@ export function TaxTodoWidget({ deadlines, onStatusChange }: TaxTodoWidgetProps)
           const isUpdating = updatingId === deadline.id
           const reportLink = getReportLink(deadline)
           const isOverdue = deadline.status === 'overdue'
-          const isActionNeeded = deadline.status === 'action_needed'
 
           return (
             <div
               key={deadline.id}
-              className={`p-3 rounded-lg ${
-                isOverdue
-                  ? 'bg-destructive/5 border border-destructive/30'
-                  : isActionNeeded
-                  ? 'bg-warning/5 border border-warning/20'
-                  : ''
-              }`}
+              className={`p-3 rounded-lg ${isOverdue ? 'bg-destructive/5' : ''}`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-start gap-2 min-w-0 flex-1">

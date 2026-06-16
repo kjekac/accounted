@@ -346,7 +346,7 @@ export default function InvoiceMatchDialog({
                       {t('link_to_existing', { label: candidate.voucher_label })}
                     </Button>
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
                       onClick={() =>
                         handleConfirm({
@@ -355,7 +355,7 @@ export default function InvoiceMatchDialog({
                         })
                       }
                       disabled={isConfirming}
-                      className="sm:flex-1"
+                      className="text-muted-foreground"
                     >
                       {t('create_new_anyway')}
                     </Button>

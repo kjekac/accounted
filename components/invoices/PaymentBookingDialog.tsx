@@ -437,7 +437,7 @@ export default function PaymentBookingDialog({
                         placeholder="0,00"
                         value={line.debit_amount}
                         onChange={(e) => updateLine(index, 'debit_amount', e.target.value)}
-                        className="font-mono text-right"
+                        className="tabular-nums text-right"
                         inputMode="decimal"
                       />
                     </div>
@@ -450,7 +450,7 @@ export default function PaymentBookingDialog({
                         placeholder="0,00"
                         value={line.credit_amount}
                         onChange={(e) => updateLine(index, 'credit_amount', e.target.value)}
-                        className="font-mono text-right"
+                        className="tabular-nums text-right"
                         inputMode="decimal"
                       />
                     </div>
@@ -489,7 +489,7 @@ export default function PaymentBookingDialog({
                     placeholder="0,00"
                     value={line.debit_amount}
                     onChange={(e) => updateLine(index, 'debit_amount', e.target.value)}
-                    className="font-mono text-right"
+                    className="tabular-nums text-right"
                   />
                   <Input
                     type="number"
@@ -498,7 +498,7 @@ export default function PaymentBookingDialog({
                     placeholder="0,00"
                     value={line.credit_amount}
                     onChange={(e) => updateLine(index, 'credit_amount', e.target.value)}
-                    className="font-mono text-right"
+                    className="tabular-nums text-right"
                   />
                   <Button
                     type="button"
@@ -530,7 +530,7 @@ export default function PaymentBookingDialog({
             <div className="flex items-center justify-between border-t pt-3">
               <div className="flex items-center gap-2">
                 {isBalanced ? (
-                  <Badge variant="secondary" className="bg-success/10 text-success">
+                  <Badge variant="success">
                     {t('balanced_badge')}
                   </Badge>
                 ) : (
@@ -539,7 +539,7 @@ export default function PaymentBookingDialog({
                   </Badge>
                 )}
               </div>
-              <div className="text-sm text-muted-foreground font-mono">
+              <div className="text-sm text-muted-foreground tabular-nums">
                 {formatCurrency(totalDebit)} / {formatCurrency(totalCredit)}
               </div>
             </div>

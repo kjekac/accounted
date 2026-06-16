@@ -21,7 +21,6 @@ import {
 } from 'lucide-react'
 import type { Deadline, OnboardingProgress } from '@/types'
 import type { SuggestedMatch, WorklistCounts } from '@/lib/worklist/types'
-import { getBranding } from '@/lib/branding/service'
 
 const setupFreshStartKey = (companyId: string) => `erp_setup_fresh_start:${companyId}`
 
@@ -115,8 +114,6 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
   // header so the tile and the section never disagree.
   const todoCount = worklist.total + (summary.expiringBankConnections?.length ?? 0)
 
-  const slim = getBranding().navDensity === 'slim'
-
   // Pick the single most-urgent next action so the launchpad surfaces one
   // unambiguous CTA. Order matches the friction we actually want to remove
   // first: stale → overdue → uncategorized → unpaid → all clear.
@@ -202,8 +199,9 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
             </Card>
           </Link>
         </section>
-      ) : slim ? (
-        /* Next best action — single hero card */
+      ) : (
+        /* Next best action — single hero card, shown for every agent-built
+           company regardless of nav density so there is always one clear CTA */
         <section>
           <Link href={nextBestAction.href} className="block group">
             <Card className={cn(
@@ -233,7 +231,7 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
             </Card>
           </Link>
         </section>
-      ) : null}
+      )}
 
       {/* Key metrics — 4 compact cards */}
       <section>
@@ -242,7 +240,7 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
             <CardContent className="p-4">
               <p className="text-xs text-muted-foreground mb-2">{t('result')}</p>
               <p className={cn(
-                'font-display text-xl font-medium tabular-nums leading-tight',
+                'font-display text-xl tabular-nums leading-tight',
                 summary.mtd.net >= 0 ? 'text-success' : 'text-destructive'
               )}>
                 {formatLargeNumber(summary.mtd.net)}
@@ -261,7 +259,7 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
                   <p className="text-xs text-muted-foreground mb-2">{t('to_be_paid')}</p>
                   <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50" />
                 </div>
-                <p className="font-display text-xl font-medium tabular-nums leading-tight">
+                <p className="font-display text-xl tabular-nums leading-tight">
                   {summary.unpaidInvoicesCount}
                   {t('units') && <span className="text-sm ml-0.5 text-muted-foreground font-normal">{t('units')}</span>}
                 </p>
@@ -276,7 +274,7 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
             <Card>
               <CardContent className="p-4">
                 <p className="text-xs text-muted-foreground mb-2">{t('bank_balance')}</p>
-                <p className="font-display text-xl font-medium tabular-nums leading-tight">
+                <p className="font-display text-xl tabular-nums leading-tight">
                   {formatLargeNumber(summary.bankBalance)}
                   <span className="text-sm ml-0.5 text-muted-foreground font-normal">kr</span>
                 </p>
@@ -301,7 +299,7 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
               <p className="text-xs text-muted-foreground mb-2">{t('todo')}</p>
               <div role="status" aria-live="polite">
                 {todoCount > 0 ? (
-                  <p className="font-display text-xl font-medium tabular-nums leading-tight text-warning-foreground">
+                  <p className="font-display text-xl tabular-nums leading-tight">
                     {todoCount}
                     {t('units') && <span className="text-sm ml-0.5 text-muted-foreground font-normal">{t('units')}</span>}
                   </p>
@@ -332,12 +330,12 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
           <Card>
             <CardContent className="p-6">
               <p className="text-sm text-muted-foreground mb-3">{t('revenue')}</p>
-              <p className="font-display text-2xl font-medium tabular-nums leading-tight">
+              <p className="font-display text-2xl tabular-nums leading-tight">
                 {formatLargeNumber(summary.mtd.income)}
                 <span className="text-base ml-1 text-muted-foreground font-normal">kr</span>
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">{t('this_month')}</p>
-              <div className="mt-4 pt-3 border-t border-border/30 flex items-baseline justify-between">
+              <div className="mt-4 pt-3 border-t border-border flex items-baseline justify-between">
                 <p className="text-xs text-muted-foreground">{t('this_year_block')}</p>
                 <p className="text-sm font-medium tabular-nums">{formatCurrency(summary.ytd.income)}</p>
               </div>
@@ -347,12 +345,12 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
           <Card>
             <CardContent className="p-6">
               <p className="text-sm text-muted-foreground mb-3">{t('expenses')}</p>
-              <p className="font-display text-2xl font-medium tabular-nums leading-tight">
+              <p className="font-display text-2xl tabular-nums leading-tight">
                 {formatLargeNumber(summary.mtd.expenses)}
                 <span className="text-base ml-1 text-muted-foreground font-normal">kr</span>
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">{t('this_month')}</p>
-              <div className="mt-4 pt-3 border-t border-border/30 flex items-baseline justify-between">
+              <div className="mt-4 pt-3 border-t border-border flex items-baseline justify-between">
                 <p className="text-xs text-muted-foreground">{t('this_year_block')}</p>
                 <p className="text-sm font-medium tabular-nums">{formatCurrency(summary.ytd.expenses)}</p>
               </div>

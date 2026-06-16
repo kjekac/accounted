@@ -13,6 +13,7 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import { getBranding } from '@/lib/branding/service'
@@ -78,7 +79,7 @@ export default function NewUserChecklist({
           </div>
 
           {hasBookkeepingImported ? (
-            <div className="ml-0 sm:ml-10 p-4 sm:p-5 rounded-lg border border-border bg-secondary/40">
+            <div className="ml-0 sm:ml-10 p-4 sm:p-6 rounded-lg border border-border bg-secondary/40">
               <p className="text-sm text-foreground font-medium">{t('step1_done_title')}</p>
               <p className="text-xs sm:text-sm text-muted-foreground mt-1">{t('step1_done_description')}</p>
             </div>
@@ -87,20 +88,20 @@ export default function NewUserChecklist({
             {hasMigration && (
               <Link
                 href="/import?mode=migration"
-                className="group block p-4 sm:p-5 rounded-lg border border-border bg-secondary/40 hover:bg-secondary/60 hover:border-primary/40 transition-colors duration-150"
+                className="group block p-4 sm:p-6 rounded-lg border border-border bg-secondary/40 hover:bg-secondary/60 hover:border-primary/40 transition-colors duration-150"
               >
                 <div className="flex items-start gap-3 sm:gap-4">
-                  <div className="p-2 sm:p-2.5 rounded-lg bg-primary/[0.08] group-hover:bg-primary/[0.12] transition-colors flex-shrink-0">
+                  <div className="p-2 sm:p-3 rounded-lg bg-primary/[0.08] group-hover:bg-primary/[0.12] transition-colors flex-shrink-0">
                     <ArrowRightLeft className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="font-medium group-hover:text-primary transition-colors text-sm sm:text-base">
                       {t('migrate_title')}
                     </p>
-                    <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed underline decoration-foreground/20 underline-offset-2">
+                    <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-2 leading-relaxed underline decoration-foreground/20 underline-offset-2">
                       {t('migrate_description')}
                     </p>
-                    <div className="flex flex-wrap gap-1.5 sm:gap-2 mt-2.5 sm:mt-3">
+                    <div className="flex flex-wrap gap-2 mt-3">
                       {([
                         { name: 'Fortnox', logo: '/logos/fortnox.svg' },
                         { name: 'Visma', logo: '/logos/visma.jpeg' },
@@ -109,7 +110,7 @@ export default function NewUserChecklist({
                         { name: 'Briox', logo: '/logos/Briox_logo.png' },
                         { name: 'SIE4-fil', logo: null },
                       ] as const).map(provider => (
-                        <div key={provider.name} className="flex items-center gap-1 sm:gap-1.5 rounded border border-border bg-muted/30 px-1.5 sm:px-2 py-0.5 sm:py-1">
+                        <div key={provider.name} className="flex items-center gap-1 rounded border border-border bg-muted/30 px-2 py-1">
                           {provider.logo ? (
                             <img src={provider.logo} alt={provider.name} className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0 rounded-sm object-contain" />
                           ) : (
@@ -127,17 +128,17 @@ export default function NewUserChecklist({
 
             <Link
               href="/import?mode=sie"
-              className="group block p-4 sm:p-5 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/[0.02] transition-colors duration-150"
+              className="group block p-4 sm:p-6 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/[0.02] transition-colors duration-150"
             >
               <div className="flex items-start gap-3 sm:gap-4">
-                <div className="p-2 sm:p-2.5 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
+                <div className="p-2 sm:p-3 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
                   <FileText className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground group-hover:text-primary transition-colors" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-medium group-hover:text-primary transition-colors text-sm sm:text-base">
                     {t('sie_title')}
                   </p>
-                  <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-2 leading-relaxed">
                     {t('sie_description')}
                   </p>
                 </div>
@@ -166,24 +167,24 @@ export default function NewUserChecklist({
 
           <div className="ml-0 sm:ml-10">
             {hasBankConnected ? (
-              <div className="p-4 sm:p-5 rounded-lg border border-border bg-secondary/40">
+              <div className="p-4 sm:p-6 rounded-lg border border-border bg-secondary/40">
                 <p className="text-sm text-foreground font-medium">Bank kopplad</p>
                 <p className="text-xs sm:text-sm text-muted-foreground mt-1">Transaktioner synkas automatiskt.</p>
               </div>
             ) : (
             <Link
               href={hasBanking ? '/import?mode=psd2' : '/import?mode=bank'}
-              className="group block p-4 sm:p-5 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/[0.02] transition-colors duration-150"
+              className="group block p-4 sm:p-6 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/[0.02] transition-colors duration-150"
             >
               <div className="flex items-start gap-3 sm:gap-4">
-                <div className="p-2 sm:p-2.5 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
+                <div className="p-2 sm:p-3 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
                   <Landmark className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground group-hover:text-primary transition-colors" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-medium group-hover:text-primary transition-colors text-sm sm:text-base">
                     {t('bank_title')}
                   </p>
-                  <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-2 leading-relaxed">
                     {hasBanking
                       ? t('bank_description_psd2')
                       : t('bank_description_file')}
@@ -223,16 +224,16 @@ export default function NewUserChecklist({
 
             <div className="ml-0 sm:ml-10">
               {hasSkatteverketConnected ? (
-                <div className="block p-4 sm:p-5 rounded-lg border border-border bg-secondary/40">
+                <div className="block p-4 sm:p-6 rounded-lg border border-border bg-secondary/40">
                   <div className="flex items-start gap-3 sm:gap-4">
-                    <div className="p-2 sm:p-2.5 rounded-lg bg-background flex-shrink-0">
+                    <div className="p-2 sm:p-3 rounded-lg bg-background flex-shrink-0">
                       <FileCheck className="h-4 w-4 sm:h-5 sm:w-5 text-foreground" />
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-sm sm:text-base text-foreground">
                         {t('skatteverket_connected_title')}
                       </p>
-                      <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed">
+                      <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-2 leading-relaxed">
                         {t('skatteverket_connected_description')}
                       </p>
                     </div>
@@ -245,17 +246,17 @@ export default function NewUserChecklist({
                   // skatteverket.se; <Link> would route via Next's client
                   // router which doesn't follow cross-origin redirects.
                   href="/api/extensions/ext/skatteverket/authorize?return_to=/"
-                  className="group block p-4 sm:p-5 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/[0.02] transition-colors duration-150"
+                  className="group block p-4 sm:p-6 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/[0.02] transition-colors duration-150"
                 >
                   <div className="flex items-start gap-3 sm:gap-4">
-                    <div className="p-2 sm:p-2.5 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
+                    <div className="p-2 sm:p-3 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
                       <FileCheck className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground group-hover:text-primary transition-colors" />
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="font-medium group-hover:text-primary transition-colors text-sm sm:text-base">
                         {t('skatteverket_connect_title')}
                       </p>
-                      <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed">
+                      <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-2 leading-relaxed">
                         {t('skatteverket_connect_description', { appName: branding.appName.toLowerCase() })}
                       </p>
                     </div>
@@ -286,16 +287,16 @@ export default function NewUserChecklist({
 
           <div className="ml-0 sm:ml-10">
             {hasAgentBuilt ? (
-              <div className="p-4 sm:p-5 rounded-lg border border-border bg-secondary/40">
+              <div className="p-4 sm:p-6 rounded-lg border border-border bg-secondary/40">
                 <div className="flex items-start gap-3 sm:gap-4">
-                  <div className="p-2 sm:p-2.5 rounded-lg bg-background flex-shrink-0">
+                  <div className="p-2 sm:p-3 rounded-lg bg-background flex-shrink-0">
                     <MessageCircle className="h-4 w-4 sm:h-5 sm:w-5 text-foreground" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm sm:text-base text-foreground">
                       Assistenten är klar
                     </p>
-                    <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed">
+                    <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-2 leading-relaxed">
                       Du kan börja chatta direkt. Justera tonalitet och kunskap i Inställningar &gt; Assistentens minne.
                     </p>
                   </div>
@@ -304,10 +305,10 @@ export default function NewUserChecklist({
             ) : (
               <Link
                 href="/onboarding/agent"
-                className="group block p-4 sm:p-5 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/[0.02] transition-colors duration-150"
+                className="group block p-4 sm:p-6 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/[0.02] transition-colors duration-150"
               >
                 <div className="flex items-start gap-3 sm:gap-4">
-                  <div className="p-2 sm:p-2.5 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
+                  <div className="p-2 sm:p-3 rounded-lg bg-muted/60 group-hover:bg-primary/[0.08] transition-colors flex-shrink-0">
                     <MessageCircle className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground group-hover:text-primary transition-colors" />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -317,7 +318,7 @@ export default function NewUserChecklist({
                       </p>
                       <Badge variant="secondary" className="uppercase tracking-wider">Beta</Badge>
                     </div>
-                    <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-1.5 leading-relaxed">
+                    <p className="text-xs sm:text-sm text-muted-foreground mt-1 sm:mt-2 leading-relaxed">
                       Några frågor om din verksamhet kalibrerar tonalitet, signatur och vad assistenten kan. Ju mer du delar, desto bättre förstår den dig.
                     </p>
                   </div>
@@ -328,22 +329,20 @@ export default function NewUserChecklist({
           </div>
         </div>
 
-        {/* Escape hatch */}
-        <div className="space-y-5">
+        {/* Escape hatch — a visible secondary action, not a muted ghost link,
+            so users with nothing to import can clearly choose to start fresh. */}
+        <div className="space-y-6">
           <div className="flex items-center gap-4">
-            <div className="flex-1 h-px bg-border/60" />
+            <div className="flex-1 h-px bg-border" />
             <span className="text-xs text-muted-foreground">{t('or_separator')}</span>
-            <div className="flex-1 h-px bg-border/60" />
+            <div className="flex-1 h-px bg-border" />
           </div>
 
-          <div className="text-center">
-            <button
-              onClick={onFreshStart}
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1.5 group"
-            >
+          <div className="flex justify-center">
+            <Button variant="outline" onClick={onFreshStart} className="group">
               {t('fresh_start')}
-              <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
-            </button>
+              <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
+            </Button>
           </div>
 
           <div className="flex items-center justify-center gap-2 pt-2">

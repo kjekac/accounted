@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PageHeader } from '@/components/ui/page-header'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   DataList,
   DataListRow,
@@ -244,12 +245,12 @@ export default function InvoicesPage() {
       <DataList>
         {isLoading ? (
           [1, 2, 3].map((i) => (
-            <div key={i} className="flex items-center gap-3 px-4 py-3 animate-pulse">
+            <div key={i} className="flex items-center gap-3 px-4 py-3">
               <div className="flex-1 space-y-2">
-                <div className="h-4 w-32 rounded bg-muted" />
-                <div className="h-3 w-48 rounded bg-muted" />
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-3 w-48" />
               </div>
-              <div className="h-5 w-24 rounded bg-muted" />
+              <Skeleton className="h-5 w-24" />
             </div>
           ))
         ) : filteredInvoices.length === 0 ? (

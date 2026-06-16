@@ -3,9 +3,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
+import { Skeleton } from '@/components/ui/skeleton'
 import { AccountNumber } from '@/components/ui/account-number'
 import { AlertCircle, ChevronDown, ChevronRight, Link2, Unlink, Play, Eye, EyeOff, PiggyBank, MoreHorizontal } from 'lucide-react'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -543,8 +545,9 @@ export function BankReconciliationView() {
   if (loading) {
     return (
       <Card>
-        <CardContent className="p-8 text-center text-muted-foreground">
-          Laddar bankavstämning...
+        <CardContent className="p-6 space-y-3">
+          <Skeleton className="h-5 w-48" />
+          <Skeleton className="h-24 w-full" />
         </CardContent>
       </Card>
     )
@@ -577,12 +580,12 @@ export function BankReconciliationView() {
 
       {/* Status Card */}
       {status && (
-        <Card className="border-2">
+        <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle>Avstämning mot <AccountNumber number={accountNumber} /></CardTitle>
               {status.is_reconciled ? (
-                <Badge className="bg-success/10 text-success">Avstämd</Badge>
+                <Badge variant="success">Avstämd</Badge>
               ) : (
                 <Badge variant="destructive">Ej avstämd</Badge>
               )}
@@ -595,11 +598,11 @@ export function BankReconciliationView() {
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <span>Banktransaktioner i perioden</span>
-                <span className="font-mono">{formatCurrency(status.bank_transaction_total)}</span>
+                <span className="tabular-nums">{formatCurrency(status.bank_transaction_total)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Bokfört på <AccountNumber number={accountNumber} /> i perioden</span>
-                <span className="font-mono">
+                <span className="tabular-nums">
                   {formatCurrency(status.gl_1930_period_movement)}
                 </span>
               </div>
@@ -612,14 +615,14 @@ export function BankReconciliationView() {
               {status.gl_1930_opening_balance !== 0 && (
                 <p className="pt-2 text-xs text-muted-foreground">
                   Ingående balans (IB) på <AccountNumber number={accountNumber} />:{' '}
-                  <span className="font-mono">{formatCurrency(status.gl_1930_opening_balance)}</span>
+                  <span className="tabular-nums">{formatCurrency(status.gl_1930_opening_balance)}</span>
                   {' '}— räknas inte i avstämningen.
                 </p>
               )}
               {status.gl_1930_correction_adjustment !== 0 && (
                 <p className="pt-2 text-xs text-muted-foreground">
                   Varav rättelser och stornon på <AccountNumber number={accountNumber} /> i perioden:{' '}
-                  <span className="font-mono">{formatCurrency(status.gl_1930_correction_adjustment)}</span>
+                  <span className="tabular-nums">{formatCurrency(status.gl_1930_correction_adjustment)}</span>
                   {' '}— ingår i det bokförda beloppet och i avstämningen, precis som i balansräkningen.
                 </p>
               )}
@@ -643,20 +646,20 @@ export function BankReconciliationView() {
             />
             <div>
               <Label>Datum från</Label>
-              <input
+              <Input
                 type="date"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
-                className="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                className="mt-1"
               />
             </div>
             <div>
               <Label>Datum till</Label>
-              <input
+              <Input
                 type="date"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
-                className="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                className="mt-1"
               />
             </div>
             <Button onClick={fetchAll} variant="outline">
@@ -703,7 +706,7 @@ export function BankReconciliationView() {
                   <tr key={m.transaction_id} className="border-b last:border-0">
                     <td className="py-2 truncate max-w-[180px]">{m.transaction_description}</td>
                     <td className="py-2 tabular-nums">{formatDate(m.transaction_date)}</td>
-                    <td className="py-2 text-right font-mono">{formatAmount(m.transaction_amount)}</td>
+                    <td className="py-2 text-right tabular-nums">{formatAmount(m.transaction_amount)}</td>
                     <td className="py-2 text-center text-muted-foreground">&harr;</td>
                     <td className="py-2">
                       <span className="font-mono text-xs">{formatVoucher(m)}</span>
@@ -940,7 +943,7 @@ export function BankReconciliationView() {
                       <td className="py-2 truncate max-w-[300px]">
                         {line.line_description || line.entry_description}
                       </td>
-                      <td className="py-2 text-right font-mono">
+                      <td className="py-2 text-right tabular-nums">
                         {formatCurrency(amount)}
                       </td>
                       <td className="py-2 text-xs text-muted-foreground">{line.source_type}</td>
@@ -1008,7 +1011,7 @@ export function BankReconciliationView() {
                       <td className="py-2 text-xs">
                         <Badge variant="outline" className="text-xs">{tx.currency}</Badge>
                       </td>
-                      <td className="py-2 text-right font-mono">
+                      <td className="py-2 text-right tabular-nums">
                         {formatCurrency(tx.amount)}
                       </td>
                       <td className="py-2">
@@ -1065,7 +1068,7 @@ export function BankReconciliationView() {
                     <tr key={tx.id} className="border-b last:border-0">
                       <td className="py-2">{tx.date}</td>
                       <td className="py-2 truncate max-w-[300px]">{tx.description}</td>
-                      <td className="py-2 text-right font-mono">
+                      <td className="py-2 text-right tabular-nums">
                         {formatCurrency(tx.amount)}
                       </td>
                       <td className="py-2">
