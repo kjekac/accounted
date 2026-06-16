@@ -14,6 +14,7 @@ import { formatCurrency, formatDate, cn } from '@/lib/utils'
 import { getVatTreatmentLabel } from '@/lib/invoices/vat-rules'
 import { invoiceDisplayNumber } from '@/lib/invoices/display'
 import { getDisplayTotal } from '@/lib/invoices/rounding'
+import { isEditableInvoiceDraft } from '@/lib/invoices/is-editable-draft'
 import {
   Loader2,
   ArrowLeft,
@@ -31,6 +32,7 @@ import {
   Trash2,
   Lock,
   CalendarClock,
+  Pencil,
 } from 'lucide-react'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import PaymentBookingDialog from '@/components/invoices/PaymentBookingDialog'
@@ -519,6 +521,10 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   // Self-billing invoices we received: the document is the counterparty's, so
   // there is no own PDF to render and no send step — it arrives already booked.
   const isSelfBilled = !!invoice.is_self_billed
+  // A draft (no committed verifikat, not sent, not self-billed) can be edited
+  // in place — header + lines — via /invoices/{id}/edit. Sent/paid invoices are
+  // immutable (BFL); they are corrected with a credit note instead.
+  const isEditableDraft = isEditableInvoiceDraft(invoice)
   const hasAccruedItems = invoice.items.some(itemHasAccrual)
   return (
     <div className="space-y-8">
@@ -559,6 +565,14 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
 
         {/* Actions */}
         <div className="flex flex-wrap items-center gap-2">
+          {isEditableDraft && canWrite && (
+            <Link href={`/invoices/${invoice.id}/edit`}>
+              <Button variant="outline">
+                <Pencil className="mr-2 h-4 w-4" />
+                {t('edit_draft')}
+              </Button>
+            </Link>
+          )}
           {isProforma && invoice.status !== 'cancelled' && (
             <Button
               onClick={convertToInvoice}

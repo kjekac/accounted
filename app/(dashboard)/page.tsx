@@ -81,7 +81,7 @@ export default async function DashboardPage() {
       .eq('journal_entry.status', 'posted')
       .eq('journal_entry.company_id', companyId)
       .gte('journal_entry.entry_date', startOfYearStr),
-    supabase.from('invoices').select('total, total_sek, vat_amount, vat_amount_sek, status').eq('company_id', companyId).in('status', ['sent', 'overdue']).is('credited_invoice_id', null),
+    supabase.from('invoices').select('total, total_sek, vat_amount, vat_amount_sek, status, ore_rounding').eq('company_id', companyId).in('status', ['sent', 'overdue']).is('credited_invoice_id', null),
     supabase.from('bank_connections').select('id, accounts_data, status, consent_expires, bank_name').eq('company_id', companyId).eq('status', 'active'),
     supabase.from('deadlines').select('*, customer:customers(id, name)').eq('company_id', companyId).eq('is_completed', false)
       .or(`due_date.lt.${today},due_date.lte.${nextWeek}`).order('due_date', { ascending: true }),
@@ -191,7 +191,7 @@ export default async function DashboardPage() {
   // total matches what the user sees on the invoice list when the setting is on.
   const unpaidTotal = (unpaidInvoices || []).reduce(
     (sum, inv) => sum + getDisplayTotal(
-      { total: Number(inv.total_sek || inv.total), currency: 'SEK' },
+      { total: Number(inv.total_sek || inv.total), currency: 'SEK', ore_rounding: inv.ore_rounding },
       settings,
     ).displayed,
     0

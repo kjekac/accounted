@@ -38,6 +38,21 @@ vi.mock('@/lib/bookkeeping/transaction-entries', () => ({
     mockCreateTransactionJournalEntry(...args),
 }))
 
+// Booking-time duplicate guard — mocked to "no duplicate" by default so these
+// tests exercise categorization, not the guard. The detection query is
+// unit-tested in lib/transactions/__tests__/booking-duplicate-detection.test.ts.
+const mockDetectDup = vi.fn()
+vi.mock('@/lib/transactions/booking-duplicate-detection', () => ({
+  detectBookedDuplicateTransaction: (...args: unknown[]) => mockDetectDup(...args),
+}))
+
+// Behandlingshistorik append — mocked so we can assert the dismissal is
+// persisted without reaching the service-role client.
+const mockAppendProcessingHistory = vi.fn()
+vi.mock('@/lib/processing-history/append', () => ({
+  appendProcessingHistory: (...args: unknown[]) => mockAppendProcessingHistory(...args),
+}))
+
 const mockSaveUserMappingRule = vi.fn()
 vi.mock('@/lib/bookkeeping/mapping-engine', () => ({
   saveUserMappingRule: (...args: unknown[]) => mockSaveUserMappingRule(...args),
@@ -96,6 +111,9 @@ describe('POST /api/transactions/[id]/categorize', () => {
     // Default: every mapped account exists and is active. Tests covering the
     // missing-account path override this per-case.
     mockFindMissingActiveAccounts.mockResolvedValue([])
+    // Default: no booking-time duplicate. The dedicated guard test overrides this.
+    mockDetectDup.mockResolvedValue(null)
+    mockAppendProcessingHistory.mockResolvedValue('evt-1')
   })
 
   it('returns 401 when not authenticated', async () => {
@@ -584,6 +602,84 @@ describe('POST /api/transactions/[id]/categorize', () => {
     expect(status).toBe(200)
     expect(body.success).toBe(true)
     expect(body.journal_entry_id).toBe('je-1')
+  })
+
+  it('warns (409) and books nothing when a booked sibling shares date+amount', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: -500, journal_entry_id: null })
+    enqueue({ data: tx, error: null }) // fetch — guard runs right after, before any booking work
+
+    mockDetectDup.mockResolvedValue({
+      transaction_id: '660e8400-e29b-41d4-a716-446655440111',
+      journal_entry_id: 'je-existing',
+      voucher_label: 'A142',
+      entry_date: '2025-01-15',
+      description: 'redan bokförd',
+      amount: -500,
+    })
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: { is_business: true, category: 'income_services', confirm_no_match: true },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{
+      error: { code: string; details: { candidate: { voucher_label: string } } }
+    }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('TRANSACTION_BOOK_POSSIBLE_DUPLICATE')
+    expect(body.error.details.candidate.voucher_label).toBe('A142')
+    // The duplicate guard fires before any verifikat is created.
+    expect(mockCreateTransactionJournalEntry).not.toHaveBeenCalled()
+    // Blocking a duplicate is not a dismissal — nothing is logged.
+    expect(mockAppendProcessingHistory).not.toHaveBeenCalled()
+  })
+
+  it('persists a behandlingshistorik event when force=true dismisses a duplicate', async () => {
+    const SIBLING_UUID = '660e8400-e29b-41d4-a716-446655440111'
+    const tx = makeTransaction({ id: 'tx-1', amount: -500, merchant_name: 'GitHub', journal_entry_id: null })
+
+    enqueue({ data: tx, error: null }) // fetch
+    enqueue({ data: { entity_type: 'enskild_firma', fiscal_year_start_month: 1 }, error: null }) // settings
+    enqueue({ data: [{ id: 'period-1' }], error: null }) // ensureFiscalPeriod existing check
+    mockCreateTransactionJournalEntry.mockResolvedValue({ id: 'je-1' })
+    mockSaveUserMappingRule.mockResolvedValue(undefined)
+    enqueue({ data: [{ id: 'tx-1' }], error: null }) // tx update (CAS matched)
+
+    mockDetectDup.mockResolvedValue({
+      transaction_id: SIBLING_UUID,
+      journal_entry_id: 'je-existing',
+      voucher_label: 'A142',
+      entry_date: '2025-01-15',
+      description: null,
+      amount: -500,
+    })
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: {
+        is_business: true,
+        category: 'expense_software',
+        force: true,
+        expected_duplicate_transaction_id: SIBLING_UUID,
+      },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ success: boolean; journal_entry_created: boolean }>(response)
+
+    expect(status).toBe(200)
+    expect(body.success).toBe(true)
+    expect(body.journal_entry_created).toBe(true)
+    // The dismissal is recorded to behandlingshistorik (BFNAR 2013:2 kap 8).
+    expect(mockAppendProcessingHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'BankTransactionDuplicateDismissed',
+        aggregateType: 'BankTransaction',
+        aggregateId: 'tx-1',
+        actor: { type: 'user', id: 'user-1' },
+        payload: expect.objectContaining({ dismissed_transaction_id: SIBLING_UUID }),
+      }),
+    )
   })
 
   it('categorizes as private when is_business is false', async () => {

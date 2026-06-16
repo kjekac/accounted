@@ -22,6 +22,7 @@ import {
   // Invoice schemas
   CreateInvoiceItemSchema,
   CreateInvoiceSchema,
+  UpdateInvoiceSchema,
   CreateCreditNoteSchema,
   MarkInvoicePaidSchema,
   // Customer schemas
@@ -379,6 +380,33 @@ describe('CreateInvoiceSchema', () => {
       items: [validInvoiceItem({ unit_price: -100 })],
     }))
     expect(result.success).toBe(true)
+  })
+})
+
+describe('UpdateInvoiceSchema', () => {
+  it('accepts a valid update body', () => {
+    const result = UpdateInvoiceSchema.safeParse(validInvoice())
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects an empty items array', () => {
+    const result = UpdateInvoiceSchema.safeParse(validInvoice({ items: [] }))
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects an invalid item shape', () => {
+    const result = UpdateInvoiceSchema.safeParse(validInvoice({
+      items: [validInvoiceItem({ description: '' })],
+    }))
+    expect(result.success).toBe(false)
+  })
+
+  it('drops save_as_draft — editing a draft never re-creates it', () => {
+    const result = UpdateInvoiceSchema.safeParse(validInvoice({ save_as_draft: true }))
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).not.toHaveProperty('save_as_draft')
+    }
   })
 })
 

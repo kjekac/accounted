@@ -32,9 +32,26 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
   createJournalEntry: (...args: unknown[]) => mockCreateJournalEntry(...args),
 }))
 
+// Booking-time duplicate guard — mocked so route tests exercise the WIRING
+// (warn / force / mismatch); the detection query itself is unit-tested in
+// lib/transactions/__tests__/booking-duplicate-detection.test.ts.
+const mockDetectDup = vi.fn()
+vi.mock('@/lib/transactions/booking-duplicate-detection', () => ({
+  detectBookedDuplicateTransaction: (...args: unknown[]) => mockDetectDup(...args),
+}))
+
+// Behandlingshistorik append — mocked so we can assert the dismissal is
+// persisted without reaching the service-role client.
+const mockAppendProcessingHistory = vi.fn()
+vi.mock('@/lib/processing-history/append', () => ({
+  appendProcessingHistory: (...args: unknown[]) => mockAppendProcessingHistory(...args),
+}))
+
 import { POST } from '../route'
 
 const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000'
+const SIBLING_UUID = '660e8400-e29b-41d4-a716-446655440111'
+const OTHER_UUID = '770e8400-e29b-41d4-a716-446655440222'
 
 describe('POST /api/transactions/[id]/book', () => {
   const mockUser = { id: 'user-1', email: 'test@test.se' }
@@ -53,6 +70,9 @@ describe('POST /api/transactions/[id]/book', () => {
     reset()
     eventBus.clear()
     mockSupabase.auth.getUser.mockResolvedValue({ data: { user: mockUser } })
+    // No booking-duplicate by default; guard tests override per-case.
+    mockDetectDup.mockResolvedValue(null)
+    mockAppendProcessingHistory.mockResolvedValue('evt-1')
   })
 
   it('returns 401 when not authenticated', async () => {
@@ -196,5 +216,111 @@ describe('POST /api/transactions/[id]/book', () => {
 
     expect(status).toBe(500)
     expect(body.error).toBe('Failed to update transaction')
+  })
+
+  // ── Booking-time duplicate guard ──────────────────────────────────────
+
+  it('returns 409 duplicate warning when a booked sibling shares date+amount', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: -500, journal_entry_id: null })
+    enqueue({ data: tx, error: null }) // fetch
+    mockDetectDup.mockResolvedValue({
+      transaction_id: SIBLING_UUID,
+      journal_entry_id: 'je-existing',
+      voucher_label: 'A142',
+      entry_date: '2025-01-15',
+      description: 'redan bokförd',
+      amount: -500,
+    })
+
+    const request = createMockRequest('/api/transactions/tx-1/book', { method: 'POST', body: validBody })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{
+      error: { code: string; details: { candidate: { transaction_id: string; voucher_label: string } } }
+    }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('TRANSACTION_BOOK_POSSIBLE_DUPLICATE')
+    expect(body.error.details.candidate.transaction_id).toBe(SIBLING_UUID)
+    expect(body.error.details.candidate.voucher_label).toBe('A142')
+    // Critically: no verifikat is created when a duplicate is flagged.
+    expect(mockCreateJournalEntry).not.toHaveBeenCalled()
+    // Blocking a duplicate is not a dismissal — nothing is logged.
+    expect(mockAppendProcessingHistory).not.toHaveBeenCalled()
+  })
+
+  it('books when force=true and the expected sibling still matches', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: -500, journal_entry_id: null })
+    const je = makeJournalEntry({ id: 'je-new' })
+    enqueue({ data: tx, error: null }) // fetch
+    enqueue({ data: null, error: null }) // update
+    mockDetectDup.mockResolvedValue({
+      transaction_id: SIBLING_UUID,
+      journal_entry_id: 'je-existing',
+      voucher_label: 'A142',
+      entry_date: '2025-01-15',
+      description: null,
+      amount: -500,
+    })
+    mockCreateJournalEntry.mockResolvedValue(je)
+
+    const request = createMockRequest('/api/transactions/tx-1/book', {
+      method: 'POST',
+      body: { ...validBody, force: true, expected_duplicate_transaction_id: SIBLING_UUID },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ success: boolean; journal_entry_id: string }>(response)
+
+    expect(status).toBe(200)
+    expect(body.success).toBe(true)
+    expect(body.journal_entry_id).toBe('je-new')
+    expect(mockCreateJournalEntry).toHaveBeenCalledTimes(1)
+    // The dismissal is recorded to behandlingshistorik (BFNAR 2013:2 kap 8).
+    expect(mockAppendProcessingHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'BankTransactionDuplicateDismissed',
+        aggregateType: 'BankTransaction',
+        aggregateId: 'tx-1',
+        actor: { type: 'user', id: 'user-1' },
+        payload: expect.objectContaining({
+          transaction_id: 'tx-1',
+          dismissed_transaction_id: SIBLING_UUID,
+        }),
+      }),
+    )
+  })
+
+  it('rejects force=true when the expected sibling no longer matches the detected one', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: -500, journal_entry_id: null })
+    enqueue({ data: tx, error: null }) // fetch
+    mockDetectDup.mockResolvedValue({
+      transaction_id: SIBLING_UUID, // server detects this one…
+      journal_entry_id: 'je-existing',
+      voucher_label: 'A142',
+      entry_date: '2025-01-15',
+      description: null,
+      amount: -500,
+    })
+
+    const request = createMockRequest('/api/transactions/tx-1/book', {
+      method: 'POST',
+      body: { ...validBody, force: true, expected_duplicate_transaction_id: OTHER_UUID }, // …caller claims another
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('TRANSACTION_BOOK_FORCE_CANDIDATE_MISMATCH')
+    expect(mockCreateJournalEntry).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 when force=true is sent without expected_duplicate_transaction_id', async () => {
+    const request = createMockRequest('/api/transactions/tx-1/book', {
+      method: 'POST',
+      body: { ...validBody, force: true },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status } = await parseJsonResponse<{ error: string }>(response)
+
+    expect(status).toBe(400)
   })
 })

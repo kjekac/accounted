@@ -285,6 +285,20 @@ const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
 // ─────────────────────────────────────────────────────────────────
 
 const TRANSACTIONS: Record<string, StructuredErrorEntry> = {
+  TRANSACTION_BOOK_POSSIBLE_DUPLICATE: {
+    httpStatus: 409,
+    message_sv:
+      'En annan transaktion på samma datum och belopp är redan bokförd. Det här ser ut som en dubblett — bokför inte samma affärshändelse två gånger. Granska den befintliga verifikationen, eller bokför ändå om transaktionerna inte hör ihop.',
+    message_en:
+      'Another transaction with the same date and amount is already booked. This looks like a duplicate — do not book the same business event twice. Review the existing voucher, or pass force=true to book it anyway if they are genuinely unrelated.',
+  },
+  TRANSACTION_BOOK_FORCE_CANDIDATE_MISMATCH: {
+    httpStatus: 409,
+    message_sv:
+      'Den möjliga dubbletten som visades matchar inte längre. Ladda om och försök igen så att rätt transaktion visas.',
+    message_en:
+      'The duplicate transaction echoed in expected_duplicate_transaction_id no longer matches the one detected at request time. Re-run the booking pre-flight to obtain the current candidate, then retry.',
+  },
   TX_CATEGORIZE_TX_NOT_FOUND: {
     httpStatus: 404,
     message_sv: 'Transaktionen kunde inte hittas.',
@@ -2391,6 +2405,16 @@ const BOLAGSVERKET: Record<string, StructuredErrorEntry> = {
   },
 }
 
+const ASSETS: Record<string, StructuredErrorEntry> = {
+  ASSET_CORRECTION_BLOCKED: {
+    httpStatus: 409,
+    message_sv:
+      'Anskaffningsdatum, anskaffningsvärde och kategori kan inte ändras efter att tillgången avyttrats eller avskrivningar bokförts. Återför (storno) först, eller använd avyttringsflödet.',
+    message_en:
+      'Acquisition date, cost and category cannot be changed once the asset has been disposed or depreciation has been posted. Reverse (storno) first, or use the disposal flow.',
+  },
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Combined registry
 // ─────────────────────────────────────────────────────────────────
@@ -2433,6 +2457,7 @@ const REGISTRY: Record<string, StructuredErrorEntry> = {
   ...PROVIDER,
   ...SKATTEVERKET,
   ...BOLAGSVERKET,
+  ...ASSETS,
 }
 
 export function getErrorEntry(code: string): StructuredErrorEntry | undefined {

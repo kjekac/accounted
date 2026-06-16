@@ -6,6 +6,8 @@ import Link from 'next/link'
 import { useLocale, useTranslations } from 'next-intl'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Sun, Moon, Monitor, LogOut, Languages, ExternalLink } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { createClient } from '@/lib/supabase/client'
@@ -30,8 +32,55 @@ export function AccountSettingsContent() {
   const tCommon = useTranslations('common')
   const tSettings = useTranslations('settings')
   const [savingLocale, setSavingLocale] = useState(false)
+  const [fullName, setFullName] = useState('')
+  const [initialName, setInitialName] = useState('')
+  const [nameLoading, setNameLoading] = useState(true)
+  const [savingName, setSavingName] = useState(false)
 
   useEffect(() => { setMounted(true) }, [])
+
+  // Pre-fill the name field from profiles.full_name. Self-contained client
+  // fetch — mirrors BankIdSettings.
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) { if (active) setNameLoading(false); return }
+      const { data } = await supabase
+        .from('profiles')
+        .select('full_name')
+        .eq('id', user.id)
+        .maybeSingle()
+      if (!active) return
+      setFullName(data?.full_name ?? '')
+      setInitialName(data?.full_name ?? '')
+      setNameLoading(false)
+    })()
+    return () => { active = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function handleSaveName() {
+    const trimmed = fullName.trim()
+    if (!trimmed || trimmed === initialName || savingName) return
+    setSavingName(true)
+    try {
+      const res = await fetch('/api/user/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: trimmed }),
+      })
+      if (!res.ok) throw new Error('Could not save')
+      setFullName(trimmed)
+      setInitialName(trimmed)
+      toast({ title: tSettings('name_saved') })
+      router.refresh()
+    } catch {
+      toast({ title: tSettings('name_save_failed'), variant: 'destructive' })
+    } finally {
+      setSavingName(false)
+    }
+  }
 
   async function handleLogout() {
     clearRecaptIdentity()
@@ -68,8 +117,39 @@ export function AccountSettingsContent() {
 
   return (
     <div className="space-y-8">
-      {/* Appearance */}
+      {/* Name */}
       <section className="space-y-4">
+        <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+          {tSettings('section_name')}
+        </h2>
+        <p className="text-sm text-muted-foreground max-w-md">
+          {tSettings('name_description')}
+        </p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex-1 space-y-2 sm:max-w-sm">
+            <Label htmlFor="full_name">{tSettings('name_label')}</Label>
+            <Input
+              id="full_name"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder={tSettings('name_placeholder')}
+              disabled={nameLoading || savingName}
+              maxLength={100}
+            />
+          </div>
+          <Button
+            onClick={handleSaveName}
+            disabled={
+              nameLoading || savingName || !fullName.trim() || fullName.trim() === initialName
+            }
+          >
+            {savingName ? tCommon('saving') : tCommon('save')}
+          </Button>
+        </div>
+      </section>
+
+      {/* Appearance */}
+      <section className="space-y-4 border-t border-border pt-8">
         <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
           {tSettings('section_appearance')}
         </h2>

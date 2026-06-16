@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { PageHeader } from '@/components/ui/page-header'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Package, Plus } from 'lucide-react'
+import { Package, Pencil, Plus } from 'lucide-react'
 import {
   Table,
   TableBody,
@@ -22,6 +22,10 @@ import {
 import { formatCurrency, formatDate } from '@/lib/utils'
 import type { Asset, AssetCategory } from '@/types'
 import { CreateAssetDialog } from '@/components/bookkeeping/assets/CreateAssetDialog'
+import { EditAssetDialog } from '@/components/bookkeeping/assets/EditAssetDialog'
+
+/** GET /api/assets annotates each row with whether depreciation has posted. */
+type AssetRow = Asset & { has_posted_depreciation?: boolean }
 
 const CATEGORY_LABEL_KEYS: Record<AssetCategory, string> = {
   immaterial: 'category_immaterial',
@@ -36,9 +40,10 @@ const CATEGORY_LABEL_KEYS: Record<AssetCategory, string> = {
 
 export default function AssetsPage() {
   const t = useTranslations('assets')
-  const [assets, setAssets] = useState<Asset[] | null>(null)
+  const [assets, setAssets] = useState<AssetRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [editing, setEditing] = useState<AssetRow | null>(null)
 
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -51,7 +56,7 @@ export default function AssetsPage() {
           setError(t('load_failed'))
           return
         }
-        const { data } = (await res.json()) as { data: Asset[] }
+        const { data } = (await res.json()) as { data: AssetRow[] }
         if (cancelled) return
         setError(null)
         setAssets(data)
@@ -66,6 +71,11 @@ export default function AssetsPage() {
 
   const handleCreated = useCallback(() => {
     setDialogOpen(false)
+    setReloadKey((k) => k + 1)
+  }, [])
+
+  const handleSaved = useCallback(() => {
+    setEditing(null)
     setReloadKey((k) => k + 1)
   }, [])
 
@@ -150,11 +160,21 @@ export default function AssetsPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         {!asset.disposed_at && (
-                          <Link href={`/assets/${asset.id}/dispose`}>
-                            <Button variant="ghost" size="sm">
-                              {t('action_dispose')}
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setEditing(asset)}
+                            >
+                              <Pencil className="mr-1 h-4 w-4" />
+                              {t('action_edit')}
                             </Button>
-                          </Link>
+                            <Link href={`/assets/${asset.id}/dispose`}>
+                              <Button variant="ghost" size="sm">
+                                {t('action_dispose')}
+                              </Button>
+                            </Link>
+                          </div>
                         )}
                       </TableCell>
                     </TableRow>
@@ -167,6 +187,18 @@ export default function AssetsPage() {
       )}
 
       <CreateAssetDialog open={dialogOpen} onOpenChange={setDialogOpen} onCreated={handleCreated} />
+
+      {editing && (
+        <EditAssetDialog
+          key={editing.id}
+          asset={editing}
+          open={editing !== null}
+          onOpenChange={(open) => {
+            if (!open) setEditing(null)
+          }}
+          onSaved={handleSaved}
+        />
+      )}
     </div>
   )
 }

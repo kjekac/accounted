@@ -138,11 +138,42 @@ export async function getAsset(
   return (data as Asset | null) ?? null
 }
 
+/**
+ * Thrown when the caller tries to correct an asset's acquisition basis
+ * (date / cost / category) after that basis has already driven postings —
+ * i.e. the asset is disposed, or planenliga avskrivningar have been booked.
+ * Allowing the edit would silently desync the posted vouchers from the
+ * register, so the caller must reverse/storno first. The `code` field is
+ * read by errorResponse() (see lib/errors/structured-errors.ts) to map this
+ * to a 409.
+ */
+export class AssetCorrectionBlockedError extends Error {
+  readonly code = 'ASSET_CORRECTION_BLOCKED'
+  constructor(readonly reason: 'disposed' | 'depreciation_posted') {
+    super(
+      reason === 'disposed'
+        ? 'Cannot correct acquisition date/cost/category of a disposed asset — reverse the disposal first.'
+        : 'Cannot correct acquisition date/cost/category after depreciation has been posted — reverse the depreciation (storno) first.',
+    )
+    this.name = 'AssetCorrectionBlockedError'
+  }
+}
+
 export interface UpdateAssetInput {
   name?: string
   notes?: string | null
+  /** "Correction" fields — they redefine the depreciation basis, so changing
+   *  them implies the original entry was wrong. Only permitted while the asset
+   *  is neither disposed nor depreciated (updateAsset() enforces; throws
+   *  AssetCorrectionBlockedError otherwise). Use the disposal/storno flow for a
+   *  real change to an already-depreciated asset. */
+  category?: AssetCategory
+  acquisition_date?: string
+  acquisition_cost?: number
   /** Salvage value, useful life, method, accounts — editable as long as the
-   *  asset isn't disposed yet (DB trigger enforces this beyond the API). */
+   *  asset isn't disposed yet (DB trigger enforces this beyond the API).
+   *  Unlike the correction fields above, revising useful life or method is a
+   *  legitimate *prospective* change and stays allowed after depreciation. */
   salvage_value?: number
   useful_life_months?: number
   depreciation_method?: DepreciationMethod
@@ -158,6 +189,85 @@ export interface UpdateAssetInput {
   k3_components?: K3Component[] | null
 }
 
+/**
+ * True when at least one depreciation_schedules row for this asset is linked
+ * to a posted journal entry. A `head` count keeps it cheap — we only need
+ * existence, not the rows. Used to gate acquisition-basis corrections.
+ */
+async function hasPostedDepreciation(
+  supabase: SupabaseClient,
+  companyId: string,
+  assetId: string,
+): Promise<boolean> {
+  const { count, error } = await supabase
+    .from('depreciation_schedules')
+    .select('id', { count: 'exact', head: true })
+    .eq('company_id', companyId)
+    .eq('asset_id', assetId)
+    .not('journal_entry_id', 'is', null)
+  if (error) {
+    throw new Error(
+      `Failed to check posted depreciation for asset ${assetId}: ${error.message}`,
+    )
+  }
+  return (count ?? 0) > 0
+}
+
+/**
+ * Catch depreciation that was posted by hand (a manual avskrivningsverifikat),
+ * which leaves no depreciation_schedules row and so slips past
+ * hasPostedDepreciation. We look at the ledger instead: any posted CREDIT to
+ * the asset's ackumulerade-avskrivningar account (12x9) is depreciation.
+ *
+ * The wrinkle is shared accounts — siblings in the same category default to
+ * the same 12x9, so a sibling's *engine* avskrivning would otherwise look like
+ * depreciation of this asset. We exclude entries that depreciation_schedules
+ * attributes to a *different* asset, so engine siblings don't cause a false
+ * block. What remains is depreciation tied to this asset (engine or manual)
+ * plus the rare case of a manual sibling entry on a shared account — there we
+ * err toward blocking, which is the safe direction for a basis correction.
+ */
+async function hasManualDepreciationPosted(
+  supabase: SupabaseClient,
+  companyId: string,
+  asset: Asset,
+): Promise<boolean> {
+  // Engine-posted depreciation entries that belong to OTHER assets — these are
+  // safely attributable and must not block a correction of this asset.
+  const { data: otherSched, error: schedError } = await supabase
+    .from('depreciation_schedules')
+    .select('journal_entry_id')
+    .eq('company_id', companyId)
+    .neq('asset_id', asset.id)
+    .not('journal_entry_id', 'is', null)
+  if (schedError) {
+    throw new Error(
+      `Failed to load sibling depreciation entries for asset ${asset.id}: ${schedError.message}`,
+    )
+  }
+  const siblingEngineEntries = new Set(
+    ((otherSched ?? []) as { journal_entry_id: string | null }[])
+      .map((r) => r.journal_entry_id)
+      .filter((id): id is string => id !== null),
+  )
+
+  const { data: lines, error } = await supabase
+    .from('journal_entry_lines')
+    .select('journal_entry_id, journal_entries!inner(company_id, status)')
+    .eq('account_number', asset.bas_accumulated_account)
+    .eq('journal_entries.company_id', companyId)
+    .eq('journal_entries.status', 'posted')
+    .gt('credit_amount', 0)
+  if (error) {
+    throw new Error(
+      `Failed to scan ledger depreciation for asset ${asset.id}: ${error.message}`,
+    )
+  }
+  return ((lines ?? []) as { journal_entry_id: string }[]).some(
+    (line) => !siblingEngineEntries.has(line.journal_entry_id),
+  )
+}
+
 export async function updateAsset(
   supabase: SupabaseClient,
   companyId: string,
@@ -166,21 +276,85 @@ export async function updateAsset(
 ): Promise<Asset> {
   // Copy so we can adjust restvarde_target without mutating the caller's object.
   let input: UpdateAssetInput = { ...inputParam }
-  // Defense-in-depth: when callers remap BAS accounts, refuse anything
-  // outside the legitimate range for the existing asset's category — keeps
-  // INK2R mappings + the depreciation engine's category-driven defaults in
-  // sync with what users actually pick.
+
+  // Almost every meaningful patch needs the current row (range checks, the
+  // method/target biconditional, the correction guard). Load it once.
+  const needsExisting =
+    input.category !== undefined ||
+    input.acquisition_date !== undefined ||
+    input.acquisition_cost !== undefined ||
+    input.depreciation_method !== undefined ||
+    input.restvarde_target !== undefined ||
+    input.bas_asset_account !== undefined ||
+    input.bas_accumulated_account !== undefined ||
+    input.bas_expense_account !== undefined
+  let existing: Asset | null = null
+  if (needsExisting) {
+    existing = await getAsset(supabase, companyId, assetId)
+    if (!existing) throw new Error('Asset not found')
+  }
+
+  // ── Correction guard ──────────────────────────────────────────────
+  // acquisition_date / acquisition_cost / category redefine the depreciation
+  // basis. Correcting a fresh data-entry mistake is safe, but once the basis
+  // has driven postings (disposal voucher or booked avskrivningar) the edit
+  // would silently desync those vouchers from the register. Force those cases
+  // through reverse/storno instead.
+  const isCorrection =
+    input.category !== undefined ||
+    input.acquisition_date !== undefined ||
+    input.acquisition_cost !== undefined
+  if (isCorrection && existing) {
+    if (existing.disposed_at) {
+      throw new AssetCorrectionBlockedError('disposed')
+    }
+    // Engine-driven (depreciation_schedules) OR hand-posted (ledger) — either
+    // means the basis has driven postings and a correction must go via storno.
+    if (
+      (await hasPostedDepreciation(supabase, companyId, assetId)) ||
+      (await hasManualDepreciationPosted(supabase, companyId, existing))
+    ) {
+      throw new AssetCorrectionBlockedError('depreciation_posted')
+    }
+  }
+
+  // ── Category change → realign BAS accounts ────────────────────────
+  // The BAS triple is category-scoped (INK2R mapping + engine defaults depend
+  // on it). When the category changes and the caller didn't supply explicit
+  // accounts, reset the triple to the new category's defaults so the chart
+  // stays aligned — mirrors createAsset()'s defaulting.
+  if (
+    input.category !== undefined &&
+    existing &&
+    input.category !== existing.category &&
+    input.bas_asset_account === undefined &&
+    input.bas_accumulated_account === undefined &&
+    input.bas_expense_account === undefined
+  ) {
+    const defaults = DEFAULT_ACCOUNTS_BY_CATEGORY[input.category]
+    input = {
+      ...input,
+      bas_asset_account: defaults.asset,
+      bas_accumulated_account: defaults.accumulated,
+      bas_expense_account: defaults.expense,
+    }
+  }
+
+  // ── BAS account range validation ──────────────────────────────────
+  // Defense-in-depth: refuse anything outside the legitimate range for the
+  // asset's (possibly newly-changed) category. Validates against the final
+  // category so a category+account change is checked as a unit.
   if (
     input.bas_asset_account ||
     input.bas_accumulated_account ||
     input.bas_expense_account
   ) {
-    const existing = await getAsset(supabase, companyId, assetId)
     if (!existing) throw new Error('Asset not found')
-    const ranges = BAS_RANGES_BY_CATEGORY[existing.category]
+    const finalCategory = input.category ?? existing.category
+    const ranges = BAS_RANGES_BY_CATEGORY[finalCategory]
     if (input.bas_asset_account && !inBasRange(input.bas_asset_account, ranges.asset)) {
       throw new Error(
-        `bas_asset_account ${input.bas_asset_account} is outside ${ranges.asset[0]}–${ranges.asset[1]} for ${existing.category}`,
+        `bas_asset_account ${input.bas_asset_account} is outside ${ranges.asset[0]}–${ranges.asset[1]} for ${finalCategory}`,
       )
     }
     if (
@@ -188,7 +362,7 @@ export async function updateAsset(
       !inBasRange(input.bas_accumulated_account, ranges.accumulated)
     ) {
       throw new Error(
-        `bas_accumulated_account ${input.bas_accumulated_account} is outside ${ranges.accumulated[0]}–${ranges.accumulated[1]} for ${existing.category}`,
+        `bas_accumulated_account ${input.bas_accumulated_account} is outside ${ranges.accumulated[0]}–${ranges.accumulated[1]} for ${finalCategory}`,
       )
     }
     if (
@@ -196,7 +370,7 @@ export async function updateAsset(
       !inBasRange(input.bas_expense_account, ranges.expense)
     ) {
       throw new Error(
-        `bas_expense_account ${input.bas_expense_account} is outside ${ranges.expense[0]}–${ranges.expense[1]} for ${existing.category}`,
+        `bas_expense_account ${input.bas_expense_account} is outside ${ranges.expense[0]}–${ranges.expense[1]} for ${finalCategory}`,
       )
     }
     // Anskaffning and ackumulerade-avskrivningar must be different accounts —
@@ -210,15 +384,22 @@ export async function updateAsset(
     }
   }
 
-  // Method / restvärde-target biconditional: required iff restvärdeavskrivning.
-  // Resolve final method+target across the merged row (existing + patch) so we
-  // can null the target when switching away and require it when switching in.
-  if (input.depreciation_method !== undefined || input.restvarde_target !== undefined) {
-    const existing = await getAsset(supabase, companyId, assetId)
+  // ── Method / restvärde-target biconditional ───────────────────────
+  // Required iff restvärdeavskrivning. Resolve final method+target+cost across
+  // the merged row (existing + patch) so we can null the target when switching
+  // away, require it when switching in, and re-check the floor when the cost
+  // itself is being corrected.
+  if (
+    input.depreciation_method !== undefined ||
+    input.restvarde_target !== undefined ||
+    input.acquisition_cost !== undefined
+  ) {
     if (!existing) throw new Error('Asset not found')
     const finalMethod = input.depreciation_method ?? existing.depreciation_method
     const finalTarget =
       input.restvarde_target !== undefined ? input.restvarde_target : existing.restvarde_target
+    const finalCost =
+      input.acquisition_cost !== undefined ? input.acquisition_cost : Number(existing.acquisition_cost)
     if (finalMethod === 'restvardesavskrivning_25' && (finalTarget === null || finalTarget === undefined)) {
       throw new Error(
         'restvarde_target krävs när avskrivningsmetoden är restvärdeavskrivning (25 %).',
@@ -233,7 +414,7 @@ export async function updateAsset(
       finalMethod === 'restvardesavskrivning_25' &&
       finalTarget !== null &&
       finalTarget !== undefined &&
-      Number(finalTarget) >= Number(existing.acquisition_cost)
+      Number(finalTarget) >= Number(finalCost)
     ) {
       throw new Error(
         'restvarde_target måste vara lägre än anskaffningsvärdet — annars finns inget kvar att skriva av.',

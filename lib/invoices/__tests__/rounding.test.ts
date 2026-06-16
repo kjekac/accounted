@@ -44,4 +44,28 @@ describe('getDisplayTotal', () => {
     expect(r.applies).toBe(true)
     expect(r.displayed).toBe(100)
   })
+
+  it('per-invoice flag (true) wins over a disabled company setting', () => {
+    const r = getDisplayTotal({ total: 99.99, currency: 'SEK', ore_rounding: true }, co(false))
+    expect(r.applies).toBe(true)
+    expect(r.displayed).toBe(100)
+  })
+
+  it('per-invoice flag (false) wins over an enabled company setting', () => {
+    const r = getDisplayTotal({ total: 99.99, currency: 'SEK', ore_rounding: false }, co(true))
+    expect(r.applies).toBe(false)
+    expect(r.displayed).toBe(99.99)
+  })
+
+  it('null per-invoice flag falls back to the company setting', () => {
+    const r = getDisplayTotal({ total: 99.99, currency: 'SEK', ore_rounding: null }, co(true))
+    expect(r.applies).toBe(true)
+    expect(r.displayed).toBe(100)
+  })
+
+  it('null per-invoice flag with company-off resolves to off (supplier-invoice convention)', () => {
+    const r = getDisplayTotal({ total: 99.99, currency: 'SEK', ore_rounding: null }, co(false))
+    expect(r.applies).toBe(false)
+    expect(r.displayed).toBe(99.99)
+  })
 })

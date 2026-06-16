@@ -248,6 +248,8 @@ export const POST = withRouteContext(
         remaining_amount: paidPrivately ? 0 : totalRounded,
         paid_at: paidPrivately ? new Date().toISOString() : null,
         notes: body.notes || null,
+        // Display-only öresavrundning override; null = off (no retroactive rounding).
+        ore_rounding: body.ore_rounding ?? null,
       })
       .select()
       .single()

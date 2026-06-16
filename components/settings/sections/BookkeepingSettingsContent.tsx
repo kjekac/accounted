@@ -7,6 +7,7 @@ import { SettingsFormWrapper } from '@/components/settings/SettingsFormWrapper'
 import { SettingsLoadError } from '@/components/settings/SettingsLoadError'
 import { SettingsLoadingSkeleton } from '@/components/settings/SettingsLoadingSkeleton'
 import { PeriodLockingSettings } from '@/components/settings/PeriodLockingSettings'
+import { FiscalYearsManager } from '@/components/settings/FiscalYearsManager'
 import { VoucherSeriesManager } from '@/components/settings/VoucherSeriesManager'
 import { VoucherSeriesPerSourceTypeForm } from '@/components/settings/VoucherSeriesPerSourceTypeForm'
 import { applyDefaultSeriesToMap } from '@/lib/bookkeeping/voucher-series-resolver'
@@ -140,6 +141,11 @@ export function BookkeepingSettingsContent() {
           <PeriodLockingSettings settings={settings} />
         </div>
       </SettingsFormWrapper>
+
+      {/* Fiscal years */}
+      <div className="border-t border-border pt-8">
+        <FiscalYearsManager />
+      </div>
 
       {/* Voucher series — per-source-type mapping */}
       <div className="border-t border-border pt-8">

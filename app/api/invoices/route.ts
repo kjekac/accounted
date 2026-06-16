@@ -4,22 +4,10 @@ import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
 import { CreateInvoiceSchema, CreateCreditNoteSchema } from '@/lib/api/schemas'
 import type { EntityType, AccountingMethod, Invoice, CreditNote, InvoiceDocumentType } from '@/types'
-import { getVatRules, getAvailableVatRates } from '@/lib/invoices/vat-rules'
-import { fetchExchangeRate, convertToSEK } from '@/lib/currency/riksbanken'
 import { createCreditNoteJournalEntry } from '@/lib/bookkeeping/invoice-entries'
 import { cancelSchedulesForSource } from '@/lib/bookkeeping/accruals/service'
-import { DEFAULT_DEFERRED_REVENUE_ACCOUNT } from '@/lib/bookkeeping/accruals/account-suggestions'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
-import {
-  computeDeduction,
-  computeInvoiceDeductionTotal,
-  validateInvoice as validateRotRut,
-} from '@/lib/invoices/rot-rut-rules'
-import {
-  encryptPersonnummer,
-  extractLast4,
-  validatePersonnummer,
-} from '@/lib/salary/personnummer'
+import { buildInvoiceWriteData } from '@/lib/invoices/build-invoice-write'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { Logger } from '@/lib/logger'
@@ -121,190 +109,26 @@ export const POST = withRouteContext(
       })
     }
 
-    const vatRules = getVatRules(customer.customer_type, customer.vat_number_validated)
-    const availableRates = getAvailableVatRates(customer.customer_type, customer.vat_number_validated)
-    const allowedRates = new Set(availableRates.map((r) => r.rate))
-
-    // VAT registration gate (defense in depth — the invoice form already hides
-    // the Moms column when vat_registered is false). A non-momsregistrerad
-    // company books no output VAT: zero every line rate so the sale lands as
-    // momsfri (treatment 'exempt' → revenue 3004/3100, no 2611). 0% is a valid
-    // rate for every customer type, so the allowedRates guard below still
-    // passes. Mirrors lib/pending-operations/commit.ts commitCreateInvoice.
-    const { data: vatSettings } = await supabase
-      .from('company_settings')
-      .select('vat_registered')
-      .eq('company_id', companyId!)
-      .maybeSingle()
-    const notVatRegistered = vatSettings?.vat_registered === false
-    if (notVatRegistered && documentType !== 'delivery_note') {
-      for (const item of invoiceInput.items) item.vat_rate = 0
+    // Shared validation + computation (VAT rules, accrual guards, totals,
+    // revenue-account override checks, server-side ROT/RUT, currency, item
+    // rows). Identical to the PATCH (draft edit) path — see build-invoice-write.
+    const build = await buildInvoiceWriteData({
+      supabase,
+      companyId: companyId!,
+      customer,
+      documentType,
+      input: invoiceInput,
+    })
+    if (!build.ok) {
+      if ('dbError' in build) {
+        log.error('invoice write build failed on a DB lookup', build.dbError as Error)
+        return errorResponse(build.dbError, log, { requestId })
+      }
+      return errorResponseFromCode(build.code, log, { requestId, details: build.details })
     }
 
-    // Periodisering guards. The line schema already validates the period
-    // shape; here we gate the flows where deferral has no meaning: cash
-    // method (recognition at payment), reverse charge/export (3308/3305 must
-    // reflect the full sale for ruta 39/40), and non-invoice document types.
-    const hasAccrualItems = invoiceInput.items.some(
-      (item) => item.accrual_period_start && item.accrual_period_end,
-    )
-    if (hasAccrualItems) {
-      if (documentType !== 'invoice') {
-        return errorResponseFromCode('INVOICE_CREATE_ACCRUAL_INVALID', log, {
-          requestId,
-          details: { reason: 'document_type', documentType },
-        })
-      }
-      if (vatRules.treatment === 'reverse_charge' || vatRules.treatment === 'export') {
-        return errorResponseFromCode('INVOICE_CREATE_ACCRUAL_INVALID', log, {
-          requestId,
-          details: { reason: 'vat_treatment', vatTreatment: vatRules.treatment },
-        })
-      }
-      const { data: methodSettings } = await supabase
-        .from('company_settings')
-        .select('accounting_method')
-        .eq('company_id', companyId!)
-        .maybeSingle()
-      if ((methodSettings?.accounting_method || 'accrual') !== 'accrual') {
-        return errorResponseFromCode('INVOICE_CREATE_ACCRUAL_INVALID', log, {
-          requestId,
-          details: { reason: 'accounting_method' },
-        })
-      }
-    }
-
-    // Free-text rows carry no amounts and are excluded from totals + VAT.
-    const subtotal = invoiceInput.items.reduce(
-      (sum, item) => (item.line_type === 'text' ? sum : sum + item.quantity * item.unit_price),
-      0,
-    )
-
-    let vatAmount = 0
-    if (documentType !== 'delivery_note') {
-      for (const item of invoiceInput.items) {
-        if (item.line_type === 'text') continue
-        const itemRate = item.vat_rate !== undefined ? item.vat_rate : vatRules.rate
-        if (!allowedRates.has(itemRate)) {
-          return errorResponseFromCode('INVOICE_CREATE_VAT_RULE_VIOLATION', log, {
-            requestId,
-            details: {
-              attemptedRate: itemRate,
-              allowedRates: Array.from(allowedRates),
-              customerType: customer.customer_type,
-            },
-          })
-        }
-        const lineTotal = item.quantity * item.unit_price
-        vatAmount += Math.round(lineTotal * itemRate / 100 * 100) / 100
-      }
-    }
-    const total = documentType === 'delivery_note' ? 0 : subtotal + vatAmount
-
-    // Validate any per-line revenue-account override against the company's chart
-    // of accounts. Zod already constrains the shape to a 3xxx string; here we
-    // confirm each is a real, active class-3 account so a typo or a non-revenue
-    // account can never be booked. Never trust the client — same posture as the
-    // server-recomputed ROT/RUT amounts.
-    const overrideAccounts = Array.from(
-      new Set(
-        invoiceInput.items
-          .map((item) => item.revenue_account)
-          .filter((a): a is string => !!a),
-      ),
-    )
-    if (overrideAccounts.length > 0) {
-      const { data: validAccounts, error: accountsError } = await supabase
-        .from('chart_of_accounts')
-        .select('account_number')
-        .eq('company_id', companyId!)
-        .eq('account_class', 3)
-        .eq('is_active', true)
-        .in('account_number', overrideAccounts)
-
-      if (accountsError) {
-        log.error('revenue account validation query failed', accountsError)
-        return errorResponse(accountsError, log, { requestId })
-      }
-      const validSet = new Set((validAccounts ?? []).map((a) => a.account_number))
-      const invalid = overrideAccounts.filter((a) => !validSet.has(a))
-      if (invalid.length > 0) {
-        return errorResponseFromCode('INVOICE_CREATE_REVENUE_ACCOUNT_INVALID', log, {
-          requestId,
-          details: { invalidAccounts: invalid },
-        })
-      }
-    }
-
-    // ROT/RUT-avdrag: validate prerequisites and compute the per-item +
-    // invoice-level deduction. Computed server-side (never trusted from
-    // the client) so a tampered request can't expand the 1513 receivable.
-    // Skipped entirely for proformas, delivery notes, and quotes — those
-    // documents don't post journal entries and have no deduction model.
-    let deductionTotal = 0
-    let deductionPersonnummerEncrypted: string | null = null
-    let deductionPersonnummerLast4: string | null = null
-    if (documentType === 'invoice') {
-      const housingProvided = !!invoiceInput.deduction_housing_designation?.trim()
-      const personnummerRaw = invoiceInput.deduction_personnummer?.trim() || ''
-      const personnummerProvided = personnummerRaw.length > 0
-
-      const validateInput = invoiceInput.items.map((item) => ({
-        unit_price: item.unit_price,
-        quantity: item.quantity,
-        deduction_type: item.deduction_type ?? null,
-        labor_hours: item.labor_hours ?? null,
-        housing_designation: item.housing_designation ?? null,
-      }))
-      const validation = validateRotRut(validateInput, personnummerProvided, housingProvided)
-      if (validation.errors.length > 0) {
-        return errorResponseFromCode('INVOICE_CREATE_ROT_RUT_VALIDATION', log, {
-          requestId,
-          details: { errors: validation.errors, warnings: validation.warnings },
-        })
-      }
-
-      // Compute and (when present) encrypt the personnummer. The plaintext
-      // value never touches the DB — only the AES-256-GCM ciphertext + the
-      // last four digits go into invoices columns.
-      deductionTotal = computeInvoiceDeductionTotal(validateInput)
-      if (personnummerProvided) {
-        const pnValid = validatePersonnummer(personnummerRaw)
-        if (!pnValid.valid) {
-          return errorResponseFromCode('INVOICE_CREATE_ROT_RUT_PERSONNUMMER_INVALID', log, {
-            requestId,
-            details: { error: pnValid.error },
-          })
-        }
-        deductionPersonnummerEncrypted = encryptPersonnummer(personnummerRaw)
-        deductionPersonnummerLast4 = extractLast4(personnummerRaw)
-      }
-    }
-
-    const uniqueRates = new Set(
-      invoiceInput.items
-        .filter((item) => item.line_type !== 'text')
-        .map((item) => item.vat_rate ?? vatRules.rate),
-    )
-    const isMixedRate = uniqueRates.size > 1
-
-    let exchangeRate: number | null = null
-    let exchangeRateDate: string | null = null
-    let subtotalSek: number | null = null
-    let vatAmountSek: number | null = null
-    let totalSek: number | null = null
-
-    if (invoiceInput.currency !== 'SEK') {
-      const rateData = await fetchExchangeRate(invoiceInput.currency)
-      if (rateData) {
-        exchangeRate = rateData.rate
-        exchangeRateDate = rateData.date
-        subtotalSek = convertToSEK(subtotal, exchangeRate)
-        vatAmountSek = convertToSEK(vatAmount, exchangeRate)
-        totalSek = convertToSEK(total, exchangeRate)
-      }
-    }
-
+    // Delivery notes are always numbered at insert (ignores save_as_draft);
+    // invoices/proformas get their F-number below or at finalize.
     let invoiceNumber: string | null = null
     if (documentType === 'delivery_note') {
       const { data: dnNumber } = await supabase.rpc('generate_delivery_note_number', {
@@ -318,39 +142,8 @@ export const POST = withRouteContext(
       .insert({
         user_id: user.id,
         company_id: companyId,
-        customer_id: invoiceInput.customer_id,
         invoice_number: invoiceNumber,
-        invoice_date: invoiceInput.invoice_date,
-        due_date: invoiceInput.due_date,
-        delivery_date: invoiceInput.delivery_date ?? null,
-        currency: invoiceInput.currency,
-        exchange_rate: exchangeRate,
-        exchange_rate_date: exchangeRateDate,
-        subtotal: documentType === 'delivery_note' ? 0 : subtotal,
-        subtotal_sek: documentType === 'delivery_note' ? null : subtotalSek,
-        vat_amount: vatAmount,
-        vat_amount_sek: documentType === 'delivery_note' ? null : vatAmountSek,
-        total,
-        total_sek: documentType === 'delivery_note' ? null : totalSek,
-        // Initialize remaining_amount to total - deduction for real invoices
-        // so the open-invoice queries (InvoicePicker, AR ledger, supplier
-        // matching) treat newly-created invoices as fully unpaid for the
-        // CUSTOMER's share — the Skatteverket portion is on 1513 and will be
-        // cleared when the agency pays out, not by the customer payment.
-        // Proformas, delivery notes and quotes have no payment obligation,
-        // so they keep the 0 default.
-        remaining_amount: documentType === 'invoice' ? total - deductionTotal : 0,
-        vat_treatment: notVatRegistered ? 'exempt' : vatRules.treatment,
-        vat_rate: documentType === 'delivery_note' ? 0 : (isMixedRate ? null : (uniqueRates.values().next().value ?? vatRules.rate)),
-        moms_ruta: notVatRegistered ? null : vatRules.momsRuta,
-        reverse_charge_text: notVatRegistered ? null : (vatRules.reverseChargeText || null),
-        your_reference: invoiceInput.your_reference,
-        our_reference: invoiceInput.our_reference,
-        notes: invoiceInput.notes,
-        document_type: documentType,
-        deduction_total: deductionTotal,
-        deduction_personnummer_encrypted: deductionPersonnummerEncrypted,
-        deduction_personnummer_last4: deductionPersonnummerLast4,
+        ...build.invoiceFields,
       })
       .select()
       .single()
@@ -363,91 +156,7 @@ export const POST = withRouteContext(
       })
     }
 
-    const items = invoiceInput.items.map((item, index) => {
-      // Free-text / blank rows carry no amounts and never book — store the
-      // description only and zero everything else.
-      if (item.line_type === 'text') {
-        return {
-          invoice_id: invoice.id,
-          sort_order: index,
-          line_type: 'text',
-          description: item.description ?? '',
-          quantity: 0,
-          unit: '',
-          unit_price: 0,
-          line_total: 0,
-          vat_rate: 0,
-          vat_amount: 0,
-          // Keys must match the product branch exactly — PostgREST rejects a
-          // bulk insert whose objects have differing key sets.
-          article_id: null,
-          revenue_account: null,
-          deduction_type: null,
-          deduction_amount: 0,
-          labor_hours: null,
-          work_type: null,
-          housing_designation: null,
-          apartment_number: null,
-          accrual_period_start: null,
-          accrual_period_end: null,
-          accrual_balance_account: null,
-        }
-      }
-      const itemRate = item.vat_rate !== undefined ? item.vat_rate : vatRules.rate
-      const lineTotal = item.quantity * item.unit_price
-      const itemVat = documentType === 'delivery_note' ? 0 : Math.round(lineTotal * itemRate / 100 * 100) / 100
-      // ROT/RUT deduction is recomputed server-side so a tampered client
-      // can't expand the 1513 receivable beyond the rules. Non-invoice
-      // document types never carry deduction_type (rules above strip them
-      // implicitly because validateRotRut isn't invoked).
-      const deductionType = documentType === 'invoice' ? (item.deduction_type ?? null) : null
-      const deductionAmount = deductionType
-        ? computeDeduction({
-            unit_price: item.unit_price,
-            quantity: item.quantity,
-            deduction_type: deductionType,
-          })
-        : 0
-      return {
-        invoice_id: invoice.id,
-        sort_order: index,
-        line_type: 'product',
-        description: item.description,
-        quantity: item.quantity,
-        unit: item.unit,
-        unit_price: item.unit_price,
-        line_total: lineTotal,
-        vat_rate: itemRate,
-        vat_amount: itemVat,
-        // Article linkage. revenue_account is frozen-copied here so a later
-        // article edit never re-books this line; null falls through to the
-        // VAT-treatment-derived account in generatePerRateLines().
-        article_id: item.article_id ?? null,
-        revenue_account: item.revenue_account ?? null,
-        deduction_type: deductionType,
-        deduction_amount: deductionAmount,
-        labor_hours: documentType === 'invoice' ? (item.labor_hours ?? null) : null,
-        work_type: documentType === 'invoice' ? (item.work_type ?? null) : null,
-        housing_designation: documentType === 'invoice' ? (item.housing_designation ?? null) : null,
-        apartment_number: documentType === 'invoice' ? (item.apartment_number ?? null) : null,
-        // Periodisering (förutbetald intäkt): frozen onto the line. The
-        // schedule itself is created when the invoice is sent/booked. ROT/RUT
-        // lines never defer (schema-enforced); the guard above already
-        // restricted this to real invoices under faktureringsmetoden.
-        accrual_period_start:
-          documentType === 'invoice' && !deductionType
-            ? (item.accrual_period_start ?? null)
-            : null,
-        accrual_period_end:
-          documentType === 'invoice' && !deductionType
-            ? (item.accrual_period_end ?? null)
-            : null,
-        accrual_balance_account:
-          documentType === 'invoice' && !deductionType && item.accrual_period_start && item.accrual_period_end
-            ? (item.accrual_balance_account ?? DEFAULT_DEFERRED_REVENUE_ACCOUNT)
-            : null,
-      }
-    })
+    const items = build.items.map((item) => ({ ...item, invoice_id: invoice.id }))
 
     const { error: itemsError } = await supabase.from('invoice_items').insert(items)
 

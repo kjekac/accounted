@@ -353,8 +353,17 @@ export const CreateInvoiceSchema = z.object({
   // ("Granska och skapa"). An unnumbered draft is not yet an issued faktura
   // (ML 17 kap 24§), so it can be hard-deleted with no gap in the number series.
   save_as_draft: z.boolean().optional(),
+  // Per-invoice öresavrundning toggle (display-only). Omitted → stored as null,
+  // which inherits company_settings.ore_rounding when rendering totals.
+  ore_rounding: z.boolean().optional(),
   items: z.array(CreateInvoiceItemSchema).min(1, 'At least one item is required'),
 })
+
+// Update (edit) an existing DRAFT invoice in place. Same shape as create minus
+// `save_as_draft` — editing never (re)creates a draft or allocates a number, it
+// only rewrites the draft's header + line items. The PATCH route guards that the
+// target is still a draft (status='draft', no journal entry, not self-billed).
+export const UpdateInvoiceSchema = CreateInvoiceSchema.omit({ save_as_draft: true })
 
 export const CreateCreditNoteSchema = z.object({
   credited_invoice_id: uuid,
@@ -623,6 +632,8 @@ export const CreateSupplierInvoiceSchema = z.object({
   reverse_charge: z.boolean().optional(),
   payment_reference: z.string().optional(),
   notes: z.string().optional(),
+  // Per-invoice öresavrundning toggle (display-only). Omitted → stored as null (off).
+  ore_rounding: z.boolean().optional(),
   paid_with_private_funds: z.boolean().optional(),
   // For paid_with_private_funds: the date the owner paid out-of-pocket.
   // Defaults to invoice_date (common for kvitto where the two coincide).
@@ -723,24 +734,43 @@ export const CreateTransactionSchema = z.object({
   notes: z.string().max(2000).optional(),
 })
 
-export const CategorizeTransactionSchema = z.object({
-  is_business: z.boolean(),
-  category: TransactionCategorySchema.optional(),
-  template_id: z.string().optional(),
-  vat_treatment: VatTreatmentSchema.optional(),
-  account_override: accountNumber.optional(),
-  counterparty_template_id: z.string().uuid().optional(),
-  user_description: z.string().max(500).optional(),
-  inbox_item_id: z.string().uuid().optional(),
-  confirm_no_match: z.boolean().optional(),
-})
+export const CategorizeTransactionSchema = z
+  .object({
+    is_business: z.boolean(),
+    category: TransactionCategorySchema.optional(),
+    template_id: z.string().optional(),
+    vat_treatment: VatTreatmentSchema.optional(),
+    account_override: accountNumber.optional(),
+    counterparty_template_id: z.string().uuid().optional(),
+    user_description: z.string().max(500).optional(),
+    inbox_item_id: z.string().uuid().optional(),
+    confirm_no_match: z.boolean().optional(),
+    // Booking-time duplicate guard (TRANSACTION_BOOK_POSSIBLE_DUPLICATE). force
+    // bypasses it after the user reviews the candidate; the bypass is bound to
+    // the specific already-booked sibling via expected_duplicate_transaction_id
+    // (re-detected server-side, so a guessed id can't wave the guard away).
+    force: z.boolean().optional(),
+    expected_duplicate_transaction_id: uuid.optional(),
+  })
+  .refine((v) => !v.force || !!v.expected_duplicate_transaction_id, {
+    message: 'expected_duplicate_transaction_id is required when force=true',
+    path: ['expected_duplicate_transaction_id'],
+  })
 
-export const BookTransactionSchema = z.object({
-  fiscal_period_id: uuid,
-  entry_date: isoDate,
-  description: z.string().min(1, 'Description is required'),
-  lines: z.array(CreateJournalEntryLineSchema).min(1, 'At least one line is required'),
-})
+export const BookTransactionSchema = z
+  .object({
+    fiscal_period_id: uuid,
+    entry_date: isoDate,
+    description: z.string().min(1, 'Description is required'),
+    lines: z.array(CreateJournalEntryLineSchema).min(1, 'At least one line is required'),
+    // Booking-time duplicate guard — see CategorizeTransactionSchema.
+    force: z.boolean().optional(),
+    expected_duplicate_transaction_id: uuid.optional(),
+  })
+  .refine((v) => !v.force || !!v.expected_duplicate_transaction_id, {
+    message: 'expected_duplicate_transaction_id is required when force=true',
+    path: ['expected_duplicate_transaction_id'],
+  })
 
 /**
  * Edit a bank transaction's title (description). Only the working label —

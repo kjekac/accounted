@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import AiFilledIndicator from '@/components/ui/ai-filled-indicator'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -274,6 +275,9 @@ export default function NewSupplierInvoicePage() {
   const [accounts, setAccounts] = useState<BASAccount[]>([])
   const [entityType, setEntityType] = useState<EntityType>('enskild_firma')
   const [accountingMethod, setAccountingMethod] = useState<'accrual' | 'cash'>('accrual')
+  // Öresavrundning is display-only; defaults to the company-wide setting and is
+  // overridable per invoice via the toggle in the totals section.
+  const [oreRounding, setOreRounding] = useState<boolean>(true)
   const [periods, setPeriods] = useState<FiscalPeriod[]>([])
   const [periodsLoaded, setPeriodsLoaded] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -625,6 +629,7 @@ export default function NewSupplierInvoicePage() {
       if (data?.accounting_method === 'cash' || data?.accounting_method === 'accrual') {
         setAccountingMethod(data.accounting_method)
       }
+      if (typeof data?.ore_rounding === 'boolean') setOreRounding(data.ore_rounding)
     } catch {
       // Default to enskild_firma / accrual
     }
@@ -824,6 +829,7 @@ export default function NewSupplierInvoicePage() {
       payment_reference: data.payment_reference || undefined,
       notes: data.notes || undefined,
       paid_with_private_funds: data.paid_with_private_funds,
+      ore_rounding: oreRounding,
       items: data.items.map((item) => ({
         description: item.description,
         amount: item.amount,
@@ -1772,6 +1778,23 @@ export default function NewSupplierInvoicePage() {
                 <span>{t('total_label')}</span>
                 <span className="font-mono sm:w-32 text-right">{formatCurrency(total, watchedCurrency)}</span>
               </div>
+              {/* Öresavrundning — display-only rounding of the displayed total to
+                  whole kronor (SEK only). The registered amount and the booked
+                  verifikat keep the exact öre; this only changes what's shown. */}
+              {(watchedCurrency || 'SEK') === 'SEK' && (
+                <div className="flex items-center justify-between gap-4 pt-3 mt-1 border-t">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="ore-rounding" className="text-sm">{t('ore_rounding_label')}</Label>
+                    <p className="text-xs text-muted-foreground">{t('ore_rounding_help')}</p>
+                  </div>
+                  <Switch
+                    id="ore-rounding"
+                    checked={oreRounding}
+                    onCheckedChange={setOreRounding}
+                    aria-label={t('ore_rounding_label')}
+                  />
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

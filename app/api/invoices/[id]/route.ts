@@ -4,8 +4,14 @@ import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
-import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
+import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { createLogger } from '@/lib/logger'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { validateBody } from '@/lib/api/validate'
+import { UpdateInvoiceSchema } from '@/lib/api/schemas'
+import { buildInvoiceWriteData } from '@/lib/invoices/build-invoice-write'
+import { isEditableInvoiceDraft } from '@/lib/invoices/is-editable-draft'
+import type { InvoiceDocumentType } from '@/types'
 
 ensureInitialized() // Module-level — wires the audit-log handler for invoice.draft_deleted.
 
@@ -121,3 +127,154 @@ export async function DELETE(
 
   return NextResponse.json({ data: { cancelled: true, invoice_number: invoice.invoice_number } })
 }
+
+/**
+ * PATCH /api/invoices/[id]
+ *
+ * Edit a DRAFT invoice (or proforma / delivery note) in place — header fields
+ * AND line items. Only drafts are editable: a journal entry (verifikat) is
+ * created when an invoice is sent (mark-sent / send) or, for kontantmetoden, at
+ * payment, so a draft has no committed entry and BFL immutability (guard rail #1)
+ * does not yet apply. Sent / paid / cancelled / credited invoices are immutable
+ * and must be reversed via a credit note instead.
+ *
+ * The invoice's number and status are preserved — editing never (re)allocates a
+ * number nor changes lifecycle state, and never emits invoice.created (numbered
+ * drafts already emitted it at create; unnumbered ones emit on finalize). The
+ * validation + computation is shared with POST /api/invoices via
+ * buildInvoiceWriteData so VAT rules, ROT/RUT, accruals and totals stay identical.
+ */
+export const PATCH = withRouteContext<{ params: Promise<{ id: string }> }>(
+  'invoice.update',
+  async (request, { supabase, companyId, log: ctxLog, requestId }, { params }) => {
+    const { id } = await params
+
+    const validation = await validateBody(request, UpdateInvoiceSchema, {
+      log: ctxLog,
+      operation: 'invoice.update',
+    })
+    if (!validation.success) return validation.response
+    const input = validation.data
+    const documentType: InvoiceDocumentType = input.document_type || 'invoice'
+
+    // Fetch the target. Only drafts (not sent, no committed verifikat, not a
+    // received self-billing document) may be edited.
+    const { data: existing, error: fetchError } = await supabase
+      .from('invoices')
+      .select('id, status, invoice_number, journal_entry_id, is_self_billed')
+      .eq('id', id)
+      .eq('company_id', companyId!)
+      .single()
+
+    if (fetchError || !existing) {
+      return errorResponseFromCode('INVOICE_NOT_FOUND', ctxLog, { requestId })
+    }
+
+    // journal_entry_id is belt-and-suspenders — a draft shouldn't carry one,
+    // but if some flow ever booked it, refuse the edit (the entry is immutable).
+    // Shared predicate (lib/invoices/is-editable-draft) — the single source of
+    // truth the detail and edit pages also gate on, so the rule can't drift.
+    if (!isEditableInvoiceDraft(existing)) {
+      return errorResponseFromCode('INVOICE_UPDATE_NOT_DRAFT', ctxLog, { requestId })
+    }
+
+    // Resolve the (possibly changed) customer.
+    const { data: customer, error: customerError } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('id', input.customer_id)
+      .eq('company_id', companyId!)
+      .single()
+
+    if (customerError || !customer) {
+      return errorResponseFromCode('INVOICE_CUSTOMER_NOT_FOUND', ctxLog, {
+        requestId,
+        details: { customerId: input.customer_id },
+      })
+    }
+
+    const build = await buildInvoiceWriteData({
+      supabase,
+      companyId: companyId!,
+      customer,
+      documentType,
+      input,
+    })
+    if (!build.ok) {
+      if ('dbError' in build) {
+        ctxLog.error('invoice write build failed on a DB lookup', build.dbError as Error)
+        return errorResponse(build.dbError, ctxLog, { requestId })
+      }
+      return errorResponseFromCode(build.code, ctxLog, { requestId, details: build.details })
+    }
+
+    // Update the draft row. invoice_number + status are intentionally NOT in
+    // build.invoiceFields, so they are preserved. The .eq('status','draft')
+    // guard turns a concurrent send/finalize into a 0-row update (race), rather
+    // than silently rewriting a now-issued invoice.
+    // Öresavrundning is display-only and optional in the update body. Persist
+    // it when the editor sent a value; otherwise strip it so a partial update
+    // can't reset a draft's stored flag (build defaults an absent flag to null).
+    const updateFields =
+      input.ore_rounding === undefined
+        ? (() => {
+            const { ore_rounding: _oreRounding, ...rest } = build.invoiceFields
+            return rest
+          })()
+        : build.invoiceFields
+    const { data: updated, error: updateError } = await supabase
+      .from('invoices')
+      .update({ ...updateFields, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('company_id', companyId!)
+      .eq('status', 'draft')
+      .select('id')
+
+    if (updateError) {
+      ctxLog.error('invoice update failed', updateError, { invoiceId: id })
+      return errorResponseFromCode('INVOICE_CREATE_INSERT_FAILED', ctxLog, {
+        requestId,
+        details: { pgCode: updateError.code, pgMessage: updateError.message },
+      })
+    }
+    if (!updated || updated.length === 0) {
+      return errorResponseFromCode('INVOICE_UPDATE_NOT_DRAFT', ctxLog, { requestId })
+    }
+
+    // Replace line items wholesale. A draft has no journal entry or linked docs,
+    // so delete + reinsert is safe and lets the user add / remove / reorder rows
+    // freely. invoice_items cascade nothing else.
+    const { error: deleteItemsError } = await supabase
+      .from('invoice_items')
+      .delete()
+      .eq('invoice_id', id)
+
+    if (deleteItemsError) {
+      ctxLog.error('invoice items delete failed on update', deleteItemsError, { invoiceId: id })
+      return errorResponseFromCode('INVOICE_CREATE_ITEMS_FAILED', ctxLog, {
+        requestId,
+        details: { pgCode: deleteItemsError.code, pgMessage: deleteItemsError.message },
+      })
+    }
+
+    const itemsToInsert = build.items.map((item) => ({ ...item, invoice_id: id }))
+    const { error: itemsError } = await supabase.from('invoice_items').insert(itemsToInsert)
+
+    if (itemsError) {
+      ctxLog.error('invoice items insert failed on update', itemsError, { invoiceId: id })
+      return errorResponseFromCode('INVOICE_CREATE_ITEMS_FAILED', ctxLog, {
+        requestId,
+        details: { pgCode: itemsError.code, pgMessage: itemsError.message },
+      })
+    }
+
+    const { data: completeInvoice } = await supabase
+      .from('invoices')
+      .select('*, customer:customers(*), items:invoice_items(*)')
+      .eq('id', id)
+      .single()
+
+    return NextResponse.json({ data: completeInvoice })
+  },
+  { requireWrite: true },
+)

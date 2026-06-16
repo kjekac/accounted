@@ -23,6 +23,7 @@ import { AccountNumber } from '@/components/ui/account-number'
 import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import { formatCurrency } from '@/lib/utils'
+import { getDisplayTotal } from '@/lib/invoices/rounding'
 import type { SupplierInvoice, SupplierInvoiceItem, SupplierInvoicePayment, BASAccount } from '@/types'
 
 interface EditableLine {
@@ -422,6 +423,15 @@ export default function SupplierInvoiceDetailPage() {
   const items = (invoice.items || []) as SupplierInvoiceItem[]
   const payments = (invoice.payments || []) as SupplierInvoicePayment[]
 
+  // Display-only öresavrundning. The stored total/booked verifikat keep the
+  // exact öre; this only adjusts the rendered total. Supplier invoices never
+  // had rounding historically, so a null flag resolves to off (company arg
+  // false) — only an explicit per-invoice `true` rounds the display.
+  const rounding = getDisplayTotal(
+    { total: invoice.total, currency: invoice.currency, ore_rounding: invoice.ore_rounding },
+    { ore_rounding: false },
+  )
+
   return (
     <div className="space-y-6 max-w-4xl">
       {/* Header */}
@@ -601,9 +611,15 @@ export default function SupplierInvoiceDetailPage() {
               <span className="text-muted-foreground">{t('vat_label')}</span>
               <span className="font-mono">{formatAmount(invoice.vat_amount)} {invoice.currency}</span>
             </div>
+            {rounding.applies && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">{t('ore_rounding')}</span>
+                <span className="font-mono">{formatAmount(rounding.roundingDelta)} {invoice.currency}</span>
+              </div>
+            )}
             <div className="flex justify-between font-bold text-base pt-2 border-t">
               <span>{t('total_label')}</span>
-              <span className="font-mono">{formatAmount(invoice.total)} {invoice.currency}</span>
+              <span className="font-mono">{formatAmount(rounding.displayed)} {invoice.currency}</span>
             </div>
             <div className="flex justify-between pt-2">
               <span className="text-muted-foreground">{t('paid_label')}</span>

@@ -180,6 +180,31 @@ describe('buildDispositionsProposal — K3 framework', () => {
     expect(credit.credit_amount).toBe(20_600)
   })
 
+  it('computes bolagsskatt on the result AFTER the periodiseringsfond avsättning', async () => {
+    // Regression (customer report): the preview computed bolagsskatt on the
+    // pre-disposition net result, ignoring the avsättning it proposes in the
+    // same snapshot — so the previewed/agent-facing tax was too high and
+    // diverged from ÅR/INK2. With a 1,000,000 result and no existing fonder:
+    //   avsättning   = 25 % × 1,000,000          = 250,000
+    //   skattem. res = 1,000,000 − 250,000        = 750,000
+    //   bolagsskatt  = 20.6 % × 750,000           = 154,500  (NOT 206,000)
+    vi.mocked(generateIncomeStatement).mockResolvedValue({
+      net_result: 1_000_000,
+    } as Awaited<ReturnType<typeof generateIncomeStatement>>)
+
+    const supabase = makeSupabase({ entityType: 'aktiebolag', accountingFramework: 'k2' })
+    const result = await buildDispositionsProposal(
+      supabase as unknown as Parameters<typeof buildDispositionsProposal>[0],
+      'co',
+      'fp1',
+    )
+
+    const avsattning = result.proposals.find((p) => p.kind === 'periodiseringsfond_avsattning')
+    const bolagsskatt = result.proposals.find((p) => p.kind === 'bolagsskatt')
+    expect(avsattning?.amount).toBe(250_000)
+    expect(bolagsskatt?.amount).toBe(154_500)
+  })
+
   it('does NOT add an uppskjuten_skatt proposal for K2 aktiebolag', async () => {
     const supabase = makeSupabase({ entityType: 'aktiebolag', accountingFramework: 'k2' })
     const result = await buildDispositionsProposal(

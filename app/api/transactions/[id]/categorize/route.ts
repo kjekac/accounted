@@ -5,6 +5,8 @@ import { ensureInitialized } from '@/lib/init'
 import { buildMappingResultFromCategory } from '@/lib/bookkeeping/category-mapping'
 import { getTemplateById, buildMappingResultFromTemplate, validateTemplateForEntity } from '@/lib/bookkeeping/booking-templates'
 import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
+import { detectBookedDuplicateTransaction } from '@/lib/transactions/booking-duplicate-detection'
+import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { saveUserMappingRule, applySettlementAccount } from '@/lib/bookkeeping/mapping-engine'
 import { upsertCounterpartyTemplate, buildMappingResultFromCounterpartyTemplate } from '@/lib/bookkeeping/counterparty-templates'
 import { withRouteContext } from '@/lib/api/with-route-context'
@@ -142,6 +144,75 @@ export const POST = withRouteContext(
         category: finalCat,
         already_had_journal_entry: true,
       })
+    }
+
+    // Booking-time duplicate guard: this transaction is about to become a NEW
+    // verifikat. If another transaction on the same date+amount+account is
+    // already booked, booking this one double-counts one real affärshändelse
+    // (felaktig bokföring per BFL). Warn; the user confirms with force=true
+    // bound to the reviewed sibling. Mirrors the match-invoice soft-duplicate
+    // guard. Runs before any categorization work so the user resolves it first.
+    try {
+      const candidate = await detectBookedDuplicateTransaction(supabase, companyId, {
+        id,
+        date: transaction.date,
+        amount: transaction.amount,
+        cash_account_id: transaction.cash_account_id ?? null,
+      })
+      if (!body.force) {
+        if (candidate) {
+          return errorResponseFromCode('TRANSACTION_BOOK_POSSIBLE_DUPLICATE', txLog, {
+            requestId,
+            details: { candidate },
+          })
+        }
+      } else if (!candidate || candidate.transaction_id !== body.expected_duplicate_transaction_id) {
+        return errorResponseFromCode('TRANSACTION_BOOK_FORCE_CANDIDATE_MISMATCH', txLog, {
+          requestId,
+          details: {
+            expected_duplicate_transaction_id: body.expected_duplicate_transaction_id ?? null,
+            detected_transaction_id: candidate?.transaction_id ?? null,
+          },
+        })
+      } else {
+        txLog.warn('booking-time duplicate guard bypassed', {
+          reason: 'force=true',
+          requestId,
+          dismissedTransactionId: candidate.transaction_id,
+        })
+        // Persist the dismissal to behandlingshistorik (BFNAR 2013:2 kap 8) —
+        // booking over a DETECTED possible double-booking is a bookkeeping
+        // decision that needs a durable record. Best-effort; never blocks the
+        // booking.
+        try {
+          await appendProcessingHistory({
+            companyId,
+            correlationId: id,
+            aggregateType: 'BankTransaction',
+            aggregateId: id,
+            eventType: 'BankTransactionDuplicateDismissed',
+            payload: {
+              transaction_id: id,
+              dismissed_transaction_id: candidate.transaction_id,
+              dismissed_journal_entry_id: candidate.journal_entry_id,
+              amount_ore: Math.round(candidate.amount * 100),
+              entry_date: candidate.entry_date,
+            },
+            actor: { type: 'user', id: user.id },
+            occurredAt: new Date(),
+          })
+        } catch (logErr) {
+          txLog.error('failed to append duplicate-dismissal behandlingshistorik', logErr as Error)
+        }
+      }
+    } catch (err) {
+      if (body.force) {
+        return errorResponseFromCode('TRANSACTION_BOOK_FORCE_CANDIDATE_MISMATCH', txLog, {
+          requestId,
+          details: { detection_failed: true },
+        })
+      }
+      txLog.warn('booking-time duplicate detection failed (continuing)', err as Error)
     }
 
     const { data: settings } = await supabase

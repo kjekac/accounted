@@ -103,7 +103,21 @@ export async function buildDispositionsProposal(
   const slp = await calculateSarskildLoneskatt(supabase, companyId, fiscalPeriodId)
   if (slp) proposals.push(slp)
 
+  // Bolagsskatt must be computed on the result AFTER the dispositions above.
+  // In preview mode nothing is posted yet, so the income statement still shows
+  // the pre-disposition result — we mirror each proposal's effect on resultat
+  // före skatt and hand the post-disposition base to the calculator:
+  //   + återföring (8819, intäkt)
+  //   − avsättning (8811, kostnad)
+  //   − SLP        (7533, kostnad)
+  // Without this, the previewed tax ignores the avsättning (tax too high) and
+  // diverges from what the sequential commit books and from ÅR/INK2.
+  const ateforingTotal = ateforing.proposals.reduce((sum, p) => sum + p.amount, 0)
+  const resultAfterDispositions =
+    resultBeforeTax + ateforingTotal - (avsattning?.amount ?? 0) - (slp?.amount ?? 0)
+
   const bolagsskatt = await calculateBolagsskatt(supabase, companyId, fiscalPeriodId, {
+    resultBeforeTaxOverride: resultAfterDispositions,
     manualAdjustments: {
       schablonintaktPeriodiseringsfond: ateforing.schablonintaktAmount,
     },

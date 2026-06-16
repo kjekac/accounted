@@ -198,16 +198,26 @@ describe('assets table — immutability after disposal', () => {
       userId: companyA.userId,
       companyId: companyA.companyId,
     })
+    // acquisition_date is included here because the asset-edit feature lets
+    // users correct it before depreciation is booked — the immutability
+    // trigger must NOT block it on a non-disposed asset.
     await getPool().query(
-      `UPDATE public.assets SET acquisition_cost = 70000, useful_life_months = 72 WHERE id = $1`,
+      `UPDATE public.assets
+         SET acquisition_cost = 70000, useful_life_months = 72,
+             acquisition_date = '2025-08-15', category = 'computer'
+       WHERE id = $1`,
       [assetId],
     )
     const { rows } = await getPool().query(
-      `SELECT acquisition_cost, useful_life_months FROM public.assets WHERE id = $1`,
+      `SELECT acquisition_cost, useful_life_months,
+              acquisition_date::text AS acquisition_date, category
+         FROM public.assets WHERE id = $1`,
       [assetId],
     )
     expect(Number(rows[0]?.acquisition_cost)).toBe(70_000)
     expect(rows[0]?.useful_life_months).toBe(72)
+    expect(rows[0]?.acquisition_date).toBe('2025-08-15')
+    expect(rows[0]?.category).toBe('computer')
   })
 
   it('disposal CHECK requires both disposed_at and disposed_proceeds', async () => {

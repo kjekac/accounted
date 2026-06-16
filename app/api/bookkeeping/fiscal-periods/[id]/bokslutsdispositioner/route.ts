@@ -4,7 +4,10 @@ import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { validateBody } from '@/lib/api/validate'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
-import { calculateBolagsskatt } from '@/lib/bokslut/tax-provision/bolagsskatt-calculator'
+import {
+  calculateBolagsskatt,
+  sumPostedYearEndDispositions,
+} from '@/lib/bokslut/tax-provision/bolagsskatt-calculator'
 import { calculateSarskildLoneskatt } from '@/lib/bokslut/tax-provision/sarskild-loneskatt-calculator'
 import {
   listExistingPeriodiseringsfonder,
@@ -205,10 +208,24 @@ async function computeProposal(
   fiscalYear: number,
 ): Promise<ProposedDisposition | null> {
   switch (item.kind) {
-    case 'bolagsskatt':
+    case 'bolagsskatt': {
+      // Dispositioner are booked as source_type='year_end', which the income
+      // statement excludes — so net_result alone overstates resultat före skatt.
+      // Add the already-posted dispositions back (avsättning −, återföring +,
+      // SLP −, överavskrivningar −); bolagsskatt is sorted LAST so they are
+      // committed by now. Without this the booked tax ignores the avsättning
+      // (the original customer bug — too-high tax, ÅR/INK2 mismatch).
+      const incomeStatement = await generateIncomeStatement(supabase, companyId, fiscalPeriodId)
+      const dispositionsEffect = await sumPostedYearEndDispositions(
+        supabase,
+        companyId,
+        fiscalPeriodId,
+      )
       return calculateBolagsskatt(supabase, companyId, fiscalPeriodId, {
+        resultBeforeTaxOverride: incomeStatement.net_result + dispositionsEffect,
         manualAdjustments: item.manualAdjustments,
       })
+    }
     case 'sarskild_loneskatt':
       return calculateSarskildLoneskatt(supabase, companyId, fiscalPeriodId, {
         manualAdjustment: item.manualAdjustment,

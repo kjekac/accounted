@@ -204,7 +204,33 @@ export const GET = withRouteContext('assets.list', async (request, ctx) => {
   const activeOnly = url.searchParams.get('active') === 'true'
   try {
     const data = await listAssets(supabase, companyId, { activeOnly })
-    return NextResponse.json({ data })
+
+    // Annotate each asset with whether any depreciation has been posted
+    // against it. The UI uses this to lock the acquisition-basis fields
+    // (date/cost/category) — once avskrivningar are booked a correction must
+    // go through storno (the service enforces the same rule server-side).
+    const postedAssetIds = new Set<string>()
+    if (data.length > 0) {
+      const { data: posted, error } = await supabase
+        .from('depreciation_schedules')
+        .select('asset_id')
+        .eq('company_id', companyId)
+        .in(
+          'asset_id',
+          data.map((a) => a.id),
+        )
+        .not('journal_entry_id', 'is', null)
+      if (error) throw new Error(`Failed to load depreciation status: ${error.message}`)
+      for (const row of (posted ?? []) as { asset_id: string }[]) {
+        postedAssetIds.add(row.asset_id)
+      }
+    }
+
+    const annotated = data.map((asset) => ({
+      ...asset,
+      has_posted_depreciation: postedAssetIds.has(asset.id),
+    }))
+    return NextResponse.json({ data: annotated })
   } catch (err) {
     return errorResponse(err, log, { requestId })
   }

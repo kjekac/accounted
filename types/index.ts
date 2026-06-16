@@ -659,6 +659,9 @@ export interface SupplierInvoice {
   total: number
   total_sek: number | null
 
+  /** Per-invoice öresavrundning override (display-only). null = off. */
+  ore_rounding: boolean | null
+
   vat_treatment: VatTreatment
   reverse_charge: boolean
 
@@ -796,6 +799,9 @@ export interface Invoice {
 
   total: number
   total_sek: number | null
+
+  /** Per-invoice öresavrundning override (display-only). null = inherit company_settings.ore_rounding. */
+  ore_rounding: boolean | null
 
   // VAT
   vat_treatment: VatTreatment
@@ -1056,6 +1062,8 @@ export interface CreateSupplierInvoiceInput {
   reverse_charge?: boolean
   payment_reference?: string
   notes?: string
+  /** Per-invoice öresavrundning override (display-only). Omitted = null (off). */
+  ore_rounding?: boolean
   items: CreateSupplierInvoiceItemInput[]
 }
 
@@ -1092,6 +1100,8 @@ export interface CreateInvoiceInput {
   /** Save as an unnumbered draft (no F-number, no invoice.created) until the
    *  user finalizes via "Granska & skapa". Lets the draft be hard-deleted. */
   save_as_draft?: boolean
+  /** Per-invoice öresavrundning override (display-only). Omitted = null (inherit company setting). */
+  ore_rounding?: boolean
   items: CreateInvoiceItemInput[]
 }
 
@@ -2978,6 +2988,13 @@ export interface IngestResult {
   transaction_ids: string[]
   /** First insert error encountered, surfaced for debugging. Optional. */
   first_error?: { message: string; code?: string | null; details?: string | null; hint?: string | null }
+  /**
+   * SHADOW-MODE counter: rows that an enforcing same-feed scope-drift dedup rule
+   * WOULD have treated as re-imports (IBAN-drift re-imports the external_id
+   * check misses). These are still imported — the field only measures how often
+   * the rule would fire, so it can be validated on real data before enforcement.
+   */
+  shadow_scope_drift_candidates?: number
 }
 
 // ── Invoice extraction (used by invoice-inbox extension and core utils) ──

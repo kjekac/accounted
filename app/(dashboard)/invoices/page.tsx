@@ -139,7 +139,7 @@ export default function InvoicesPage() {
       .filter(isOutstandingReceivable)
       .reduce((sum, i) => {
         if (i.currency === 'SEK') {
-          return sum + getDisplayTotal({ total: Number(i.total), currency: 'SEK' }, { ore_rounding: oreRounding }).displayed
+          return sum + getDisplayTotal({ total: Number(i.total), currency: 'SEK', ore_rounding: i.ore_rounding }, { ore_rounding: oreRounding }).displayed
         }
         return sum + Number(i.total_sek || i.total)
       }, 0),
@@ -289,7 +289,7 @@ export default function InvoicesPage() {
             const statusVariant: InvoiceStatusVariant | 'outline' = isUnsentInvoice ? 'outline' : status.variant
             const relativeTime = invoice.due_date ? getRelativeTimeLabel(invoice.due_date, invoice.status) : null
             const displayedTotal = getDisplayTotal(
-              { total: Number(invoice.total), currency: invoice.currency },
+              { total: Number(invoice.total), currency: invoice.currency, ore_rounding: invoice.ore_rounding },
               { ore_rounding: oreRounding },
             ).displayed
             return (

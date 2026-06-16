@@ -6,6 +6,16 @@ import type { ProposedDisposition } from '../types'
 export const BOLAGSSKATT_RATE = 0.206
 
 export interface BolagsskattInput {
+  /** Result before tax to use as the base, OVERRIDING the income-statement
+   *  net_result. The dispositions builder passes this in *preview* mode: there,
+   *  the proposed bokslutsdispositioner (periodiseringsfond avsättning/
+   *  återföring, SLP) are not posted yet, so the income statement still shows
+   *  the *pre-disposition* result. The builder computes the post-disposition
+   *  result itself and passes it here so the previewed tax matches what the
+   *  sequential commit will actually book. When omitted, the calculator reads
+   *  incomeStatement.net_result — correct only once the dispositions are already
+   *  posted (the POST commit path, where bolagsskatt is computed last). */
+  resultBeforeTaxOverride?: number
   /** Manual adjustments to taxable result that the calculator can't derive.
    *  Each is a SEK amount that ADDS to taxable result (so e.g. non-deductible
    *  representation costs are positive; non-taxable dividend income is negative). */
@@ -39,6 +49,51 @@ export interface BolagsskattComputation {
 }
 
 /**
+ * Sum the P&L effect of bokslutsdispositioner already posted in this period.
+ *
+ * Dispositioner (periodiseringsfond avsättning/återföring, SLP, över-
+ * avskrivningar) are booked with source_type='year_end', which
+ * generateIncomeStatement EXCLUDES — so net_result alone overstates resultat
+ * före skatt. The tax base must add them back. We sum class 88
+ * (bokslutsdispositioner) plus 7533 (SLP); tax (89xx) and the closing entry
+ * (8999/2099) are intentionally left out.
+ *
+ * Returns a signed SEK amount: avsättning (8811 debit) lowers it, återföring
+ * (8819 credit) raises it. Used by the commit path, where bolagsskatt is
+ * computed AFTER the other dispositions are posted.
+ */
+export async function sumPostedYearEndDispositions(
+  supabase: SupabaseClient,
+  companyId: string,
+  fiscalPeriodId: string,
+): Promise<number> {
+  const { data, error } = await supabase
+    .from('journal_entry_lines')
+    .select(
+      'account_number, debit_amount, credit_amount, journal_entries!inner(company_id, fiscal_period_id, status, source_type)',
+    )
+    .eq('journal_entries.company_id', companyId)
+    .eq('journal_entries.fiscal_period_id', fiscalPeriodId)
+    .eq('journal_entries.status', 'posted')
+    .eq('journal_entries.source_type', 'year_end')
+  if (error) {
+    throw new Error(`Failed to read posted dispositions: ${error.message}`)
+  }
+  type Row = {
+    account_number: string
+    debit_amount: number | string | null
+    credit_amount: number | string | null
+  }
+  let effect = 0
+  for (const row of (data ?? []) as Row[]) {
+    const acc = row.account_number
+    if (!(acc.startsWith('88') || acc === '7533')) continue
+    effect += (Number(row.credit_amount) || 0) - (Number(row.debit_amount) || 0)
+  }
+  return Math.round(effect * 100) / 100
+}
+
+/**
  * Compute bolagsskatt 20.6 % on the company's taxable result.
  *
  * Reads income-statement result before tax and adds the manual adjustments
@@ -56,8 +111,12 @@ export async function calculateBolagsskatt(
   fiscalPeriodId: string,
   input: BolagsskattInput = {},
 ): Promise<ProposedDisposition | null> {
-  const incomeStatement = await generateIncomeStatement(supabase, companyId, fiscalPeriodId)
-  const resultBeforeTax = incomeStatement.net_result
+  // Prefer an explicit base when the caller already knows the post-disposition
+  // result (preview mode). Only hit the income statement when no override is
+  // given — that path is correct once the dispositions are posted (commit).
+  const resultBeforeTax =
+    input.resultBeforeTaxOverride ??
+    (await generateIncomeStatement(supabase, companyId, fiscalPeriodId)).net_result
 
   const adjustments = input.manualAdjustments ?? {}
   const nonDeductibleExpenses = adjustments.nonDeductibleExpenses ?? 0

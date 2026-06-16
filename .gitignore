@@ -90,6 +90,11 @@ supabase/.branches/
 # Local-only SIE test fixtures — may contain real/scrubbed company data, never commit
 tests/fixtures/sie/
 
+# Local-only DESTRUCTIVE duplicate-cleanup tooling — one-off, run by hand against
+# real räkenskapsinformation. Deliberately NOT committed so it can never run in
+# CI/cron and so its logic isn't mistaken for a supported product feature.
+scripts/delete-duplicate-transactions.ts
+
 # Diagnostic/cleanup tooling under /scripts is tracked, but the DATA those
 # scripts read or emit (ledger dumps, reconciliation exports) is real customer
 # räkenskapsinformation — never commit it. Keep the .ts/.sql tooling, ignore the data.
