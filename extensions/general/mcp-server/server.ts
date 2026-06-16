@@ -1616,7 +1616,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_list_skills',
     title: 'List Domain Skills',
-    description: 'List available domain-knowledge skills filtered to this company (entity type, VAT, payroll). Workflow guides + loaded specialty atoms. Pass include_all=true to see hidden skills. Call gnubok_load_skill(slug) for any body.',
+    description: 'List domain-knowledge skills for this company (entity type, VAT, payroll). Workflow guides + loaded specialty atoms. Pass include_all=true to see hidden skills. Call gnubok_load_skill(slug) for any body.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2062,7 +2062,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_get_agent_briefing',
     title: 'Get Agent Briefing',
-    description: 'Bootstrap this company\'s accountant context in one call: profile_summary, loaded atoms (metadata only — gnubok_load_skill for bodies), top-30 active memories. Call once at session start.',
+    description: 'Bootstrap this company\'s accountant context in one call: user_name, profile_summary, loaded atoms (metadata only — gnubok_load_skill for bodies), top-30 active memories. Call once at session start.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2072,6 +2072,11 @@ export const tools: McpTool[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
+        user_name: {
+          type: ['string', 'null'],
+          description:
+            'Name of the person you are assisting — address them by it (their tilltalsnamn), not the owner in profile_summary. Null if unset.',
+        },
         profile_summary: {
           type: ['string', 'null'],
           description: 'Composer-generated one-paragraph summary of the company. Null if no agent profile exists yet (composer has not run).',
@@ -2107,7 +2112,7 @@ export const tools: McpTool[] = [
           },
         },
       },
-      required: ['profile_summary', 'atoms', 'memory'],
+      required: ['user_name', 'profile_summary', 'atoms', 'memory'],
     },
     annotations: {
       readOnlyHint: true,
@@ -2115,8 +2120,8 @@ export const tools: McpTool[] = [
       idempotentHint: true,
       openWorldHint: false,
     },
-    async execute(_args, companyId, _userId, supabase) {
-      const [profileRes, memoryRes] = await Promise.all([
+    async execute(_args, companyId, userId, supabase) {
+      const [profileRes, memoryRes, userRes] = await Promise.all([
         supabase
           .from('agent_profiles')
           .select('profile_summary, horizontal_atoms, vertical_atoms, modifier_atoms')
@@ -2130,6 +2135,16 @@ export const tools: McpTool[] = [
           .order('relevance_score', { ascending: false, nullsFirst: false })
           .order('last_accessed_at', { ascending: false, nullsFirst: false })
           .limit(30),
+        // The user's own preferred name (profiles.full_name) so the agent can
+        // address them correctly. Distinct from owner/signatory names that may
+        // appear in profile_summary — those come from Bolagsverket via TIC and
+        // describe the company, not necessarily the person chatting. Best-effort:
+        // a failed read yields a null name, never a thrown briefing.
+        supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('id', userId)
+          .maybeSingle(),
       ])
 
       if (profileRes.error) throw new Error(`Failed to load agent profile: ${profileRes.error.message}`)
@@ -2149,6 +2164,16 @@ export const tools: McpTool[] = [
         content: string
         relevance_score: number | null
       }>
+
+      // profiles read is best-effort — ignore userRes.error so a missing name
+      // never blocks the briefing. Data minimisation (GDPR Art.5(1)(c)): the
+      // agent only needs the tilltalsnamn to address the user, so pass the first
+      // token only — never the full legal name — into the LLM prompt. Mirrors
+      // app/api/agent/invoke/route.ts, which also derives firstName via split.
+      const userName =
+        (((userRes.data as { full_name: string | null } | null)?.full_name ?? '')
+          .trim()
+          .split(/\s+/)[0] || null)
 
       const atomIds = [
         ...(profile?.horizontal_atoms ?? []),
@@ -2178,6 +2203,7 @@ export const tools: McpTool[] = [
       }
 
       return {
+        user_name: userName,
         profile_summary: profile?.profile_summary ?? null,
         atoms,
         memory: memoryRows.map((m) => ({
@@ -2555,7 +2581,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_categorize_transaction',
     title: 'Categorize Bank Transaction',
-    description: 'Categorize a bank transaction. Stages the journal entry; commit via gnubok_approve_pending_operation. vat_amount overrides the computed moms; reverse_charge is rejected when the underlag shows the seller already charged VAT.',
+    description: 'Categorize a bank transaction. Stages the journal entry; commit via gnubok_approve_pending_operation. vat_amount overrides computed moms; reverse_charge is rejected when the underlag shows the seller charged VAT.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -4242,7 +4268,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_get_general_ledger',
     title: 'General Ledger (Huvudbok)',
-    description: 'General ledger (huvudbok) for a fiscal period: per-account opening balance, entries, closing balance. Optional account range filter. For ad-hoc cross-account, amount, or free-text line queries use gnubok_query_journal.',
+    description: 'General ledger (huvudbok) for a fiscal period: per-account opening, entries, closing balances. Optional account range filter. For ad-hoc cross-account/amount/free-text queries use gnubok_query_journal.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -4737,7 +4763,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_match_batch_allocate',
     title: 'Batch-Allocate Payment',
-    description: 'Allocate 1 bank tx across N customer OR N supplier invoices (samlingsbetalning, BFL 5 kap 6§). Use when one receipt covers many invoices or one transfer pays many bills. Customer needs income, supplier expense. Stages.',
+    description: 'Allocate 1 bank tx across N customer OR N supplier invoices (samlingsbetalning, BFL 5 kap 6§). Use when one receipt covers many invoices or one transfer pays many bills. Stages.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -5333,7 +5359,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_link_invoice_to_voucher',
     title: 'Link Invoice to Voucher',
-    description: 'Markera en faktura som betald via länk till en befintlig verifikation (faktureringsmetoden: krediterar 1510; kontantmetoden: debiterar 19xx). Skapar ingen ny verifikation. Kör gnubok_find_voucher_candidates_for_invoice först.',
+    description: 'Markera en faktura som betald via länk till en befintlig verifikation (faktureringsmetoden: krediterar 1510; kontantmetoden: debiterar 19xx). Kör gnubok_find_voucher_candidates_for_invoice först.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -6310,7 +6336,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_list_unmatched_documents',
     title: 'List Unmatched Documents',
-    description: 'List inbox documents not yet attached to any bank transaction or supplier invoice. Returns vendor/amount/currency/date hints. The amount is in the invoice currency — FX-normalise before comparing to transactions.amount.',
+    description: 'List inbox documents not yet attached to any bank transaction or supplier invoice. Returns vendor/amount/currency/date hints. Amount is in the invoice currency; FX-normalise before comparing to transactions.amount.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -6532,7 +6558,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_attach_document_to_transaction',
     title: 'Attach Document to Transaction',
-    description: 'Stage attaching a document to a bank transaction. Verify tx (date, amount, counterparty) and document (filename, vendor, amount) match first — the preview shown to the human reviewer mirrors what you pass here. Stages for approval.',
+    description: 'Stage attaching a document to a bank transaction. Verify tx (date, amount, counterparty) and document (filename, vendor, amount) match first — the reviewer\'s preview mirrors what you pass here. Stages for approval.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -8408,7 +8434,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_create_voucher',
     title: 'Create Manual Voucher (Verifikation)',
-    description: 'Stage a manual verifikation with arbitrary balanced lines: capitalization (1010), accruals, FX adjustments, rättelser outside categorize_transaction. Pass inbox_item_id to book a kvitto direct (links + attaches doc). HIGH risk.',
+    description: 'Stage a manual verifikation with arbitrary balanced lines: capitalization (1010), accruals, FX adjustments, rättelser outside categorize_transaction. Pass inbox_item_id to book a kvitto direct. HIGH risk.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -8809,7 +8835,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_reverse_journal_entry',
     title: 'Reverse Journal Entry (Storno)',
-    description: 'Stage a storno: inverts debits/credits; original stays visible per BFL 5 kap. Only when the affärshändelse should never have been booked (duplicate, ghost, test). Booked wrong → gnubok_correct_entry; refund → gnubok_credit_invoice. HIGH risk.',
+    description: 'Stage a storno: inverts debits/credits, original stays visible (BFL 5 kap). Only when it should never have been booked (duplicate, ghost, test). Booked wrong → gnubok_correct_entry; refund → gnubok_credit_invoice. HIGH risk.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -9546,7 +9572,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_set_inbox_extracted_data',
     title: 'Set Inbox Extracted Data',
-    description: 'Replace extracted_data on an inbox item with agent-supplied fields (bring-your-own-extraction). Use when your own pipeline parses the document better than Accounted\'s OCR. Follow with gnubok_create_supplier_invoice_from_inbox to stage.',
+    description: 'Replace extracted_data on an inbox item with agent-supplied fields. Use when your pipeline parses the document better than Accounted\'s OCR. Follow with gnubok_create_supplier_invoice_from_inbox to stage.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

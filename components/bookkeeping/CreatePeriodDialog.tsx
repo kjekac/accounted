@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useToast } from '@/components/ui/use-toast'
 import { Loader2, Lock } from 'lucide-react'
+import { computeSuggestedPeriod } from '@/lib/bookkeeping/suggest-fiscal-period'
 import type { FiscalPeriod } from '@/types'
 
 interface Props {
@@ -40,58 +41,6 @@ function errorMessage(err: unknown, fallback = 'Ett oväntat fel uppstod.'): str
     return (err as { message: string }).message
   }
   return fallback
-}
-
-function computeSuggestedPeriod(entryDate: string, periods: FiscalPeriod[]) {
-  if (periods.length === 0) {
-    // No periods at all — suggest a calendar year period around the entry date
-    const year = entryDate.split('-')[0]
-    return {
-      name: `FY ${year}`,
-      period_start: `${year}-01-01`,
-      period_end: `${year}-12-31`,
-    }
-  }
-
-  const sorted = [...periods].sort((a, b) => a.period_start.localeCompare(b.period_start))
-  const earliest = sorted[0]
-  const latest = sorted[sorted.length - 1]
-
-  if (entryDate < earliest.period_start) {
-    // Backward: end = day before earliest start, start = 12 months back, 1st of month
-    // Use UTC throughout — local-time Date math + toISOString() shifts dates by
-    // the timezone offset (e.g. CET produces 2024-12-31 → 2025-12-30).
-    const end = new Date(earliest.period_start + 'T00:00:00Z')
-    end.setUTCDate(end.getUTCDate() - 1)
-
-    const start = new Date(end)
-    start.setUTCMonth(start.getUTCMonth() - 11)
-    start.setUTCDate(1)
-
-    const startStr = start.toISOString().split('T')[0]
-    const endStr = end.toISOString().split('T')[0]
-    const startYear = start.getUTCFullYear()
-    const endYear = end.getUTCFullYear()
-    const name = startYear === endYear ? `FY ${startYear}` : `FY ${startYear}/${endYear}`
-
-    return { name, period_start: startStr, period_end: endStr }
-  }
-
-  // Forward: start = day after latest end, end = 12 months later (last day of month)
-  const start = new Date(latest.period_end + 'T00:00:00Z')
-  start.setUTCDate(start.getUTCDate() + 1)
-
-  const end = new Date(start)
-  end.setUTCMonth(end.getUTCMonth() + 12)
-  end.setUTCDate(0) // Last day of previous month
-
-  const startStr = start.toISOString().split('T')[0]
-  const endStr = end.toISOString().split('T')[0]
-  const startYear = start.getUTCFullYear()
-  const endYear = end.getUTCFullYear()
-  const name = startYear === endYear ? `FY ${startYear}` : `FY ${startYear}/${endYear}`
-
-  return { name, period_start: startStr, period_end: endStr }
 }
 
 export default function CreatePeriodDialog({ open, onOpenChange, entryDate, periods, onCreated }: Props) {

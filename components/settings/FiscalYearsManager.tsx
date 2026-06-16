@@ -9,6 +9,7 @@ import { Plus } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
 import type { FiscalPeriod } from '@/types'
 import CreatePeriodDialog from '@/components/bookkeeping/CreatePeriodDialog'
+import { suggestSeedDate } from '@/lib/bookkeeping/suggest-fiscal-period'
 
 /** Status of a fiscal period, in legal precedence: closed > locked > open. */
 function periodStatus(p: FiscalPeriod): 'closed' | 'locked' | 'open' {
@@ -21,22 +22,6 @@ const STATUS_VARIANT: Record<'closed' | 'locked' | 'open', 'secondary' | 'warnin
   closed: 'secondary',
   locked: 'warning',
   open: 'success',
-}
-
-/** ISO date one day after the latest period ends — seeds the create dialog so
- *  its suggestion chains forward onto the most recent year. UTC throughout to
- *  avoid timezone-offset date drift. */
-function nextEntryDate(periods: FiscalPeriod[]): string {
-  if (periods.length === 0) {
-    return new Date().toISOString().split('T')[0]
-  }
-  const latestEnd = periods
-    .map((p) => p.period_end)
-    .sort((a, b) => a.localeCompare(b))
-    .at(-1)!
-  const d = new Date(latestEnd + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() + 1)
-  return d.toISOString().split('T')[0]
 }
 
 export function FiscalYearsManager() {
@@ -115,7 +100,7 @@ export function FiscalYearsManager() {
       <CreatePeriodDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
-        entryDate={nextEntryDate(periods)}
+        entryDate={suggestSeedDate(periods, new Date().toISOString().split('T')[0])}
         periods={periods}
         onCreated={fetchPeriods}
       />

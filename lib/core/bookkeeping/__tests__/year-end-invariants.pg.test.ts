@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { getPool } from '@/tests/pg/setup'
-import { seedCompany, insertDraftJournalEntry } from '@/tests/pg/fixtures'
+import { seedCompany, insertDraftJournalEntry, insertFiscalPeriod } from '@/tests/pg/fixtures'
 import { roundOre, ORE_TOLERANCE } from '@/lib/bokslut/rounding'
 
 /**
@@ -109,6 +109,103 @@ describe('year-end invariants (pg-real)', () => {
     )
     const net = roundOre(Number(rows[0].net))
     expect(Math.abs(net)).toBeLessThanOrEqual(ORE_TOLERANCE)
+  })
+
+  it('result appropriation omföring zeros the carried-forward 2099 in the NEW period', async () => {
+    // This mirrors production: the closing entry lands in year N, and the
+    // omföring (2099 → 2098) is posted in the SEPARATE next period (year N+1)
+    // dated its first day — NOT back in the closing period. Posting both in one
+    // period (as a naive test would) hides whether 2099 actually starts the new
+    // year at zero, which is the whole invariant.
+    const { userId, companyId, fiscalPeriodId } = await seedCompany()
+
+    // Year N (2026): closing posts the result onto 2099 — a balanced 3001 → 2099
+    // transfer leaving 2099 with a 5000 credit balance as that year's UB.
+    const closeId = await insertDraftJournalEntry({
+      userId,
+      companyId,
+      fiscalPeriodId,
+      entryDate: '2026-12-31',
+      description: 'Årsbokslut',
+    })
+    await getPool().query(
+      `INSERT INTO public.journal_entry_lines
+         (journal_entry_id, account_number, debit_amount, credit_amount)
+       VALUES ($1, '3001', 5000.00, 0),
+              ($1, '2099', 0, 5000.00)`,
+      [closeId],
+    )
+    await getPool().query(`SELECT commit_journal_entry($1, $2)`, [companyId, closeId])
+
+    // Year N+1 (2027): a fresh open period. The omföring belongs here.
+    const nextPeriodId = await insertFiscalPeriod({
+      userId,
+      companyId,
+      name: '2027',
+      periodStart: '2027-01-01',
+      periodEnd: '2027-12-31',
+    })
+
+    // Opening-balance entry mirrors year N's UB into the new period: 2099 is
+    // carried forward verbatim (1930 IB balances it). This is what leaves 2099
+    // non-zero at the start of the new year — exactly what the omföring fixes.
+    const ibId = await insertDraftJournalEntry({
+      userId,
+      companyId,
+      fiscalPeriodId: nextPeriodId,
+      entryDate: '2027-01-01',
+      description: 'Ingående balans',
+      sourceType: 'opening_balance',
+    })
+    await getPool().query(
+      `INSERT INTO public.journal_entry_lines
+         (journal_entry_id, account_number, debit_amount, credit_amount)
+       VALUES ($1, '1930', 5000.00, 0),
+              ($1, '2099', 0, 5000.00)`,
+      [ibId],
+    )
+    await getPool().query(`SELECT commit_journal_entry($1, $2)`, [companyId, ibId])
+
+    // The year-open omföring: Dr 2099 / Cr 2098, dated the new period's first
+    // day, posted in the new period. source_type must be accepted by the CHECK
+    // constraint (see source-type-constraint.pg.test.ts) and the balance trigger
+    // must pass.
+    const omforId = await insertDraftJournalEntry({
+      userId,
+      companyId,
+      fiscalPeriodId: nextPeriodId,
+      entryDate: '2027-01-01',
+      description: 'Omföring av föregående års resultat (2099 → 2098)',
+      sourceType: 'result_appropriation',
+    })
+    await getPool().query(
+      `INSERT INTO public.journal_entry_lines
+         (journal_entry_id, account_number, debit_amount, credit_amount)
+       VALUES ($1, '2099', 5000.00, 0),
+              ($1, '2098', 0, 5000.00)`,
+      [omforId],
+    )
+    await getPool().query(`SELECT commit_journal_entry($1, $2)`, [companyId, omforId])
+
+    // In the NEW period: 2099 net must be 0 (IB +5000 credit cancelled by the
+    // omföring's 5000 debit); 2098 must hold the result (credit-normal, so
+    // debit − credit = −5000). Scoping to nextPeriodId is the point — 2099 zeros
+    // out in the period the result was carried into, not the closing period.
+    const { rows } = await getPool().query<{ acct: string; net: string }>(
+      `SELECT l.account_number AS acct,
+              COALESCE(SUM(l.debit_amount - l.credit_amount), 0) AS net
+         FROM public.journal_entry_lines l
+         JOIN public.journal_entries je ON je.id = l.journal_entry_id
+        WHERE je.company_id = $1
+          AND je.fiscal_period_id = $2
+          AND je.status = 'posted'
+          AND l.account_number IN ('2099', '2098')
+        GROUP BY l.account_number`,
+      [companyId, nextPeriodId],
+    )
+    const net = Object.fromEntries(rows.map((r) => [r.acct, roundOre(Number(r.net))]))
+    expect(Math.abs(net['2099'] ?? 0)).toBeLessThanOrEqual(ORE_TOLERANCE)
+    expect(net['2098']).toBe(-5000)
   })
 
   it('rejects a one-öre IB/UB style discrepancy in opening balance lines', async () => {

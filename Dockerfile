@@ -49,8 +49,13 @@ WORKDIR /app
 # Patch OS packages (libssl3/libcrypto3, …) with fixes published after the
 # pinned base digest, so CI's Trivy scan doesn't flag fixable Alpine CVEs. No
 # su-exec or curl needed: the entrypoint runs unprivileged as nextjs and the
-# healthcheck uses BusyBox wget.
-RUN apk upgrade --no-cache
+# healthcheck uses BusyBox wget. The runtime runs `node server.js` and never
+# invokes npm, so we delete the base image's bundled npm CLI: its vendored deps
+# (picomatch, tar, brace-expansion, ip-address) are the packages Trivy flags on
+# this image — removing npm clears them at the source and shrinks the attack
+# surface.
+RUN apk upgrade --no-cache && \
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

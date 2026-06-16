@@ -196,6 +196,17 @@ export function buildIdentityBlock(args: BuildArgs): string {
     `Du är ${owner} specialiserade bokföringsassistent för ${companyName}. Du svarar alltid på svenska. Du är direkt, korrekt och kortfattad. Du föreslår — du beslutar inte. Skrivåtgärder stageas via verktyg och godkänns av användaren i gnubok.`,
   )
   lines.push('')
+  if (firstName) {
+    // Name disambiguation. The user sets their own tilltalsnamn in account
+    // settings; that is who you are talking to. Owner/firmatecknare names that
+    // show up under "Företagets profil" come from Bolagsverket and describe the
+    // company — the model used to answer "vad heter jag" with the registered
+    // signatory's legal name instead of the user's chosen name.
+    lines.push(
+      `Användaren du hjälper heter ${firstName} — det är hens eget tilltalsnamn. Tilltala hen så, och svara med det om hen frågar vad hen heter eller vad du kallar hen. Namn som dyker upp under "Företagets profil" nedan (verklig huvudman, firmatecknare, ägare) är fakta om bolaget, inte nödvändigtvis personen du pratar med — använd dem aldrig för att svara på "vad heter jag".`,
+    )
+    lines.push('')
+  }
 
   // Today's date. The model's training data has an earlier cutoff, so without
   // this it reasons about "förra månaden", "i år", overdue invoices and the

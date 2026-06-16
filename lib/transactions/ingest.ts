@@ -7,7 +7,7 @@ import { findSupplierInvoiceMatch } from '@/lib/invoices/supplier-invoice-matchi
 import { fetchExchangeRate } from '@/lib/currency/riksbanken'
 import { logMatchEvent } from '@/lib/invoices/match-log'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
-import { contentBucketKey, descriptionsBridge, normalizeImportedDescription } from '@/lib/transactions/external-id'
+import { contentBucketKey, descriptionsBridge, normalizeImportedDescription, shiftIsoDate } from '@/lib/transactions/external-id'
 import { isImportedTransaction } from '@/lib/transactions/origin'
 import { createLogger } from '@/lib/logger'
 import type { Transaction, RawTransaction, IngestResult, IngestOptions, SupplierInvoice, Currency, ExchangeRate } from '@/types'
@@ -206,6 +206,7 @@ export async function ingestTransactions(
     errors: 0,
     transaction_ids: [],
     shadow_scope_drift_candidates: 0,
+    shadow_date_drift_candidates: 0,
   }
 
   const log = createLogger('transactions.ingest', { companyId })
@@ -218,6 +219,15 @@ export async function ingestTransactions(
   // DEDUP_SCOPE_DRIFT_MODE=off to silence. There is deliberately NO 'enforce'
   // branch yet: we validate on real fleet data first (see the plan).
   const scopeDriftShadow = process.env.DEDUP_SCOPE_DRIFT_MODE !== 'off'
+  // SHADOW-ONLY instrumentation for the date-drift bridge: the content bridge
+  // buckets on EXACT (date, öre), so a booking date that drifts a day between
+  // syncs lands its twin in an ADJACENT bucket and every dedup layer misses it
+  // (this produced the observed EB↔EB and CSV↔EB 1-day-apart duplicates). When
+  // on, we LOG + COUNT which surviving rows a ±1-day-tolerant rule WOULD treat
+  // as re-imports, but never change what is inserted. Default on; set
+  // DEDUP_DATE_DRIFT_MODE=off to silence. No 'enforce' branch — same as
+  // scope-drift, we validate on real fleet data first.
+  const dateDriftShadow = process.env.DEDUP_DATE_DRIFT_MODE !== 'off'
 
   // Pre-fetch existing transactions for content-based dedup (date+amount+
   // description prefix, plus the cross-channel mirror below). Booked rows catch
@@ -397,6 +407,26 @@ export async function ingestTransactions(
     }
   }
 
+  // ── Shadow-mode date-drift precompute (measure only) ─────────────────────
+  // The content bridge matches only the EXACT (date, öre) bucket, so a twin
+  // whose booking date drifted a day is invisible to it. Snapshot the stored
+  // buckets BEFORE the dedup loop — a COPY of each bucket's entries, so Layer-2's
+  // splices don't mutate what the shadow reads — so each surviving row can look
+  // one day to either side for an account-compatible twin without disturbing
+  // real dedup. Window is ±1 day (the only gap observed); a named constant so
+  // widening to ±2 is one line if fleet data shows it.
+  const DATE_DRIFT_WINDOW_DAYS = 1
+  const storedByBucketForDrift = new Map<string, BucketEntry[]>()
+  if (batchIsImportFeed && dateDriftShadow) {
+    for (const bucket of [existingMaps.booked, existingMaps.unbookedImported]) {
+      for (const [k, entries] of bucket) {
+        const snapshot = storedByBucketForDrift.get(k)
+        if (snapshot) snapshot.push(...entries)
+        else storedByBucketForDrift.set(k, [...entries])
+      }
+    }
+  }
+
   // Track already-matched invoice IDs within this ingestion batch
   // to prevent suggesting the same invoice for multiple transactions
   const matchedInvoiceIds = new Set<string>()
@@ -536,6 +566,74 @@ export async function ingestTransactions(
             matchedStoredCashAccountId: matched.cashAccountId,
           })
         }
+      }
+    }
+
+    // SHADOW-ONLY: date-drift. This row survived Layer-1 + Layer-2 and WILL
+    // insert. The content bridge only matched its EXACT (date, öre) bucket, so a
+    // twin whose booking date drifted a day is invisible to it. Look ±1 day for
+    // an account-compatible stored twin that EITHER bridges by description
+    // (same/enriched title — the EB↔EB hotel/fee case) OR is a cross-feed
+    // count-symmetric mirror displaced by a day (the CSV↔EB case where the
+    // descriptions don't bridge). Record it for fleet validation, then insert
+    // unchanged — this block never affects result.imported/duplicates.
+    //
+    // Fail-safe date guard: measurement must NEVER abort a real import. raw.date
+    // is always ISO in practice, but a malformed value would make shiftIsoDate
+    // throw (new Date(NaN).toISOString()), so we skip detection rather than risk
+    // it. Any /^\d{4}-\d{2}-\d{2}$/ value is safe — Date.UTC normalizes
+    // out-of-range parts to a finite epoch, never NaN.
+    if (dateDriftShadow && batchIsImportFeed && /^\d{4}-\d{2}-\d{2}$/.test(raw.date)) {
+      let driftMatch: { entry: BucketEntry; gap: number; signal: 'desc' | 'cross-channel' } | undefined
+      const incomingHere = incomingByBucket.get(bucketKey) ?? 0
+      for (let delta = 1; delta <= DATE_DRIFT_WINDOW_DAYS && !driftMatch; delta++) {
+        for (const sign of [-1, 1] as const) {
+          const adjKey = contentBucketKey(shiftIsoDate(raw.date, sign * delta), raw.amount)
+          const entries = storedByBucketForDrift.get(adjKey)
+          if (!entries) continue
+          // Cross-feed count-symmetry across the drift: equal counts of incoming
+          // rows in THIS bucket and account-compatible cross-feed rows one day
+          // over — the cross-channel mirror, displaced by a date drift.
+          const adjCrossFeed = entries.filter(
+            (e) =>
+              e.isImportFeed &&
+              e.source !== batchSource &&
+              (cashAccountId === null || e.cashAccountId === null || e.cashAccountId === cashAccountId),
+          ).length
+          const mirrorSymmetric = adjCrossFeed > 0 && incomingHere === adjCrossFeed
+          for (const entry of entries) {
+            const sameAccount =
+              cashAccountId === null || entry.cashAccountId === null || entry.cashAccountId === cashAccountId
+            if (!sameAccount) continue
+            if (descriptionsBridge(description, entry.desc)) {
+              driftMatch = { entry, gap: sign * delta, signal: 'desc' }
+              break
+            }
+            if (mirrorSymmetric && entry.isImportFeed && entry.source !== batchSource) {
+              driftMatch = { entry, gap: sign * delta, signal: 'cross-channel' }
+              break
+            }
+          }
+          if (driftMatch) break
+        }
+      }
+      if (driftMatch) {
+        result.shadow_date_drift_candidates = (result.shadow_date_drift_candidates ?? 0) + 1
+        log.info('import dedup shadow: date-drift candidate', {
+          decision: 'date-drift',
+          mode: 'shadow',
+          signal: driftMatch.signal,
+          dayGap: driftMatch.gap,
+          bucket: bucketKey,
+          incomingExternalId: raw.external_id,
+          incomingDescription: description,
+          incomingAmount: raw.amount,
+          incomingSource: raw.import_source ?? null,
+          cashAccountId,
+          matchedStoredExternalId: driftMatch.entry.externalId,
+          matchedStoredDescription: driftMatch.entry.desc,
+          matchedStoredCashAccountId: driftMatch.entry.cashAccountId,
+        })
       }
     }
 

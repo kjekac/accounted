@@ -8,6 +8,7 @@ const log = createLogger('year-end-service')
 import { generateTrialBalance } from '@/lib/reports/trial-balance'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
 import { lockPeriod, closePeriod, createNextPeriod, findNextPeriod } from './period-service'
+import { generateResultAppropriation } from './result-appropriation-service'
 import {
   previewCurrencyRevaluation,
   executeCurrencyRevaluation,
@@ -425,6 +426,7 @@ export async function previewYearEndClosing(
  * 8. Close the period (irreversible — every guard must run before this)
  * 9. Generate opening balances in next period
  * 10. Validate IB/UB continuity
+ * 11. Omföra föregående års resultat (2099 → 2098) in the new period (AB only)
  */
 export async function executeYearEndClosing(
   supabase: SupabaseClient,
@@ -610,6 +612,38 @@ export async function executeYearEndClosing(
     )
   }
 
+  // 11. Omföra föregående års resultat: move 2099 "Årets resultat" off onto
+  //     2098 in the new period so it starts the year at zero (aktiebolag only).
+  //     This is a SEPARATE verifikat by design — folding it into the IB entry
+  //     would make the continuity check above fail, since that check reads IB
+  //     solely from the opening_balance entry. Non-fatal: the close and IB are
+  //     already valid and immutable; a failure here is logged and left for the
+  //     retroactive catch-up script (scripts/repair-result-appropriation.ts).
+  let resultAppropriationEntry: JournalEntry | null = null
+  let resultAppropriationFailed = false
+  try {
+    resultAppropriationEntry = await generateResultAppropriation(
+      supabase,
+      companyId,
+      userId,
+      nextPeriod.id
+    )
+  } catch (err) {
+    resultAppropriationFailed = true
+    // alert:true marks this for out-of-band alerting (the log sink / Sentry
+    // integration filters on it) — a silent accounting failure must not wait
+    // for a manual audit. The new period now opens with 2099 still carrying the
+    // prior result; resultAppropriationFailed below drives a UI warning and the
+    // catch-up script (scripts/repair-result-appropriation.ts) posts the fix.
+    log.error('year-end: result appropriation omföring failed (non-fatal)', err as Error, {
+      operation: 'year_end.result_appropriation',
+      alert: true,
+      companyId,
+      entityType: 'fiscal_period',
+      entityId: nextPeriod.id,
+    })
+  }
+
   // Fetch the now-closed period for the event payload
   const { data: closedPeriod } = await supabase
     .from('fiscal_periods')
@@ -630,6 +664,8 @@ export async function executeYearEndClosing(
     nextPeriod,
     openingBalanceEntry,
     revaluationEntry: revaluationResult?.entry ?? null,
+    resultAppropriationEntry,
+    resultAppropriationFailed,
     continuity,
   }
 }

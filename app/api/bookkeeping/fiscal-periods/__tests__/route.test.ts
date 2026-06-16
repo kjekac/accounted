@@ -284,18 +284,77 @@ describe('POST /api/bookkeeping/fiscal-periods', () => {
     expect(res.status).toBe(200)
   })
 
-  it('rejects period that is neither forward nor backward', async () => {
+  // Regression (2026-06-16): a company with FY 2024 + FY 2026 but no
+  // FY 2025 could not create the missing year — the old code only allowed
+  // chaining before the earliest or after the latest period. A period that
+  // exactly fills an interior gap must be allowed.
+  it('allows filling a gap between two existing periods', async () => {
+    buildMockSupabase({
+      allPeriods: [
+        { id: 'p1', period_start: '2024-01-01', period_end: '2024-12-31', is_closed: true },
+        { id: 'p2', period_start: '2026-01-01', period_end: '2026-12-31', is_closed: false },
+      ],
+      overlapping: [],
+    })
+    const req = createMockRequest({ name: 'FY 2025', period_start: '2025-01-01', period_end: '2025-12-31' })
+    const res = await POST(req)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data).toBeDefined()
+  })
+
+  it('rejects a gap-fill period that is not adjacent to the preceding period', async () => {
     buildMockSupabase({
       allPeriods: [
         { id: 'p1', period_start: '2024-01-01', period_end: '2024-12-31', is_closed: true },
         { id: 'p2', period_start: '2026-01-01', period_end: '2026-12-31', is_closed: false },
       ],
     })
-    const req = createMockRequest({ name: 'FY 2025', period_start: '2025-01-01', period_end: '2025-12-31' })
+    // Starts 2025-02-01 instead of 2025-01-01 — would leave a hole after FY 2024.
+    const req = createMockRequest({ name: 'FY 2025', period_start: '2025-02-01', period_end: '2025-12-31' })
     const res = await POST(req)
     expect(res.status).toBe(400)
     const body = await res.json()
-    expect(body.error).toMatch(/must chain before the earliest or after the latest/)
+    expect(body.error).toMatch(/must start on 2025-01-01/)
+  })
+
+  // Regression: the start check only constrains the predecessor side. A gap-fill
+  // period that starts correctly (day after FY 2024) but ends BEFORE the day
+  // before FY 2026 would leave a fresh sub-gap while still relinking FY 2026's
+  // previous_period_id onto it — a broken continuity chain. The end-adjacency
+  // guard must reject it.
+  it('rejects a gap-fill period that does not end the day before the successor', async () => {
+    buildMockSupabase({
+      allPeriods: [
+        { id: 'p1', period_start: '2024-01-01', period_end: '2024-12-31', is_closed: true },
+        { id: 'p2', period_start: '2026-01-01', period_end: '2026-12-31', is_closed: false },
+      ],
+    })
+    // Correct start (2025-01-01) but ends 2025-11-30 — leaves a hole before FY 2026.
+    const req = createMockRequest({ name: 'FY 2025', period_start: '2025-01-01', period_end: '2025-11-30' })
+    const res = await POST(req)
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toMatch(/must end on 2025-12-31/)
+  })
+
+  // A gap fill is a backfill (like backward chaining), so the "prior year must be
+  // locked" guard must NOT apply — otherwise the two open neighbours would block it.
+  it('allows a gap fill even when both neighbouring years are open', async () => {
+    buildMockSupabase({
+      allPeriods: [
+        { id: 'p1', period_start: '2024-01-01', period_end: '2024-12-31', is_closed: false },
+        { id: 'p2', period_start: '2026-01-01', period_end: '2026-12-31', is_closed: false },
+      ],
+      openPeriods: [
+        { id: 'p1', name: 'FY 2024', period_start: '2024-01-01', period_end: '2024-12-31' },
+        { id: 'p2', name: 'FY 2026', period_start: '2026-01-01', period_end: '2026-12-31' },
+      ],
+      overlapping: [],
+    })
+    const req = createMockRequest({ name: 'FY 2025', period_start: '2025-01-01', period_end: '2025-12-31' })
+    const res = await POST(req)
+    expect(res.status).toBe(200)
   })
 
   it('rejects invalid period duration (> 18 months)', async () => {
@@ -460,5 +519,81 @@ describe('POST /api/bookkeeping/fiscal-periods', () => {
     expect(res.status).toBe(200)
     expect(insertSpy).toHaveBeenCalledTimes(1)
     expect(insertSpy.mock.calls[0][0].previous_period_id).toBeNull()
+  })
+
+  it('gap fill chains to the predecessor and relinks the successor', async () => {
+    const insertSpy = vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        single: vi.fn().mockResolvedValue({ data: { id: 'new-2025', name: 'FY 2025' }, error: null }),
+      }),
+    })
+    const updatedIds: string[] = []
+    const updatePayloads: unknown[] = []
+    const updateSpy = vi.fn().mockImplementation((payload: unknown) => {
+      updatePayloads.push(payload)
+      return {
+        eq: vi.fn().mockImplementation((col: string, val: string) => {
+          if (col === 'id') updatedIds.push(val)
+          return { eq: vi.fn().mockResolvedValue({ error: null }) }
+        }),
+      }
+    })
+
+    let fpCallIndex = 0
+    const supabase = {
+      auth: { getUser: vi.fn().mockResolvedValue({ data: { user: { id: 'user-1' } } }) },
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === 'company_settings') {
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                maybeSingle: vi.fn().mockResolvedValue({ data: { bookkeeping_locked_through: null }, error: null }),
+              }),
+            }),
+          }
+        }
+        fpCallIndex++
+        const callNum = fpCallIndex
+        return {
+          select: vi.fn().mockImplementation(() => {
+            if (callNum === 1) {
+              // allPeriods: FY 2024 + FY 2026 with a hole at 2025
+              return {
+                eq: vi.fn().mockReturnValue({
+                  order: vi.fn().mockResolvedValue({
+                    data: [
+                      { id: 'p-2024', period_start: '2024-01-01', period_end: '2024-12-31', is_closed: false },
+                      { id: 'p-2026', period_start: '2026-01-01', period_end: '2026-12-31', is_closed: false },
+                    ],
+                    error: null,
+                  }),
+                }),
+              }
+            }
+            // overlap query
+            return {
+              eq: vi.fn().mockReturnValue({
+                lte: vi.fn().mockReturnValue({
+                  gte: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue({ data: [], error: null }) }),
+                }),
+              }),
+            }
+          }),
+          insert: insertSpy,
+          update: updateSpy,
+        }
+      }),
+    }
+    ;(createClient as ReturnType<typeof vi.fn>).mockResolvedValue(supabase)
+
+    const req = createMockRequest({ name: 'FY 2025', period_start: '2025-01-01', period_end: '2025-12-31' })
+    const res = await POST(req)
+
+    expect(res.status).toBe(200)
+    // New period chains onto FY 2024 (the predecessor).
+    expect(insertSpy.mock.calls[0][0].previous_period_id).toBe('p-2024')
+    // FY 2026 (the successor) is relinked to follow the new period.
+    expect(updatePayloads[0]).toEqual({ previous_period_id: 'new-2025' })
+    expect(updatedIds[0]).toBe('p-2026')
   })
 })

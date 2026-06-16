@@ -65,23 +65,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: durationError }, { status: 400 })
   }
 
-  if (allPeriods && allPeriods.length > 0) {
-    const earliest = allPeriods[0]
-    const latest = allPeriods[allPeriods.length - 1]
+  // Identify the new period's immediate neighbours. Fiscal periods never overlap
+  // (the no_overlapping_fiscal_periods DB exclusion constraint), so ordering by
+  // period_start is also ordering by period_end.
+  //   predecessor = closest existing period ending before the new one starts
+  //   successor   = closest existing period starting after the new one ends
+  const sortedPeriods = allPeriods ?? []
+  const predecessor = [...sortedPeriods].reverse().find((p) => p.period_end < body.period_start) ?? null
+  const successor = sortedPeriods.find((p) => p.period_start > body.period_end) ?? null
 
-    const isBackward = body.period_end < earliest.period_start
-    const isForward = body.period_start > latest.period_end
+  if (sortedPeriods.length > 0) {
+    const earliest = sortedPeriods[0]
+    const latest = sortedPeriods[sortedPeriods.length - 1]
 
-    if (!isBackward && !isForward) {
-      // Neither backward nor forward — must overlap or be in the middle
-      return NextResponse.json(
-        { error: 'New period must chain before the earliest or after the latest existing period' },
-        { status: 400 }
-      )
-    }
+    const isPrepend = body.period_end < earliest.period_start
+    const isAppend = body.period_start > latest.period_end
 
-    if (isBackward) {
-      // Backward chaining: new period_end must be day before earliest period_start
+    if (isPrepend) {
+      // Prepend before the earliest period: new period_end must be the day before
+      // the earliest period starts. Skip the "no open prior period" constraint —
+      // backfilling an earlier year needs that year to stay open.
       const expectedEnd = new Date(earliest.period_start + 'T12:00:00Z')
       expectedEnd.setUTCDate(expectedEnd.getUTCDate() - 1)
       const expectedEndStr = expectedEnd.toISOString().split('T')[0]
@@ -91,58 +94,91 @@ export async function POST(request: Request) {
           { status: 400 }
         )
       }
-      // Skip "no unclosed period" constraint for backward chaining (backfill needs the period open)
     } else {
-      // Forward chaining: keep existing constraints (contiguity + no unclosed periods)
-      const prev = new Date(latest.period_end + 'T12:00:00Z')
-      prev.setUTCDate(prev.getUTCDate() + 1)
-      const expectedStart = prev.toISOString().split('T')[0]
-      if (body.period_start !== expectedStart) {
-        return NextResponse.json(
-          { error: `Period must start on ${expectedStart} (day after latest period ends)` },
-          { status: 400 }
-        )
+      // Forward-like: either append a new latest year OR fill an interior gap
+      // between two existing years. Both must chain onto their immediate
+      // predecessor — i.e. start the day after it ends. When appending, the
+      // predecessor IS the latest period (original forward-chaining behaviour);
+      // when filling a gap, it's the year just before the hole.
+      if (predecessor) {
+        const next = new Date(predecessor.period_end + 'T12:00:00Z')
+        next.setUTCDate(next.getUTCDate() + 1)
+        const expectedStart = next.toISOString().split('T')[0]
+        if (body.period_start !== expectedStart) {
+          return NextResponse.json(
+            { error: `Period must start on ${expectedStart} (day after the preceding period ends)` },
+            { status: 400 }
+          )
+        }
+      }
+      // No predecessor here means the new period reaches back over the earliest
+      // existing period (an overlap) — the overlap check below returns 409.
+
+      // Gap fill: the new period must also butt up against its SUCCESSOR — end
+      // exactly the day before the successor starts — so it fills the hole
+      // completely. The predecessor check above only constrains the start side.
+      // Without this end check a too-short period would leave a fresh sub-gap
+      // yet still get the successor's previous_period_id relinked onto it
+      // (below), silently breaking the BFNAR 2013:2 continuity chain; a too-long
+      // period that bleeds past the successor is separately caught as an overlap
+      // (409). Appends have no successor, so this is skipped.
+      if (successor) {
+        const prevDay = new Date(successor.period_start + 'T12:00:00Z')
+        prevDay.setUTCDate(prevDay.getUTCDate() - 1)
+        const expectedEnd = prevDay.toISOString().split('T')[0]
+        if (body.period_end !== expectedEnd) {
+          return NextResponse.json(
+            { error: `Period must end on ${expectedEnd} (day before the following period starts)` },
+            { status: 400 }
+          )
+        }
       }
 
-      // Enforce: max one editable prior period (no skipping ahead) — forward only.
-      // A period is "effectively locked" if EITHER its own locked_at is set, OR
+      // The "prior year must be locked" guard applies only when appending a new
+      // latest räkenskapsår, not when backfilling a gap between existing years.
+      // A gap fill is a backfill (like prepend) and must not be blocked by an
+      // open neighbouring year.
+      //
+      // A period counts as "effectively locked" if its own locked_at is set, OR
       // company_settings.bookkeeping_locked_through covers its end date (the
       // enforce_company_lock_date trigger blocks any entry on/before that date).
       // BFL 6 kap allows löpande bokföring of the new year in parallel with
       // bokslut work on the prior year, so locked-but-not-closed prior periods
       // must not block creating the next räkenskapsår.
-      const { data: openPeriods } = await supabase
-        .from('fiscal_periods')
-        .select('id, name, period_start, period_end')
-        .eq('company_id', companyId)
-        .eq('is_closed', false)
-        .is('locked_at', null)
-        .order('period_start', { ascending: true })
+      if (isAppend) {
+        const { data: openPeriods } = await supabase
+          .from('fiscal_periods')
+          .select('id, name, period_start, period_end')
+          .eq('company_id', companyId)
+          .eq('is_closed', false)
+          .is('locked_at', null)
+          .order('period_start', { ascending: true })
 
-      const { data: settings } = await supabase
-        .from('company_settings')
-        .select('bookkeeping_locked_through')
-        .eq('company_id', companyId)
-        .maybeSingle()
+        const { data: settings } = await supabase
+          .from('company_settings')
+          .select('bookkeeping_locked_through')
+          .eq('company_id', companyId)
+          .maybeSingle()
 
-      const lockThrough = settings?.bookkeeping_locked_through ?? null
-      const trulyOpen = (openPeriods ?? []).filter(
-        (p) => !(lockThrough && p.period_end <= lockThrough)
-      )
+        const lockThrough = settings?.bookkeeping_locked_through ?? null
+        const trulyOpen = (openPeriods ?? []).filter(
+          (p) => !(lockThrough && p.period_end <= lockThrough)
+        )
 
-      if (trulyOpen.length > 0) {
-        // Hand the blocking periods (id + name + dates) to the client so the
-        // "Skapa räkenskapsår" dialog can offer to lock them inline and retry,
-        // instead of dead-ending the user on a message they can't act on.
-        const blockingPeriods = trulyOpen.map((p) => ({
-          id: p.id,
-          name: p.name,
-          period_start: p.period_start,
-          period_end: p.period_end,
-        }))
-        return errorResponseFromCode('PERIOD_CREATE_BLOCKED_BY_OPEN_PERIODS', log, {
-          details: { blockingPeriods },
-        })
+        if (trulyOpen.length > 0) {
+          // Hand the blocking periods (id + name + dates) to the client so the
+          // "Skapa räkenskapsår" dialog can offer to lock them inline and retry,
+          // instead of dead-ending the user on a message they can't act on.
+          const blockingPeriods = trulyOpen.map((p) => ({
+            id: p.id,
+            name: p.name,
+            period_start: p.period_start,
+            period_end: p.period_end,
+          }))
+          return errorResponseFromCode('PERIOD_CREATE_BLOCKED_BY_OPEN_PERIODS', log, {
+            details: { blockingPeriods },
+          })
+        }
       }
     }
   }
@@ -163,18 +199,11 @@ export async function POST(request: Request) {
     )
   }
 
-  // Resolve previous_period_id for forward chaining so the new period is
-  // linked to the period it follows. Without this, balance-sheet/trial-balance
-  // reports fall back to scanning every prior journal line (BFNAR 2013:2
-  // continuity chain is broken). Backward chaining sets previous_period_id
-  // on the old earliest period instead (see below), not on the new one.
-  let previousPeriodId: string | null = null
-  if (allPeriods && allPeriods.length > 0) {
-    const latest = allPeriods[allPeriods.length - 1]
-    if (body.period_start > latest.period_end) {
-      previousPeriodId = latest.id
-    }
-  }
+  // Chain the new period onto its predecessor (append or gap fill) so reports
+  // can walk the BFNAR 2013:2 continuity chain instead of scanning every prior
+  // journal line. Prepend leaves this null and instead relinks the old earliest
+  // period to follow the new one (below).
+  const previousPeriodId = predecessor ? predecessor.id : null
 
   const { data, error } = await supabase
     .from('fiscal_periods')
@@ -193,14 +222,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  // For backward chaining: update the old earliest period's previous_period_id
-  if (allPeriods && allPeriods.length > 0) {
-    const earliest = allPeriods[0]
-    if (body.period_end < earliest.period_start) {
+  // Keep the continuity chain intact for the period that now follows the new one:
+  // - Prepend: the old earliest period follows the new (earlier) period.
+  // - Gap fill: the successor period follows the new period.
+  // (Append has no successor, so nothing to relink.)
+  if (sortedPeriods.length > 0) {
+    const earliest = sortedPeriods[0]
+    const isPrepend = body.period_end < earliest.period_start
+    const periodToRelink = isPrepend ? earliest : successor
+    if (periodToRelink) {
       await supabase
         .from('fiscal_periods')
         .update({ previous_period_id: data.id })
-        .eq('id', earliest.id)
+        .eq('id', periodToRelink.id)
         .eq('company_id', companyId)
     }
   }

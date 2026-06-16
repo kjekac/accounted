@@ -99,3 +99,11 @@ scripts/delete-duplicate-transactions.ts
 # scripts read or emit (ledger dumps, reconciliation exports) is real customer
 # räkenskapsinformation — never commit it. Keep the .ts/.sql tooling, ignore the data.
 scripts/*.csv
+
+# Local-only DESTRUCTIVE support tool — reopens a closed räkenskapsår by deleting
+# only its bokslut layer (dispositioner + closing entry + next-year IB). Run by
+# hand against real räkenskapsinformation; bypasses BFL immutability triggers, so
+# it must never live in the repo / CI / cron.
+scripts/reopen-bokslut.sql
+
+.claude/plans/write-up-a-plan-streamed-fiddle.md

@@ -89,6 +89,17 @@ describe('chat system prompt — always-on epistemics rules', () => {
     expect(out).toContain('träningsdata')
   })
 
+  it('addresses the user by their own tilltalsnamn, not owner/signatory names from the profile', () => {
+    // Regression: the agent answered "vad heter jag" with the registered
+    // firmatecknare's legal name from "Företagets profil" instead of the
+    // user's own chosen name. The role block must name the user (firstName)
+    // and explicitly demote company owner/signatory names.
+    const out = block(null)
+    expect(out).toContain('Jakob')
+    expect(out).toMatch(/tilltalsnamn/i)
+    expect(out).toContain('firmatecknare')
+  })
+
   it('lets the agent read a pre-loaded atom directly instead of re-loading it', () => {
     // Declarative intents pre-load swedish-vat etc. into Block 1, so the rule
     // must not force a redundant gnubok_load_skill when the owning atom is

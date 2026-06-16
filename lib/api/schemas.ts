@@ -202,6 +202,7 @@ export const JournalEntrySourceTypeSchema = z.enum([
   'currency_revaluation',
   'reminder_fee',
   'accrual',
+  'result_appropriation',
 ])
 
 /** Query params for GET /api/bookkeeping/voucher-sequences/next. */

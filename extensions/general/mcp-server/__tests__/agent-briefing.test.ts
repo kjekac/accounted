@@ -44,6 +44,8 @@ function mockSupabase(opts: {
     title: string | null
     description: string
   }>
+  // profiles.full_name for the signed-in user. undefined → no profile row.
+  userFullName?: string | null
   errors?: { profile?: string; memory?: string; atoms?: string }
 }) {
   const profile = opts.profile === undefined ? null : opts.profile
@@ -53,6 +55,19 @@ function mockSupabase(opts: {
 
   return {
     from: vi.fn((table: string) => {
+      if (table === 'profiles') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn().mockResolvedValue({
+                data:
+                  opts.userFullName === undefined ? null : { full_name: opts.userFullName },
+                error: null,
+              }),
+            })),
+          })),
+        }
+      }
       if (table === 'agent_profiles') {
         return {
           select: vi.fn(() => ({
@@ -120,7 +135,7 @@ describe('gnubok_get_agent_briefing tool', () => {
     expect(input.required).toBeUndefined()
   })
 
-  it('returns null summary, empty atoms, empty memory when no profile exists', async () => {
+  it('returns null summary, empty atoms, empty memory, null user_name when nothing exists', async () => {
     const tool = tools.find((t) => t.name === 'gnubok_get_agent_briefing')!
     const supabase = mockSupabase({ profile: null })
     const result = (await tool.execute(
@@ -130,6 +145,7 @@ describe('gnubok_get_agent_briefing tool', () => {
       supabase as never,
       { type: 'api_key' }
     )) as {
+      user_name: string | null
       profile_summary: string | null
       atoms: unknown[]
       memory: unknown[]
@@ -137,6 +153,34 @@ describe('gnubok_get_agent_briefing tool', () => {
     expect(result.profile_summary).toBeNull()
     expect(result.atoms).toEqual([])
     expect(result.memory).toEqual([])
+    expect(result.user_name).toBeNull()
+  })
+
+  it('returns only the first name (tilltalsnamn) — data minimisation, not the full legal name', async () => {
+    const tool = tools.find((t) => t.name === 'gnubok_get_agent_briefing')!
+    const supabase = mockSupabase({ profile: null, userFullName: 'Peter Bennet' })
+    const result = (await tool.execute(
+      {},
+      'company-1',
+      'user-1',
+      supabase as never,
+      { type: 'api_key' }
+    )) as { user_name: string | null }
+    // GDPR Art.5(1)(c): the surname never enters the LLM prompt.
+    expect(result.user_name).toBe('Peter')
+  })
+
+  it('treats a blank full_name as no name (null)', async () => {
+    const tool = tools.find((t) => t.name === 'gnubok_get_agent_briefing')!
+    const supabase = mockSupabase({ profile: null, userFullName: '   ' })
+    const result = (await tool.execute(
+      {},
+      'company-1',
+      'user-1',
+      supabase as never,
+      { type: 'api_key' }
+    )) as { user_name: string | null }
+    expect(result.user_name).toBeNull()
   })
 
   it('returns profile + atom metadata + memory when populated', async () => {
