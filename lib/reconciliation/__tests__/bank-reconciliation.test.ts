@@ -953,4 +953,117 @@ describe('getReconciliationStatus', () => {
     expect(status.difference).toBe(-500)
     expect(status.is_reconciled).toBe(false)
   })
+
+  it('floors a full-history window at the IB date so a prior period cannot count the IB (issue #751)', async () => {
+    // Real-world repro: the widget's date filter defaults to "full history"
+    // (no dateFrom). A company with two fiscal periods has prior-period (2025)
+    // movements on the account that net to EXACTLY the opening balance, plus the
+    // new period's IB entry dated on period start. Summing the whole history and
+    // only subtracting the IB *summary* leaves the prior-period *detail* in the
+    // movement while the bank feed only covers the current period — a phantom
+    // difference equal to the IB. The server now floors the window at the most
+    // recent IB date on the account, clamping BOTH sides to the current period.
+    const { supabase, enqueue } = createQueueMockSupabase()
+
+    // 1) transactions: a prior-period feed line (6000, 2025) + the current
+    //    period's feed (5000, 2026). The floor must drop the 2025 one.
+    enqueue({
+      data: [
+        { date: '2025-03-31', amount: 6000, journal_entry_id: 'je-p', reconciliation_method: 'manual' },
+        { date: '2026-02-15', amount: 5000, journal_entry_id: 'je-c', reconciliation_method: 'manual' },
+      ],
+    })
+    // 2) GL lines on the account: prior-period movements (6000 + 4000 = 10000,
+    //    dated 2025) that net to the IB, the IB itself (10000, dated 2026-01-01),
+    //    and the current period's movement (5000, dated 2026).
+    enqueue({
+      data: [
+        { debit_amount: 6000, credit_amount: 0, journal_entries: { id: 'je-p1', status: 'posted', source_type: 'import', entry_date: '2025-03-31' } },
+        { debit_amount: 4000, credit_amount: 0, journal_entries: { id: 'je-p2', status: 'posted', source_type: 'import', entry_date: '2025-09-30' } },
+        { debit_amount: 10000, credit_amount: 0, journal_entries: { id: 'je-ib', status: 'posted', source_type: 'opening_balance', entry_date: '2026-01-01' } },
+        { debit_amount: 5000, credit_amount: 0, journal_entries: { id: 'je-c1', status: 'posted', source_type: 'bank_transaction', entry_date: '2026-02-15' } },
+      ],
+    })
+    // 3) RPC: empty
+    enqueue({ data: [] })
+
+    // No dateFrom — the "full history" default that triggers the bug.
+    const status = await getReconciliationStatus(supabase as never, 'company-1')
+
+    // Both sides clamped to >= 2026-01-01 (the IB date): only the IB + the
+    // current-period movement remain on the GL side; only the 2026 feed remains
+    // on the bank side. The prior period (which equalled the IB) is excluded.
+    expect(status.gl_1930_balance).toBe(15000)          // IB 10000 + 5000 (NOT 25000)
+    expect(status.gl_1930_period_movement).toBe(5000)   // IB excluded
+    expect(status.gl_1930_opening_balance).toBe(10000)  // UI "räknas inte" note stays truthful
+    expect(status.bank_transaction_total).toBe(5000)    // 2025 feed floored out
+    expect(status.difference).toBe(0)
+    expect(status.is_reconciled).toBe(true)
+  })
+
+  it('floors at the IB date even when the caller passes a dateFrom earlier than the IB', async () => {
+    // Safety net for a manual date override / direct API call: clearing the date
+    // filter (or setting it before the IB) must not resurrect the phantom diff.
+    // effectiveFrom = max(dateFrom, ibDate), so an earlier dateFrom is raised.
+    const { supabase, enqueue } = createQueueMockSupabase()
+
+    enqueue({
+      data: [
+        { date: '2025-05-01', amount: 8000, journal_entry_id: 'je-p', reconciliation_method: 'manual' },
+        { date: '2026-04-10', amount: 3000, journal_entry_id: 'je-c', reconciliation_method: 'manual' },
+      ],
+    })
+    enqueue({
+      data: [
+        { debit_amount: 8000, credit_amount: 0, journal_entries: { id: 'je-p1', status: 'posted', source_type: 'import', entry_date: '2025-05-01' } },
+        { debit_amount: 8000, credit_amount: 0, journal_entries: { id: 'je-ib', status: 'posted', source_type: 'opening_balance', entry_date: '2026-01-01' } },
+        { debit_amount: 3000, credit_amount: 0, journal_entries: { id: 'je-c1', status: 'posted', source_type: 'bank_transaction', entry_date: '2026-04-10' } },
+      ],
+    })
+    enqueue({ data: [] })
+
+    // dateFrom deliberately before the IB date.
+    const status = await getReconciliationStatus(supabase as never, 'company-1', '2025-01-01')
+
+    expect(status.gl_1930_period_movement).toBe(3000)   // IB + prior detail both excluded
+    expect(status.gl_1930_opening_balance).toBe(8000)
+    expect(status.bank_transaction_total).toBe(3000)    // 2025 feed floored out
+    expect(status.difference).toBe(0)
+    expect(status.is_reconciled).toBe(true)
+  })
+
+  it('reconciles a mid-period window (dateFrom after the IB date) on movements alone', async () => {
+    // Per-month reconciliation: the user scopes to March, after the fiscal-year
+    // IB (2026-01-01). effectiveFrom = max(dateFrom, ibDate) = the March dateFrom,
+    // so the IB and Jan/Feb movements are correctly excluded — they belong to the
+    // opening position of a March window, not its movements. gl_1930_opening_balance
+    // is 0 here BY DESIGN: a mid-period window contains no fiscal-year IB, so the
+    // "räknas inte" note is simply absent (not misleadingly zero). The window
+    // reconciles on March's movements vs March's feed.
+    const { supabase, enqueue } = createQueueMockSupabase()
+
+    enqueue({
+      data: [
+        { date: '2026-02-10', amount: 2000, journal_entry_id: 'je-feb', reconciliation_method: 'manual' },
+        { date: '2026-03-15', amount: 3000, journal_entry_id: 'je-mar', reconciliation_method: 'manual' },
+      ],
+    })
+    enqueue({
+      data: [
+        { debit_amount: 9000, credit_amount: 0, journal_entries: { id: 'je-ib', status: 'posted', source_type: 'opening_balance', entry_date: '2026-01-01' } },
+        { debit_amount: 2000, credit_amount: 0, journal_entries: { id: 'je-feb1', status: 'posted', source_type: 'import', entry_date: '2026-02-10' } },
+        { debit_amount: 3000, credit_amount: 0, journal_entries: { id: 'je-mar1', status: 'posted', source_type: 'import', entry_date: '2026-03-15' } },
+      ],
+    })
+    enqueue({ data: [] })
+
+    // dateFrom in March — after the 2026-01-01 IB.
+    const status = await getReconciliationStatus(supabase as never, 'company-1', '2026-03-01')
+
+    expect(status.gl_1930_opening_balance).toBe(0)      // IB not part of a March window
+    expect(status.gl_1930_period_movement).toBe(3000)   // only March movements
+    expect(status.bank_transaction_total).toBe(3000)    // only March feed
+    expect(status.difference).toBe(0)
+    expect(status.is_reconciled).toBe(true)
+  })
 })

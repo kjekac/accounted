@@ -355,7 +355,7 @@ export async function getReconciliationStatus(
   // second same-currency account from inflating bankTotal here.
   let txQuery = supabase
     .from('transactions')
-    .select('amount, journal_entry_id, reconciliation_method, is_ignored')
+    .select('date, amount, journal_entry_id, reconciliation_method, is_ignored')
     .eq('company_id', companyId)
   txQuery = scopeTransactionsToAccount(txQuery, cashAccountId, currency, includeUnassigned)
 
@@ -386,7 +386,12 @@ export async function getReconciliationStatus(
 
   const { data: glLines } = await glQuery
 
-  type GlEntry = { id?: string | null; status?: string | null; source_type?: string | null }
+  type GlEntry = {
+    id?: string | null
+    status?: string | null
+    source_type?: string | null
+    entry_date?: string | null
+  }
   type GlLineRow = {
     debit_amount: number | string | null
     credit_amount: number | string | null
@@ -405,22 +410,52 @@ export async function getReconciliationStatus(
 
   // posted + reversed = the ledger balance, exactly as the trial balance counts
   // it. The .in() filter on the query already excludes draft/cancelled.
-  const countedLines = (glLines || []) as GlLineRow[]
+  const fetchedLines = (glLines || []) as GlLineRow[]
 
-  // Bank side: every feed transaction in range, full stop. We deliberately do
-  // NOT special-case rows linked to a reversed entry any more. Because the GL
-  // side now counts the reversed original, its storno AND the correction
-  // together (just like the balance sheet), a corrected bank line nets to its
-  // true amount on both sides and reconciles on its own — whether correctEntry
-  // re-pointed the transaction to the live corrected entry or a legacy row still
-  // points at the reversed original, the result is identical. The previous
-  // "drop reversed-linked transactions" rule paired with the now-removed
-  // correction subtraction below; together with correctEntry re-pointing the
-  // transaction they manufactured a difference equal to a corrected amount.
-  const bankTotal = (transactions || []).reduce(
-    (sum, tx) => sum + (Number(tx.amount) || 0),
-    0
+  // Floor the window at the most recent opening-balance date on this account
+  // (issue #751). Everything dated before that IB is prior history the IB entry
+  // already summarises; if the window has no lower bound (the "full history"
+  // default) it spans the fiscal-year boundary and pulls the prior period's real
+  // movements — which net to exactly the IB — into the period movement, while the
+  // bank feed only covers the current period. The IB *summary* is excluded below,
+  // but the prior-period *detail* would otherwise remain, manufacturing a phantom
+  // difference equal to the IB. effectiveFrom is the later of the caller's
+  // dateFrom and that IB date; it only ever RAISES the lower bound, so the
+  // dateFrom SQL pre-filter on both queries above stays valid. In normal use the
+  // UI passes dateFrom = period_start = the IB date, so this is a no-op there.
+  const ibDates = fetchedLines
+    .filter((l) => entryOf(l)?.source_type === 'opening_balance')
+    .map((l) => entryOf(l)?.entry_date)
+    .filter((d): d is string => typeof d === 'string' && d.length > 0)
+  // Take the LATEST IB date. The invariant is one opening_balance entry per
+  // fiscal period (set_opening_balances / SIE import / year-end rollover all
+  // create exactly one, dated period_start), so within a single-period window
+  // there is only one. Across a multi-year window the most recent IB is the
+  // correct floor — an earlier year's IB and the movements it summarises are
+  // prior history we deliberately drop. Same-date duplicates are harmless: they
+  // land in both countedLines and glOpeningBalance and cancel.
+  const ibFloor = ibDates.length ? ibDates.reduce((a, b) => (a > b ? a : b)) : null
+  const effectiveFrom =
+    dateFrom && ibFloor ? (dateFrom > ibFloor ? dateFrom : ibFloor) : dateFrom || ibFloor || null
+  // ISO yyyy-mm-dd compares lexically; undated rows (e.g. test fixtures) pass.
+  const onOrAfterFloor = (d: string | null | undefined): boolean =>
+    !effectiveFrom || typeof d !== 'string' ? true : d >= effectiveFrom
+
+  // Clamp BOTH sides to the floor identically so they stay comparable. Lines and
+  // transactions before the IB belong to a prior period's reconciliation.
+  const countedLines = fetchedLines.filter((l) => onOrAfterFloor(entryOf(l)?.entry_date))
+  const countedTx = (transactions || []).filter((tx) =>
+    onOrAfterFloor((tx as { date?: string | null }).date),
   )
+
+  // Bank side: every feed transaction in the (floored) window, full stop. We
+  // deliberately do NOT special-case rows linked to a reversed entry any more.
+  // Because the GL side now counts the reversed original, its storno AND the
+  // correction together (just like the balance sheet), a corrected bank line nets
+  // to its true amount on both sides and reconciles on its own — whether
+  // correctEntry re-pointed the transaction to the live corrected entry or a
+  // legacy row still points at the reversed original, the result is identical.
+  const bankTotal = countedTx.reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
 
   // gl_1930_balance: the real ledger balance on this account incl. IB —
   // byte-for-byte the figure the balansräkning / saldobalans report.
@@ -445,11 +480,9 @@ export async function getReconciliationStatus(
   // a bank-feed counterpart, so it stays in.
   const glPeriodMovement = glBalance - glOpeningBalance
 
-  const matchedCount = (transactions || []).filter(
-    (tx) => tx.journal_entry_id !== null
-  ).length
+  const matchedCount = countedTx.filter((tx) => tx.journal_entry_id !== null).length
 
-  const unmatchedTransactionCount = (transactions || []).filter(
+  const unmatchedTransactionCount = countedTx.filter(
     (tx) => tx.journal_entry_id === null && tx.is_ignored !== true
   ).length
 
