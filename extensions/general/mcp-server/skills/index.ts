@@ -53,4 +53,4 @@ export async function loadAllSkills(supabase: SupabaseClient): Promise<Skill[]> 
 
 export type { Skill, SkillTier } from './types'
 export { SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './types'
-export { loadAtomsAsSkills, __resetAtomCache } from './atoms'
+export { loadAtomsAsSkills, toSummary, __resetAtomCache } from './atoms'

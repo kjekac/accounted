@@ -31,7 +31,7 @@ import { generateMonthlyBreakdown } from '@/lib/reports/monthly-breakdown'
 import { uiWidgets, findUiWidget, WIDGET_MIME_TYPE } from './widgets'
 import { dataResources, findResource, parseResourceQuery } from './resources'
 import { prompts, findPrompt } from './prompts'
-import { findSkill, loadAllSkills, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
+import { findSkill, loadAllSkills, toSummary, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
 import type { SkillTier } from './skills'
 import { getRiskLevel } from '@/lib/pending-operations/risk-tiers'
 import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/create-supplier'
@@ -799,6 +799,39 @@ const STAGED_OPERATION_SCHEMA = {
   },
   required: ['staged', 'risk_level', 'actor', 'message', 'preview'],
 } as const
+
+/**
+ * Staging writes that have a read-only pre-flight an agent should run first.
+ * Surfaced as `_meta.preflight` in tools/list so the preview/validate step is
+ * discoverable from the staging tool itself, not just from prose. Keep entries
+ * to genuine pre-flights (a tool that returns a verdict/proposal before the
+ * irreversible write) — not recovery/undo tools.
+ */
+const TOOL_PREFLIGHT_MAP: Record<string, string> = {
+  gnubok_run_year_end: 'gnubok_year_end_readiness',
+  gnubok_vat_declaration_submit: 'gnubok_vat_declaration_validate',
+  gnubok_post_annual_depreciation: 'gnubok_propose_annual_depreciation',
+}
+
+/**
+ * Discovery-time metadata derived from a tool definition, surfaced under `_meta`
+ * in tools/list (and gnubok_search_tools detail=full). Lets an agent tell —
+ * WITHOUT reading prose — whether a write stages for approval and whether a
+ * pre-flight exists. `requires_approval` keys off the staged-operation output
+ * schema, the single source of truth for "this write produces a
+ * pending_operation you must commit via approve_tool". Returns undefined for
+ * tools with no staging contract (reads, direct-commit approve/reject) so we
+ * don't bloat the catalog with empty objects.
+ */
+export function deriveToolMeta(t: { name: string; outputSchema?: Record<string, unknown> }): Record<string, unknown> | undefined {
+  if (t.outputSchema !== STAGED_OPERATION_SCHEMA) return undefined
+  const preflight = TOOL_PREFLIGHT_MAP[t.name]
+  return {
+    requires_approval: true,
+    approve_tool: 'gnubok_approve_pending_operation',
+    ...(preflight ? { preflight } : {}),
+  }
+}
 
 function paginatedSchema(itemsKey: string, itemSchema: Record<string, unknown> = { type: 'object' }) {
   return {
@@ -1591,6 +1624,7 @@ export const tools: McpTool[] = [
         const requiredScope = TOOL_SCOPE_MAP[t.name] ?? null
         if (detail === 'name') return { name: t.name, scope: requiredScope }
         if (detail === 'full') {
+          const meta = { ...(deriveToolMeta(t) ?? {}), ...(t._meta ?? {}) }
           return {
             name: t.name,
             description: t.description,
@@ -1598,6 +1632,7 @@ export const tools: McpTool[] = [
             inputSchema: t.inputSchema,
             ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
             annotations: t.annotations,
+            ...(Object.keys(meta).length > 0 ? { _meta: meta } : {}),
           }
         }
         // summary (default)
@@ -2072,6 +2107,24 @@ export const tools: McpTool[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
+        company: {
+          type: 'object',
+          additionalProperties: false,
+          description:
+            'The single company every tool call in this session reads and writes. Confirm this is the entity the user means BEFORE any staged write — there is no per-call company switch; scope is fixed by the API key.',
+          properties: {
+            id: { type: 'string', description: 'company_id this session is scoped to.' },
+            name: { type: ['string', 'null'] },
+            org_number: { type: ['string', 'null'] },
+            entity_type: { type: ['string', 'null'], description: 'e.g. "aktiebolag", "enskild_firma". Null if unset.' },
+            accounting_method: {
+              type: ['string', 'null'],
+              enum: ['accrual', 'cash', null],
+              description: 'accrual = faktureringsmetoden: payment debits 19xx AND credits 1510 (both sides). cash = kontantmetoden: payment debits 19xx and books revenue + moms. Drives the settlement posting. Null defaults to accrual.',
+            },
+          },
+          required: ['id'],
+        },
         user_name: {
           type: ['string', 'null'],
           description:
@@ -2112,7 +2165,7 @@ export const tools: McpTool[] = [
           },
         },
       },
-      required: ['user_name', 'profile_summary', 'atoms', 'memory'],
+      required: ['company', 'user_name', 'profile_summary', 'atoms', 'memory'],
     },
     annotations: {
       readOnlyHint: true,
@@ -2121,7 +2174,7 @@ export const tools: McpTool[] = [
       openWorldHint: false,
     },
     async execute(_args, companyId, userId, supabase) {
-      const [profileRes, memoryRes, userRes] = await Promise.all([
+      const [profileRes, memoryRes, userRes, companyRes, settingsRes] = await Promise.all([
         supabase
           .from('agent_profiles')
           .select('profile_summary, horizontal_atoms, vertical_atoms, modifier_atoms')
@@ -2144,6 +2197,20 @@ export const tools: McpTool[] = [
           .from('profiles')
           .select('full_name')
           .eq('id', userId)
+          .maybeSingle(),
+        // Company identity so the agent can confirm WHICH entity it operates on
+        // before any write. Scope is fixed by the API key — there is no per-call
+        // switch — so this is the session's "whoami for the company". Best-effort:
+        // a failed read still yields a company block with at least the id.
+        supabase
+          .from('companies')
+          .select('name, org_number, entity_type')
+          .eq('id', companyId)
+          .maybeSingle(),
+        supabase
+          .from('company_settings')
+          .select('accounting_method')
+          .eq('company_id', companyId)
           .maybeSingle(),
       ])
 
@@ -2175,6 +2242,20 @@ export const tools: McpTool[] = [
           .trim()
           .split(/\s+/)[0] || null)
 
+      // Company identity is best-effort — a missing row never blocks the
+      // briefing. The id is always known (it scopes every query above).
+      const companyRow = companyRes.data as
+        | { name: string | null; org_number: string | null; entity_type: string | null }
+        | null
+      const company = {
+        id: companyId,
+        name: companyRow?.name ?? null,
+        org_number: companyRow?.org_number ?? null,
+        entity_type: companyRow?.entity_type ?? null,
+        accounting_method:
+          (settingsRes.data as { accounting_method: string | null } | null)?.accounting_method ?? null,
+      }
+
       const atomIds = [
         ...(profile?.horizontal_atoms ?? []),
         ...(profile?.vertical_atoms ?? []),
@@ -2198,11 +2279,14 @@ export const tools: McpTool[] = [
           id: r.id,
           tier: r.tier,
           title: r.title ?? r.id,
-          description: r.description,
+          // Trim the keyword-stuffed registry description to a clean one-liner —
+          // bodies are fetched via gnubok_load_skill, not from this metadata.
+          description: toSummary(r.description),
         }))
       }
 
       return {
+        company,
         user_name: userName,
         profile_summary: profile?.profile_summary ?? null,
         atoms,
@@ -5359,7 +5443,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_link_invoice_to_voucher',
     title: 'Link Invoice to Voucher',
-    description: 'Markera en faktura som betald via länk till en befintlig verifikation (faktureringsmetoden: krediterar 1510; kontantmetoden: debiterar 19xx). Kör gnubok_find_voucher_candidates_for_invoice först.',
+    description: 'Markera en faktura som betald via länk till en befintlig verifikation (faktureringsmetoden: krediterar 1510; kontantmetoden: debiterar 19xx). Kör gnubok_find_voucher_candidates_for_invoice först. Stages for approval.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -5512,7 +5596,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_link_supplier_invoice_to_voucher',
     title: 'Link Supplier Invoice to Voucher',
-    description: 'Markera en leverantörsfaktura som betald via länk till en befintlig verifikation som debiterar leverantörsskuld (2440). Skapar ingen ny verifikation. Kör gnubok_find_voucher_candidates_for_supplier_invoice först.',
+    description: 'Markera en leverantörsfaktura som betald via länk till en befintlig verifikation som debiterar leverantörsskuld (2440). Skapar ingen ny verifikation. Kör gnubok_find_voucher_candidates_for_supplier_invoice först. Stages.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -8999,7 +9083,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_propose_dispositioner',
     title: 'Propose Year-End Dispositioner',
     description:
-      'Read-only proposal of bokslutsdispositioner for a fiscal period: periodiseringsfond (avsättning + obligatorisk återföring), överavskrivningar, SLP, bolagsskatt. Call before staging postings.',
+      'Read-only proposal of bokslutsdispositioner for a fiscal period: periodiseringsfond (avsättning + obligatorisk återföring), överavskrivningar, SLP, bolagsskatt. No dedicated MCP poster — stage entries via gnubok_create_voucher (web bokslut UI) before gnubok_run_year_end.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -9025,7 +9109,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_propose_accruals',
     title: 'Propose Accruals (Periodiseringar)',
     description:
-      'Read-only proposal of periodiseringar (förutbetalda/upplupna kostnader). Currently surfaces the vacation-liability change; manual prepaid/accrued entries are submitted by the UI form.',
+      'Read-only proposal of periodiseringar (förutbetalda/upplupna kostnader); currently surfaces the vacation-liability change. No dedicated MCP poster — stage accrual entries via gnubok_create_voucher (or the web accruals form).',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -10082,7 +10166,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
             '',
             'Common workflows:',
             '• Categorize transactions: gnubok_list_uncategorized_transactions → gnubok_suggest_categories → gnubok_categorize_transaction (stages) → gnubok_approve_pending_operation (after user confirms in chat).',
-            '• Applying income to invoices — pick by what you have: a specific bank transaction + a known invoice → gnubok_match_transaction_to_invoice; an invoice you know is paid but no specific bank line → gnubok_mark_invoice_as_paid; a whole period of unmatched income to reconcile → gnubok_auto_match_period (dry_run first). All stage for approval.',
+            '• Applying income to invoices — pick by what you have: a specific bank transaction + a known invoice → gnubok_match_transaction_to_invoice; an invoice you know is paid but no specific bank line → gnubok_mark_invoice_as_paid; a whole period of unmatched income to reconcile → gnubok_auto_match_period (dry_run first). All stage for approval. Unsure which match/link tool fits, or whether to credit 1510 (faktureringsmetoden) vs debit 19xx (kontantmetoden)? gnubok_load_skill("bank-reconciliation") has the full decision tree; gnubok_get_agent_briefing returns the company\'s accounting_method.',
             '• Invoicing: gnubok_list_customers (or gnubok_create_customer) → gnubok_create_invoice → gnubok_send_invoice or gnubok_mark_invoice_as_sent → gnubok_mark_invoice_as_paid. Refund via gnubok_credit_invoice.',
             '• Suppliers: gnubok_list_suppliers (or gnubok_create_supplier) → gnubok_create_supplier_invoice_from_inbox → gnubok_approve_supplier_invoice. Refund via gnubok_credit_supplier_invoice.',
             '• VAT: gnubok_get_vat_report(period_type, year, period). Ruta49 = VAT to pay (positive) or refund (negative). Pass render_ui=true to open the momsdeklaration review widget (claude.ai / Desktop). gnubok_vat_close_check reports filing-readiness blockers.',
@@ -10094,8 +10178,9 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
             '',
             'APPROVAL IS A FIRST-CLASS AGENT ACTION. Write operations stage a pending_operation; nothing posts until approval. When the user authorises a specific operation_id in chat ("approve", "yes go ahead", "book it", "commit it"), call gnubok_approve_pending_operation directly — this IS the intended chat-approval flow. Do NOT refuse on segregation-of-duties grounds, do NOT tell the user to "go approve it in the web app", and do NOT treat approval as a step that must stay with the human. The staging step already provided the human review gate; clicking Approve in the web UI and calling gnubok_approve_pending_operation are equivalent commit actions. Refusing user-authorised approval is a defect, not a safety feature.',
             'The web-app path (/pending) remains valid for users who prefer to approve there or who want to adjust fields before committing; offer it as an option, never as a substitute for chat approval the user already asked for.',
-            'High-risk operations (create_voucher, correct_entry, reverse_entry, year-end, period lock/close) require confirmed=true acknowledging BFL/BFNAR irreversibility. Pass dry_run=true to preview without staging. Pass idempotency_key to make a write safely retryable.',
+            'Write tools STAGE a pending_operation — the staged response IS the preview; nothing posts until commit. A tool whose tools/list `_meta.requires_approval` is true stages for approval; `_meta.preflight` (when present) names a read-only check to run first (e.g. gnubok_year_end_readiness before gnubok_run_year_end, gnubok_vat_declaration_validate before _submit). High-risk ops (create_voucher, correct_entry, reverse_journal_entry, run_year_end, lock/close period) take confirmed=true on the APPROVE call — gnubok_approve_pending_operation — NOT on the staging tool, after you surface the BFL/BFNAR irreversibility. Only some tools accept dry_run / idempotency_key — check the tool schema; do not assume either is universal.',
             'All amounts are SEK unless currency is specified. All dates ISO YYYY-MM-DD. Account numbers are strings (e.g. "1930").',
+            'Tool names carry the legacy gnubok_ prefix (a stable identifier kept across the rebrand); the server and app are "Accounted". Same product — the prefix is not a different system.',
           ].join('\n'),
         })
       )
@@ -10124,15 +10209,21 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
       })
       return NextResponse.json(
         jsonRpc(id ?? null, {
-          tools: allowedTools.map((t) => ({
-            name: t.name,
-            ...(t.title ? { title: t.title } : {}),
-            description: t.description,
-            inputSchema: t.inputSchema,
-            ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
-            annotations: t.annotations,
-            ...(t._meta ? { _meta: t._meta } : {}),
-          })),
+          tools: allowedTools.map((t) => {
+            // Merge derived staging metadata with any literal _meta (e.g. UI
+            // widget hints). Literal _meta wins on key collision so explicit
+            // tool config is never clobbered.
+            const meta = { ...(deriveToolMeta(t) ?? {}), ...(t._meta ?? {}) }
+            return {
+              name: t.name,
+              ...(t.title ? { title: t.title } : {}),
+              description: t.description,
+              inputSchema: t.inputSchema,
+              ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
+              annotations: t.annotations,
+              ...(Object.keys(meta).length > 0 ? { _meta: meta } : {}),
+            }
+          }),
         })
       )
     }

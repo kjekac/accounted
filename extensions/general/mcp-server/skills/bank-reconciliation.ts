@@ -11,6 +11,43 @@ Reconcile the company's bank statements against the bookkeeping ledger so that t
 - "Why doesn't my 1930 balance match the bank?"
 - Mid-month spot-check before tax filings
 
+## Choosing the right matching/linking tool
+
+Accounted has several reconciliation tools because the *right* one depends on what
+you already have in hand. Decide along two axes — **what you're connecting** and
+**whether a verifikat already exists** — then pick:
+
+| You have… | …and the entry is | Use |
+|---|---|---|
+| One bank tx + one customer invoice | not yet booked | \`gnubok_match_transaction_to_invoice\` |
+| One bank receipt covering many invoices (customer **or** supplier) | not yet booked | \`gnubok_match_batch_allocate\` (samlingsbetalning, BFL 5 kap 6§) |
+| A whole period of unmatched income to clear | not yet booked | \`gnubok_auto_match_period\` (run \`dry_run=true\` first) |
+| One bank tx whose affärshändelse you already posted manually | already booked | \`gnubok_link_transaction_to_journal_entry\` |
+| A customer invoice you know is paid, payment already in a verifikat | already booked | \`gnubok_find_voucher_candidates_for_invoice\` → \`gnubok_link_invoice_to_voucher\` |
+| A supplier invoice paid, payment already in a verifikat | already booked | \`gnubok_find_voucher_candidates_for_supplier_invoice\` → \`gnubok_link_supplier_invoice_to_voucher\` |
+| A receipt/document to file against a tx (no new bokföring) | n/a | \`gnubok_attach_document_to_transaction\` |
+| Income you're sure is paid but with no bank line to point at | not yet booked | \`gnubok_mark_invoice_as_paid\` |
+
+Rule of thumb: **match_\*** creates the payment bokföring; **link_\*** attaches to
+bokföring that already exists (no new verifikat). Every one of these stages a
+pending operation — the user approves before anything posts.
+
+### Kontantmetoden vs faktureringsmetoden
+
+The settlement posting differs by the company's \`accounting_method\` (read it from
+\`gnubok_get_agent_briefing\` — \`accrual\` = faktureringsmetoden, \`cash\` =
+kontantmetoden; null defaults to accrual):
+
+- **Faktureringsmetoden (accrual):** revenue was booked at invoice time against
+  kundfordran **1510**. Payment **credits 1510** and debits the bank (19xx). The
+  link/match tools settle 1510.
+- **Kontantmetoden (cash):** no receivable was raised at invoice time. Payment
+  **debits 19xx** and books the revenue + moms now.
+
+You usually don't pass the method explicitly — the tools resolve it from company
+settings — but knowing it lets you sanity-check the staged preview's accounts
+before approving (1510 movement under accrual; revenue/moms under cash).
+
 ## Workflow
 
 ### Step 1 — Pull the reconciliation status
@@ -84,8 +121,11 @@ ledger after reconciliation:
 - \`gnubok_list_uncategorized_transactions\`
 - \`gnubok_suggest_categories\`
 - \`gnubok_categorize_transaction\`
-- \`gnubok_match_transaction_to_invoice\`
+- \`gnubok_match_transaction_to_invoice\`, \`gnubok_match_batch_allocate\` (one receipt → many invoices)
 - \`gnubok_auto_match_period\` (bulk matcher with confidence thresholds — use for big backlogs)
+- \`gnubok_link_transaction_to_journal_entry\`, \`gnubok_link_invoice_to_voucher\`, \`gnubok_link_supplier_invoice_to_voucher\` (attach to an existing verifikat — no new bokföring)
+- \`gnubok_find_voucher_candidates_for_invoice\`, \`gnubok_find_voucher_candidates_for_supplier_invoice\` (read-only — run before the link_\* tools)
+- \`gnubok_attach_document_to_transaction\` (file a receipt against a tx)
 - \`gnubok_reverse_journal_entry\` (storno)
 - \`gnubok_run_currency_revaluation\` (FX accounts only)
 - \`gnubok_get_trial_balance\`, \`gnubok_get_ar_ledger\`, \`gnubok_get_supplier_ledger\` (verification)
@@ -94,8 +134,8 @@ ledger after reconciliation:
 export const bankReconciliationSkill: Skill = {
   slug: 'bank-reconciliation',
   name: 'Bank Reconciliation',
-  summary: 'Stämma av banken: categorize incoming PSD2 rows, match against invoices, resolve duplicates, verify with ledger reports.',
-  tags: ['monthly', 'reconciliation', 'bank', 'verification'],
+  summary: 'Stämma av banken: pick the right match/link tool, categorize PSD2 rows, handle kontant- vs faktureringsmetoden, resolve duplicates, verify with ledger reports.',
+  tags: ['monthly', 'reconciliation', 'bank', 'verification', 'matching'],
   body,
   tier: 'workflow',
   applicability: { entity_type: 'both' },

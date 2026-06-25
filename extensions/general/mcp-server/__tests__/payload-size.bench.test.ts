@@ -1,17 +1,23 @@
 import { describe, it, expect } from 'vitest'
-import { tools } from '../server'
+import { tools, deriveToolMeta } from '../server'
 
 describe('tools/list payload size guard', () => {
   it('keeps the projected tools/list payload under the context-budget ceiling', () => {
-    const projection = tools.map((t) => ({
-      name: t.name,
-      ...(t.title ? { title: t.title } : {}),
-      description: t.description,
-      inputSchema: t.inputSchema,
-      ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
-      annotations: t.annotations,
-      ...(t._meta ? { _meta: t._meta } : {}),
-    }))
+    // Mirror the real tools/list serializer, including the derived staging
+    // _meta (requires_approval / approve_tool / preflight) merged over any
+    // literal _meta — otherwise the guard under-measures the wire payload.
+    const projection = tools.map((t) => {
+      const meta = { ...(deriveToolMeta(t) ?? {}), ...(t._meta ?? {}) }
+      return {
+        name: t.name,
+        ...(t.title ? { title: t.title } : {}),
+        description: t.description,
+        inputSchema: t.inputSchema,
+        ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
+        annotations: t.annotations,
+        ...(Object.keys(meta).length > 0 ? { _meta: meta } : {}),
+      }
+    })
     const payload = JSON.stringify({ tools: projection })
     const approxTokens = Math.round(payload.length / 4)
     // Ceiling progression: 20K → 25K → 30K → 31K → 31.5K → 32K → 36K.
@@ -46,9 +52,16 @@ describe('tools/list payload size guard', () => {
     //   * Held at 36K when gnubok_list_accrual_schedules (add/bokslut) merged with
     //     the categorize vat_amount override (#717): the combination crossed the
     //     ceiling by ~75, offset by trimming the 8 longest descriptions to ~200 chars.
+    //   * 36K → 38K with the MCP legibility pass: the machine-readable staging
+    //     contract now emits `_meta { requires_approval, approve_tool, preflight }`
+    //     on every staging write (~40 tools) so an agent can tell — without reading
+    //     prose — which writes need a follow-up gnubok_approve_pending_operation and
+    //     which have a pre-flight; gnubok_get_agent_briefing also gained a `company`
+    //     identity block in its outputSchema. This is wire data the agent depends
+    //     on, not trimmable prose — hence a bump rather than a description trim.
     // Long-term answer to growth is leaning harder on gnubok_search_tools — if this
     // fires again, prefer trimming descriptions or making a tool opt-in via search
     // before bumping further.
-    expect(approxTokens).toBeLessThan(36_000)
+    expect(approxTokens).toBeLessThan(38_000)
   })
 })

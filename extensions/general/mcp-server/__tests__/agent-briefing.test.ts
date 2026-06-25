@@ -46,6 +46,10 @@ function mockSupabase(opts: {
   }>
   // profiles.full_name for the signed-in user. undefined → no profile row.
   userFullName?: string | null
+  // companies row for the active company. undefined → no row (null data).
+  company?: { name: string | null; org_number: string | null; entity_type: string | null } | null
+  // company_settings.accounting_method. undefined → no settings row (null data).
+  accountingMethod?: string | null
   errors?: { profile?: string; memory?: string; atoms?: string }
 }) {
   const profile = opts.profile === undefined ? null : opts.profile
@@ -110,6 +114,33 @@ function mockSupabase(opts: {
           })),
         }
       }
+      if (table === 'companies') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn().mockResolvedValue({
+                data: opts.company === undefined ? null : opts.company,
+                error: null,
+              }),
+            })),
+          })),
+        }
+      }
+      if (table === 'company_settings') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn().mockResolvedValue({
+                data:
+                  opts.accountingMethod === undefined
+                    ? null
+                    : { accounting_method: opts.accountingMethod },
+                error: null,
+              }),
+            })),
+          })),
+        }
+      }
       throw new Error(`Unexpected table in test mock: ${table}`)
     }),
   }
@@ -154,6 +185,54 @@ describe('gnubok_get_agent_briefing tool', () => {
     expect(result.atoms).toEqual([])
     expect(result.memory).toEqual([])
     expect(result.user_name).toBeNull()
+  })
+
+  it('returns the active company block so the agent can confirm the entity before writing', async () => {
+    const tool = tools.find((t) => t.name === 'gnubok_get_agent_briefing')!
+    const supabase = mockSupabase({
+      profile: null,
+      company: { name: 'Acme AB', org_number: '556677-8899', entity_type: 'aktiebolag' },
+      accountingMethod: 'cash',
+    })
+    const result = (await tool.execute(
+      {},
+      'company-1',
+      'user-1',
+      supabase as never,
+      { type: 'api_key' }
+    )) as {
+      company: {
+        id: string
+        name: string | null
+        org_number: string | null
+        entity_type: string | null
+        accounting_method: string | null
+      }
+    }
+    expect(result.company).toEqual({
+      id: 'company-1',
+      name: 'Acme AB',
+      org_number: '556677-8899',
+      entity_type: 'aktiebolag',
+      accounting_method: 'cash',
+    })
+  })
+
+  it('always returns the company id even when the company/settings rows are missing', async () => {
+    const tool = tools.find((t) => t.name === 'gnubok_get_agent_briefing')!
+    const supabase = mockSupabase({ profile: null })
+    const result = (await tool.execute(
+      {},
+      'company-1',
+      'user-1',
+      supabase as never,
+      { type: 'api_key' }
+    )) as {
+      company: { id: string; name: string | null; accounting_method: string | null }
+    }
+    expect(result.company.id).toBe('company-1')
+    expect(result.company.name).toBeNull()
+    expect(result.company.accounting_method).toBeNull()
   })
 
   it('returns only the first name (tilltalsnamn) — data minimisation, not the full legal name', async () => {

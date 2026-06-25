@@ -195,7 +195,18 @@ describe('MCP Receipt Matcher', () => {
       })
     })
 
-    it('does not include _meta for tools without it', async () => {
+    it('does not include _meta for read-only tools that neither stage nor render UI', async () => {
+      const res = await handleMcpRequest(mcpRequest('tools/list'))
+      const result = await parseResult(res)
+
+      const listTool = result.tools.find(
+        (t: { name: string }) => t.name === 'gnubok_list_customers'
+      )
+      expect(listTool).toBeDefined()
+      expect(listTool._meta).toBeUndefined()
+    })
+
+    it('includes the derived staging contract in _meta for staging writes', async () => {
       const res = await handleMcpRequest(mcpRequest('tools/list'))
       const result = await parseResult(res)
 
@@ -203,7 +214,10 @@ describe('MCP Receipt Matcher', () => {
         (t: { name: string }) => t.name === 'gnubok_categorize_transaction'
       )
       expect(categorizeTool).toBeDefined()
-      expect(categorizeTool._meta).toBeUndefined()
+      expect(categorizeTool._meta).toMatchObject({
+        requires_approval: true,
+        approve_tool: 'gnubok_approve_pending_operation',
+      })
     })
   })
 
