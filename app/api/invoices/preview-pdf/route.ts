@@ -172,13 +172,15 @@ export async function POST(request: Request) {
   } as Invoice
 
   try {
-    const { branding } = prepareInvoicePdfRender(company as CompanySettings)
+    const { branding, company: renderCompany } = await prepareInvoicePdfRender(
+      company as CompanySettings,
+    )
     const pdfBuffer = await renderToBuffer(
       InvoicePDF({
         invoice: previewInvoice,
         customer,
         items: invoiceItems,
-        company: company as CompanySettings,
+        company: renderCompany,
         isPreview: true,
         branding,
       })

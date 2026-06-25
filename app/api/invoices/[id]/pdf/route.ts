@@ -67,14 +67,16 @@ export async function GET(
 
   try {
     // Generate PDF
-    const { branding } = prepareInvoicePdfRender(company as CompanySettings)
+    const { branding, company: renderCompany } = await prepareInvoicePdfRender(
+      company as CompanySettings,
+    )
     const swishQrDataUrl = await buildSwishQrDataUrl(company as CompanySettings, invoice as Invoice)
     const pdfBuffer = await renderToBuffer(
       InvoicePDF({
         invoice: invoice as Invoice,
         customer: invoice.customer as Customer,
         items,
-        company: company as CompanySettings,
+        company: renderCompany,
         originalInvoiceNumber,
         branding,
         swishQrDataUrl,

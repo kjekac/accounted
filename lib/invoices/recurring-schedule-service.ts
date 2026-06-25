@@ -384,14 +384,14 @@ async function sendInvoiceFromSchedule(
   // Render PDF with status overridden to 'sent' so the customer doesn't
   // receive a "UTKAST" stamp.
   const renderableInvoice = { ...invoice, status: 'sent' as const }
-  const { branding } = prepareInvoicePdfRender(company)
+  const { branding, company: renderCompany } = await prepareInvoicePdfRender(company)
   const swishQrDataUrl = await buildSwishQrDataUrl(company, renderableInvoice)
   const pdfBuffer = await renderToBuffer(
     InvoicePDF({
       invoice: renderableInvoice,
       customer: invoice.customer,
       items,
-      company,
+      company: renderCompany,
       branding,
       swishQrDataUrl,
     }),

@@ -169,14 +169,16 @@ export async function POST(
       // is stale and still reads 'draft' — override here so the archived
       // underlag isn't stamped "UTKAST – inte en giltig faktura".
       const renderableInvoice = { ...(invoice as Invoice), status: 'sent' as const }
-      const { branding } = prepareInvoicePdfRender(settings as CompanySettings)
+      const { branding, company: renderCompany } = await prepareInvoicePdfRender(
+        settings as CompanySettings,
+      )
       const swishQrDataUrl = await buildSwishQrDataUrl(settings as CompanySettings, renderableInvoice)
       const pdfBuffer = await renderToBuffer(
         InvoicePDF({
           invoice: renderableInvoice,
           customer: invoice.customer as Customer,
           items,
-          company: settings as CompanySettings,
+          company: renderCompany,
           originalInvoiceNumber,
           branding,
           swishQrDataUrl,

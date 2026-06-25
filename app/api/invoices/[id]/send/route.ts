@@ -101,13 +101,13 @@ export const POST = withRouteContext(
     const isFreshAllocation = !invoice.invoice_number
     if (isFreshAllocation) {
       try {
-        const preflight = prepareInvoicePdfRender(company as CompanySettings)
+        const preflight = await prepareInvoicePdfRender(company as CompanySettings)
         await renderToBuffer(
           InvoicePDF({
             invoice: { ...(invoice as Invoice), invoice_number: 'F-PREVIEW' },
             customer,
             items,
-            company: company as CompanySettings,
+            company: preflight.company,
             originalInvoiceNumber,
             branding: preflight.branding,
           }),
@@ -132,14 +132,16 @@ export const POST = withRouteContext(
     // ~185), but if we render with the stale 'draft' status the customer
     // receives a PDF stamped "UTKAST – inte en giltig faktura".
     const renderableInvoice = { ...(invoice as Invoice), status: 'sent' as const }
-    const { branding } = prepareInvoicePdfRender(company as CompanySettings)
+    const { branding, company: renderCompany } = await prepareInvoicePdfRender(
+      company as CompanySettings,
+    )
     const swishQrDataUrl = await buildSwishQrDataUrl(company as CompanySettings, renderableInvoice)
     const pdfBuffer = await renderToBuffer(
       InvoicePDF({
         invoice: renderableInvoice,
         customer,
         items,
-        company: company as CompanySettings,
+        company: renderCompany,
         originalInvoiceNumber,
         branding,
         swishQrDataUrl,
