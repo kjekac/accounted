@@ -9,6 +9,7 @@ import { TemplatesSettingsContent } from './TemplatesSettingsContent'
 import { BankingSettingsContent } from './BankingSettingsContent'
 import { AssistantSettingsContent } from './AssistantSettingsContent'
 import { ApiSettingsContent } from './ApiSettingsContent'
+import { BillingSettingsContent } from './BillingSettingsContent'
 
 /**
  * Single source of truth mapping a settings section id to the component that
@@ -28,6 +29,7 @@ export const SETTINGS_SECTIONS: Record<string, ComponentType> = {
   banking: BankingSettingsContent,
   assistant: AssistantSettingsContent,
   api: ApiSettingsContent,
+  billing: BillingSettingsContent,
 }
 
 export type SettingsSectionId = keyof typeof SETTINGS_SECTIONS

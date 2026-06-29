@@ -1,16 +1,32 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/use-toast'
 import type { BillingPlan } from '@/lib/stripe/client'
 
+const PRICE: Record<BillingPlan, { amount: string; suffix: string; sub: string; cta: string }> = {
+  monthly: {
+    amount: '199 kr',
+    suffix: '/ mån',
+    sub: 'Faktureras månadsvis.',
+    cta: 'Aktivera abonnemang – 199 kr/mån',
+  },
+  yearly: {
+    amount: '166 kr',
+    suffix: '/ mån',
+    sub: '1 999 kr/år — du betalar för 10 månader.',
+    cta: 'Aktivera årsabonnemang – 1 999 kr/år',
+  },
+}
+
 /**
- * Client CTA for the billing page. Active subscribers get the Stripe Customer
- * Portal (manage/cancel); everyone else gets a plan toggle + Checkout. Both
+ * Interactive billing CTA. Paying companies get the Stripe Customer Portal
+ * (manage/cancel); everyone else gets a reactive plan picker + Checkout. Both
  * POST to a route that returns a hosted Stripe URL we redirect to.
  */
-export function BillingActions({ isActive, configured }: { isActive: boolean; configured: boolean }) {
+export function BillingActions({ isPaying, configured }: { isPaying: boolean; configured: boolean }) {
   const { toast } = useToast()
   const [loading, setLoading] = useState(false)
   const [plan, setPlan] = useState<BillingPlan>('yearly')
@@ -36,7 +52,7 @@ export function BillingActions({ isActive, configured }: { isActive: boolean; co
     }
   }
 
-  if (isActive) {
+  if (isPaying) {
     return (
       <Button size="lg" onClick={() => go('/api/billing/portal')} disabled={loading} className="w-full sm:w-auto">
         Hantera abonnemang
@@ -46,38 +62,49 @@ export function BillingActions({ isActive, configured }: { isActive: boolean; co
 
   if (!configured) {
     return (
-      <Button size="lg" disabled className="w-full sm:w-auto">
+      <Button size="lg" disabled className="w-full">
         Uppgradering öppnar snart
       </Button>
     )
   }
 
+  const segment = (p: BillingPlan, label: ReactNode) => (
+    <button
+      type="button"
+      onClick={() => setPlan(p)}
+      className={`flex items-center rounded-md px-3 py-2 transition-colors ${
+        plan === p ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {label}
+    </button>
+  )
+
   return (
-    <div className="space-y-3">
-      <div className="inline-flex rounded-lg border border-border p-1 text-sm">
-        {(['monthly', 'yearly'] as BillingPlan[]).map((p) => (
-          <button
-            key={p}
-            type="button"
-            onClick={() => setPlan(p)}
-            className={`rounded-md px-3 py-1.5 transition-colors ${
-              plan === p ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {p === 'monthly' ? 'Månadsvis' : 'Årsvis'}
-          </button>
-        ))}
-      </div>
+    <div className="space-y-4">
       <div>
-        <Button
-          size="lg"
-          onClick={() => go('/api/billing/checkout', { plan })}
-          disabled={loading}
-          className="w-full sm:w-auto"
-        >
-          Uppgradera
-        </Button>
+        <div className="flex items-baseline gap-2">
+          <span className="font-display text-3xl tracking-tight tabular-nums">{PRICE[plan].amount}</span>
+          <span className="text-muted-foreground">{PRICE[plan].suffix}</span>
+        </div>
+        <p className="text-sm text-muted-foreground mt-1">{PRICE[plan].sub}</p>
       </div>
+
+      <div className="inline-flex rounded-lg border border-border p-1 text-sm">
+        {segment('monthly', 'Månadsvis')}
+        {segment(
+          'yearly',
+          <>
+            Årsvis
+            <Badge variant="success" className="ml-2">Spara 2 mån</Badge>
+          </>,
+        )}
+      </div>
+
+      <Button size="lg" onClick={() => go('/api/billing/checkout', { plan })} disabled={loading} className="w-full">
+        {loading ? 'Öppnar…' : PRICE[plan].cta}
+      </Button>
+      <p className="text-xs text-muted-foreground text-center">Säker betalning via Stripe · Avsluta när du vill</p>
     </div>
   )
 }
