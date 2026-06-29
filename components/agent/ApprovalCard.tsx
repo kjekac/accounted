@@ -6,6 +6,8 @@ import { Check, X, Loader2, AlertTriangle, Lock, ShieldCheck, ArrowRight } from 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { useCapability } from '@/contexts/CompanyContext'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import type { PendingOperationRejectionCategory } from '@/types'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/utils'
@@ -81,6 +83,11 @@ export default function ApprovalCard({
   periodStatus,
   onRequestCorrection,
 }: Props) {
+  // Gating the AI re-propose path only: approving/rejecting the staged
+  // operation is manual ledger work and stays enabled without the AI add-on.
+  // What's paid is feeding a rejection back so the agent generates a *new*
+  // proposal (an LLM call) — that's suppressed when the company lacks `ai`.
+  const hasAi = useCapability(CAPABILITY.ai)
   const [state, setState] = useState<State>('pending')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [confirmText, setConfirmText] = useState('')
@@ -190,7 +197,7 @@ export default function ApprovalCard({
       // Feed the correction back so the agent re-proposes — only when the user
       // actually said what was wrong. A bare reject just stops here.
       const parts = [categoryLabel, reason].filter(Boolean) as string[]
-      if (parts.length > 0) {
+      if (hasAi && parts.length > 0) {
         onRequestCorrection?.(
           `Jag avvisade förslaget. Det som var fel: ${parts.join(' — ')}. Föreslå en korrigerad bokning.`,
         )
@@ -345,9 +352,20 @@ export default function ApprovalCard({
             className="text-xs"
             aria-label="Notering"
           />
-          <p className="text-[11px] text-muted-foreground">
-            Med en anledning eller notering föreslår assistenten en korrigerad bokning direkt.
-          </p>
+          {hasAi ? (
+            <p className="text-[11px] text-muted-foreground">
+              Med en anledning eller notering föreslår assistenten en korrigerad bokning direkt.
+            </p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              Din anledning sparas på förslaget. Vill du att assistenten automatiskt
+              föreslår en korrigerad bokning?{' '}
+              <Link href="/settings/billing" className="font-medium text-foreground hover:underline">
+                Uppgradera
+              </Link>
+              .
+            </p>
+          )}
           <div className="flex gap-2">
             <Button
               variant="destructive"

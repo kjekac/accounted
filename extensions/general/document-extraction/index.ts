@@ -1,6 +1,8 @@
 import type { Extension } from '@/lib/extensions/types'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { extractInvoiceFields } from '@/extensions/general/invoice-inbox/lib/extract-invoice-fields'
+import { hasCapability } from '@/lib/entitlements/has-capability'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import { createLogger } from '@/lib/logger'
 import { createServiceClient } from '@/lib/supabase/server'
 import type { DocumentAttachment } from '@/types'
@@ -141,6 +143,11 @@ async function extractAndPersist(
       return
     }
     const buffer = Buffer.from(await blob.arrayBuffer())
+
+    if (!(await hasCapability(supabase, companyId, CAPABILITY.ai))) {
+      log.info('extraction skipped — ai capability not entitled', { doc: document.id, companyId })
+      return
+    }
 
     try {
       const { data, rawText } = await extractInvoiceFields({

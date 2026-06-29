@@ -1,9 +1,11 @@
 'use client'
 
 import { useAgentSheet } from './AgentSheetProvider'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import AgentAvatar from './AgentAvatar'
 import { routeToIntent } from '@/lib/agent/intents/route-mapping'
+import { useCapability } from '@/contexts/CompanyContext'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 
 // Floating trigger sits above the page bottom-right, opens the AgentSheet when
 // clicked. Hidden when the sheet is already open so the icon doesn't double up.
@@ -25,6 +27,8 @@ import { routeToIntent } from '@/lib/agent/intents/route-mapping'
 export default function AgentTrigger() {
   const { openAgentSheet, isOpen, identity } = useAgentSheet()
   const pathname = usePathname()
+  const router = useRouter()
+  const hasAi = useCapability(CAPABILITY.ai)
 
   if (isOpen) return null
   // The /chat surface IS the chat — a floating "Fråga …" pill on top of it
@@ -48,18 +52,25 @@ export default function AgentTrigger() {
 
   const name = identity.displayName?.trim() || 'min assistent'
   const dispatch = routeToIntent(pathname)
-  const labelText = dispatch.labelSuffix
-    ? `Fråga ${name} ${dispatch.labelSuffix}`
-    : `Fråga ${name}`
+  // AI assistant runs on a paid cloud service. Without the capability, opening
+  // the sheet would land the user in a chat whose send is dead. Keep the FAB
+  // visible (it's the conversion surface) but route it to billing instead.
+  const labelText = !hasAi
+    ? `Uppgradera för att använda ${name}`
+    : dispatch.labelSuffix
+      ? `Fråga ${name} ${dispatch.labelSuffix}`
+      : `Fråga ${name}`
 
   return (
     <button
       onClick={() =>
-        openAgentSheet({
-          intentId: dispatch.intentId,
-          intentArgs: dispatch.intentArgs,
-          contextRef: dispatch.contextRef,
-        })
+        !hasAi
+          ? router.push('/settings/billing')
+          : openAgentSheet({
+              intentId: dispatch.intentId,
+              intentArgs: dispatch.intentArgs,
+              contextRef: dispatch.contextRef,
+            })
       }
       // Mobile: sit above the bottom nav (h-16 = 64px) AND the iOS home
       // indicator (env(safe-area-inset-bottom)). Desktop: standard 20px lift,

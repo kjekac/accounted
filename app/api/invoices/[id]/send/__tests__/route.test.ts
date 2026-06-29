@@ -75,6 +75,10 @@ vi.mock('@/lib/sandbox/guard', () => ({
   sandboxBlockedResponse: vi.fn(),
 }))
 
+vi.mock('@/lib/entitlements/has-capability', () => ({
+  requireCapability: vi.fn().mockResolvedValue(null),
+}))
+
 import { POST } from '../route'
 
 describe('POST /api/invoices/[id]/send', () => {

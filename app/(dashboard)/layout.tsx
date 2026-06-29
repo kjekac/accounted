@@ -13,6 +13,7 @@ import { SandboxBanner } from '@/components/dashboard/SandboxBanner'
 import { getExtensionNavItems } from '@/lib/extensions/sectors'
 import { CompanyProvider } from '@/contexts/CompanyContext'
 import { getActiveCompanyId } from '@/lib/company/context'
+import { getCompanyCapabilities } from '@/lib/entitlements/has-capability'
 import { getBranding } from '@/lib/branding/service'
 import { ensureSandboxAgentProfile } from '@/lib/sandbox/ensure-agent'
 import { countPendingOperations, countUnbookedTransactions } from '@/lib/worklist'
@@ -93,6 +94,7 @@ export default async function DashboardLayout({
           isTeamMember,
           team,
           isSandbox: false,
+          capabilities: [],
         }}
       >
         <AgentSheetProvider>
@@ -147,6 +149,7 @@ export default async function DashboardLayout({
       isTeamMember,
       team,
       isSandbox: false,
+      capabilities: [],
     }
 
     return (
@@ -181,6 +184,7 @@ export default async function DashboardLayout({
     pendingOpsCount,
     { data: agentProfileIdentity },
     { data: userProfile },
+    capabilities,
   ] = await Promise.all([
     supabase
       .from('company_settings')
@@ -203,6 +207,7 @@ export default async function DashboardLayout({
     // popover (full_name + initial) so it's clear which user is logged
     // in, distinct from the active company shown at the top.
     supabase.from('profiles').select('full_name').eq('id', user.id).maybeSingle(),
+    getCompanyCapabilities(supabase, companyId),
   ])
 
   // If onboarding incomplete, still render the dashboard — the page component
@@ -261,6 +266,7 @@ export default async function DashboardLayout({
     isTeamMember,
     team,
     isSandbox,
+    capabilities,
   }
 
   return (

@@ -2,6 +2,8 @@ import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
 import { verifyCronSecret } from '@/lib/auth/cron'
+import { hasCapability } from '@/lib/entitlements/has-capability'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import { createExtensionContext } from '@/lib/extensions/context-factory'
 import { syncSkattekonto, SKATTEKONTO_LAST_SYNCED_AT_KEY } from '@/extensions/general/skatteverket/lib/skattekonto-sync'
 import { computeSkattekontoDrift, maybeAlertDrift } from '@/extensions/general/skatteverket/lib/skattekonto-drift'
@@ -91,6 +93,11 @@ export async function GET(request: Request) {
     if (!companyId) {
       // Pre-multi-tenant tokens may lack company_id. Skip — cannot scope.
       results.push({ userId, companyId: '(missing)', status: 'error', error: 'No company_id on token' })
+      continue
+    }
+
+    if (!(await hasCapability(supabase, companyId, CAPABILITY.skatteverket))) {
+      console.info('[skattekonto-sync-cron] skip — capability not entitled', { companyId })
       continue
     }
 

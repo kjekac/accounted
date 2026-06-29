@@ -10,6 +10,8 @@ import {
   generateConsentExpiryEmailSubject,
 } from '@/lib/email/consent-notification-templates'
 import { ensureInitialized } from '@/lib/init'
+import { hasCapability } from '@/lib/entitlements/has-capability'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import { withCronContext } from '@/lib/api/with-cron-context'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { getBranding } from '@/lib/branding/service'
@@ -90,6 +92,11 @@ export const GET = withCronContext('cron.bank_sync', async (_request, ctx) => {
     if (Date.now() - startTime > TIME_BUDGET_MS) {
       ctx.log.info('time budget reached', { processedSoFar: results.length })
       break
+    }
+
+    if (!(await hasCapability(supabase, connection.company_id, CAPABILITY.bank_sync))) {
+      ctx.log.info('skip — capability not entitled', { companyId: connection.company_id })
+      continue
     }
 
     try {

@@ -5,6 +5,8 @@ import { getActiveCompanyId } from '@/lib/company/context'
 import { checkAgentRateLimit, agentRateLimitResponseBody } from '@/lib/rate-limits/agent'
 import { composeAgentProfile } from '@/lib/agent/composer'
 import { guardSandbox } from '@/lib/sandbox/guard'
+import { requireCapability } from '@/lib/entitlements/has-capability'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 
 const BodySchema = z.object({
   // Optional override; if absent we use the user's active_company_id.
@@ -66,6 +68,9 @@ export async function POST(request: Request) {
 
   const blocked = await guardSandbox(supabase, companyId)
   if (blocked) return blocked
+
+  const capBlocked = await requireCapability(supabase, companyId, CAPABILITY.ai)
+  if (capBlocked) return capBlocked
 
   try {
     const composed = await composeAgentProfile(supabase, companyId, { dryRun: body.dry_run })

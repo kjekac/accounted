@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getActiveCompanyId } from '@/lib/company/context'
 import { guardSandbox } from '@/lib/sandbox/guard'
+import { requireCapability } from '@/lib/entitlements/has-capability'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import { checkAgentRateLimit, agentRateLimitResponseBody } from '@/lib/rate-limits/agent'
 import { gatherComposerInputs, inputsToSourceSignals } from '@/lib/agent/composer/inputs'
 import { selectAtoms } from '@/lib/agent/composer/atom-selection'
@@ -105,6 +107,9 @@ export async function POST(request: Request) {
   // verified agent_profile so the chrome is visible without burning Bedrock.
   const blocked = await guardSandbox(supabase, companyId)
   if (blocked) return blocked
+
+  const capBlocked = await requireCapability(supabase, companyId, CAPABILITY.ai)
+  if (capBlocked) return capBlocked
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {

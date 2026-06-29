@@ -32,10 +32,13 @@ import {
   Circle,
   X,
   ChevronDown,
+  Sparkles,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatCurrency } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
+import { useCapability } from '@/contexts/CompanyContext'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import type { WorkspaceComponentProps } from '@/lib/extensions/workspace-registry'
 import type { InvoiceExtractionResult } from '@/types'
 import BookDirectlyDialog from '@/components/extensions/general/BookDirectlyDialog'
@@ -103,6 +106,24 @@ function pickCurrency(item: InboxItem): string {
 
 function pickSupplierName(item: InboxItem): string | null {
   return item.extracted_data?.supplier?.name ?? null
+}
+
+// True when extraction produced at least one usable field. Distinguishes a
+// deterministically-parsed underlag (fields present — render the editable
+// list) from an item whose extracted_data is null/empty (AI never ran, or ran
+// and found nothing). Currency is ignored because emptyExtraction() seeds it
+// to 'SEK', so it is never a sign that extraction actually happened.
+function hasAnyExtractedField(data: InvoiceExtractionResult | null): boolean {
+  if (!data) return false
+  const s = data.supplier
+  const inv = data.invoice
+  const t = data.totals
+  return Boolean(
+    s?.name || s?.orgNumber || s?.vatNumber || s?.bankgiro || s?.plusgiro ||
+    inv?.invoiceNumber || inv?.invoiceDate || inv?.dueDate || inv?.paymentReference ||
+    t?.subtotal != null || t?.vatAmount != null || t?.total != null ||
+    (data.lineItems?.length ?? 0) > 0 || (data.vatBreakdown?.length ?? 0) > 0
+  )
 }
 
 // Lifecycle stage of an inbox item. Single source of truth shared by the list
@@ -1427,6 +1448,7 @@ function FieldsRail({
   onRetryRequested: () => Promise<void>
 }) {
   const { toast } = useToast()
+  const hasAi = useCapability(CAPABILITY.ai)
   const data = item.extracted_data
   const isProcessed = !!item.created_supplier_invoice_id
   const isBookedDirectly = !isProcessed && !!item.created_journal_entry_id
@@ -1556,6 +1578,24 @@ function FieldsRail({
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-8 w-full" />
             ))}
+          </div>
+        ) : !hasAnyExtractedField(data) && !hasAi ? (
+          // No fields were extracted (AI never ran) and the company doesn't have
+          // the AI capability. Show an upsell in place of the blank field list —
+          // upload and manual entry stay available via the actions below.
+          <div className="rounded-lg border border-border bg-secondary/40 px-4 py-3 text-left">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Sparkles className="h-4 w-4" />
+              AI-tolkning ingår i abonnemanget
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+              Uppgradera för att låta accounted läsa av leverantör, belopp och
+              moms automatiskt. Du kan fortfarande fylla i fälten manuellt eller
+              koppla dokumentet till en transaktion nedan.
+            </p>
+            <Button size="sm" className="mt-3" asChild>
+              <Link href="/settings/billing">Uppgradera</Link>
+            </Button>
           </div>
         ) : (
           <EditableFieldsList

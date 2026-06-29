@@ -180,6 +180,7 @@
     "backup": "Backup",
     "account": "Account",
     "api": "API",
+    "billing": "Subscription",
     "group_account": "Account",
     "group_company": "Company",
     "group_accounting": "Accounting & tax",

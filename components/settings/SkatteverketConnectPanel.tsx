@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/use-toast'
+import { useCapability } from '@/contexts/CompanyContext'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import { CheckCircle2, ExternalLink, ShieldOff, FlaskConical, ShieldAlert } from 'lucide-react'
 
 type Environment = 'test' | 'prod'
@@ -25,6 +27,7 @@ type Status =
 export function SkatteverketConnectPanel() {
   const t = useTranslations('settings_skatteverket_connect')
   const { toast } = useToast()
+  const hasSkatteverket = useCapability(CAPABILITY.skatteverket)
   const [status, setStatus] = useState<Status | null>(null)
   const [loading, setLoading] = useState(true)
   const [disconnecting, setDisconnecting] = useState(false)
@@ -118,7 +121,19 @@ export function SkatteverketConnectPanel() {
               code: (chunks) => <span className="font-mono">{chunks}</span>,
             })}
           </div>
-          <Button onClick={startConnect} disabled={status?.disabled}>
+          {!hasSkatteverket && (
+            <div className="rounded-lg border border-border bg-secondary/40 px-3 py-2.5 text-sm text-muted-foreground">
+              Anslutning till Skatteverket kräver ett abonnemang.{' '}
+              <a href="/settings/billing" className="underline underline-offset-2">
+                Uppgradera
+              </a>
+            </div>
+          )}
+          <Button
+            onClick={startConnect}
+            disabled={status?.disabled || !hasSkatteverket}
+            title={!hasSkatteverket ? 'Anslutning till Skatteverket kräver ett abonnemang' : undefined}
+          >
             <ExternalLink className="mr-2 h-4 w-4" />
             {t('connect_with_bankid')}
           </Button>
@@ -204,7 +219,11 @@ export function SkatteverketConnectPanel() {
 
         <div className="flex gap-2 pt-2">
           {(status.expired || !status.canRefresh || !scopes.includes('skattekonto') || !scopes.includes('agd')) && (
-            <Button onClick={startConnect} disabled={status.disabled}>
+            <Button
+              onClick={startConnect}
+              disabled={status.disabled || !hasSkatteverket}
+              title={!hasSkatteverket ? 'Anslutning till Skatteverket kräver ett abonnemang' : undefined}
+            >
               <ExternalLink className="mr-2 h-4 w-4" />
               {t('reconnect')}
             </Button>

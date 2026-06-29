@@ -55,6 +55,8 @@ import { uploadDocument } from '@/lib/core/documents/document-service'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import { eventBus } from '@/lib/events'
 import { guardSandbox } from '@/lib/sandbox/guard'
+import { requireCapability } from '@/lib/entitlements/has-capability'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import type { CompanySettings, Customer, EntityType, Invoice, InvoiceItem } from '@/types'
 
 const INVOICE_SEND_RESPONSE_COLUMNS =
@@ -141,6 +143,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     // before any number is allocated or PDF is rendered.
     const blocked = await guardSandbox(ctx.supabase, ctx.companyId!)
     if (blocked) return blocked
+
+    const capBlocked = await requireCapability(ctx.supabase, ctx.companyId!, CAPABILITY.email_send)
+    if (capBlocked) return capBlocked
 
     // Step 1: email service configured?
     const emailService = getEmailService()

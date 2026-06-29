@@ -83,6 +83,10 @@ vi.mock('@/lib/sandbox/guard', () => ({
   isSandboxCompany: vi.fn().mockResolvedValue(false),
   sandboxBlockedResponse: vi.fn(),
 }))
+
+vi.mock('@/lib/entitlements/has-capability', () => ({
+  requireCapability: vi.fn().mockResolvedValue(null),
+}))
 import { InvoicePDF } from '@/lib/invoices/pdf-template'
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'

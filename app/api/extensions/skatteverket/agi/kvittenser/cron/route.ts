@@ -5,6 +5,8 @@ import { verifyCronSecret } from '@/lib/auth/cron'
 import { agiGetKvittenser } from '@/extensions/general/skatteverket/lib/agi-client'
 import { SkatteverketAuthError } from '@/extensions/general/skatteverket/lib/api-client'
 import { formatRedovisare, formatRedovisningsperiod } from '@/lib/skatteverket/format'
+import { hasCapability } from '@/lib/entitlements/has-capability'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 
 ensureInitialized()
 
@@ -89,6 +91,11 @@ export async function GET(request: Request) {
     const companyId = decl.company_id as string
     const declarationId = decl.id as string
     const period = formatRedovisningsperiod('monthly', decl.period_year as number, decl.period_month as number)
+
+    if (!(await hasCapability(supabase, companyId, CAPABILITY.skatteverket))) {
+      console.info('[agi-kvittenser-cron] skip — capability not entitled', { companyId })
+      continue
+    }
 
     try {
       // The token table is user-scoped (one BankID identity per user) but

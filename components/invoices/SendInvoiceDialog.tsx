@@ -16,7 +16,8 @@ import { JournalEntryReviewContent } from '@/components/bookkeeping/JournalEntry
 import { proposeSendLines } from '@/lib/bookkeeping/propose-send-lines'
 import { formatCurrency } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
-import { useCompany } from '@/contexts/CompanyContext'
+import { useCompany, useCapability } from '@/contexts/CompanyContext'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import { Loader2, Mail, Send } from 'lucide-react'
 import type { Invoice, InvoiceItem, Customer, EntityType } from '@/types'
 
@@ -44,6 +45,7 @@ export default function SendInvoiceDialog({
   const { toast } = useToast()
   const supabase = createClient()
   const { company, isSandbox } = useCompany()
+  const canEmail = useCapability(CAPABILITY.email_send)
   const t = useTranslations('invoice_send_dialog')
 
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -216,6 +218,15 @@ export default function SendInvoiceDialog({
                 flödet.
               </div>
             )}
+            {!isSandbox && !canEmail && mode === 'email' && (
+              <div className="rounded-lg border border-border bg-secondary/40 px-3 py-2.5 text-sm text-muted-foreground">
+                E-postutskick kräver ett abonnemang.{' '}
+                <a href="/settings/billing" className="underline underline-offset-2">
+                  Uppgradera
+                </a>{' '}
+                eller använd &laquo;Markera som skickad&raquo;.
+              </div>
+            )}
             {showJournalPreview ? (
               <>
                 <p className="text-sm text-muted-foreground">
@@ -258,9 +269,15 @@ export default function SendInvoiceDialog({
           </Button>
           <Button
             onClick={handleConfirm}
-            disabled={isSubmitting || !isInitialized || (isSandbox && mode === 'email')}
+            disabled={isSubmitting || !isInitialized || (mode === 'email' && (isSandbox || !canEmail))}
             className="w-full sm:w-auto min-h-11"
-            title={isSandbox && mode === 'email' ? 'E-postutskick är avstängt i sandlådan' : undefined}
+            title={
+              mode === 'email' && isSandbox
+                ? 'E-postutskick är avstängt i sandlådan'
+                : mode === 'email' && !canEmail
+                  ? 'E-postutskick kräver ett abonnemang'
+                  : undefined
+            }
           >
             {isSubmitting ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
