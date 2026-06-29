@@ -1,44 +1,80 @@
 name: Swedish Accounting Compliance Review
 
+# Stage 2 of the fork-safe compliance review (stage 1 is swedish-compliance-diff.yml).
+#
+# SECURITY: this is the privileged half — it has the AWS Bedrock secrets and a
+# write token. It is triggered by `workflow_run` (NOT pull_request_target) and
+# checks out ONLY the base repo, so it never executes fork PR code. The untrusted
+# input (the PR diff) arrives as a downloaded artifact and is fed to the model
+# as DATA — never run. This is the pattern GitHub recommends instead of
+# `pull_request_target` + checking out the PR head.
+
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: ["Compliance diff"]
+    types: [completed]
 
 permissions:
   contents: read
-  pull-requests: write
+  actions: read          # required to download the artifact from the triggering run
+  pull-requests: write   # required to post the review comment
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Only act on PR-triggered diffs that actually produced an artifact.
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
+      # Base repo only — the TRUSTED copy of the script and .claude/skills/.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
+      - name: Download diff artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: compliance-input
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve PR number
+        id: pr
+        run: |
+          set -euo pipefail
+          NUM=$(cat pr-number.txt)
+          # Guard: pr-number.txt must be a plain integer (artifact is untrusted input).
+          if ! [[ "$NUM" =~ ^[0-9]+$ ]]; then
+            echo "Refusing to continue: pr-number.txt is not a number" >&2
+            exit 1
+          fi
+          echo "number=$NUM" >> "$GITHUB_OUTPUT"
       - name: Install Anthropic Bedrock SDK
-        run: npm install --no-save --no-package-lock @anthropic-ai/bedrock-sdk@latest
+        # Pinned exact version + --ignore-scripts: this is the privileged job
+        # (write token in env), so no floating @latest and no dependency
+        # lifecycle scripts may execute here.
+        run: npm install --no-save --no-package-lock --ignore-scripts @anthropic-ai/bedrock-sdk@0.31.0
       - name: Run compliance review
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION || 'eu-north-1' }}
-          GITHUB_BASE_REF: ${{ github.base_ref }}
           REVIEW_MODEL: eu.anthropic.claude-sonnet-4-6
+          # Two-stage mode: read the diff from the artifact instead of git-diffing.
+          DIFF_FILE: diff.patch
+          FILES_FILE: files.txt
         run: node scripts/swedish-compliance-review.mjs
       - name: Find previous compliance comment
-        uses: peter-evans/find-comment@v3
+        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3
         id: find-comment
         with:
-          issue-number: ${{ github.event.pull_request.number }}
+          issue-number: ${{ steps.pr.outputs.number }}
           comment-author: 'github-actions[bot]'
           body-includes: '<!-- swedish-compliance-review-bot -->'
       - name: Post or update PR comment
-        uses: peter-evans/create-or-update-comment@v5
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5
         with:
-          issue-number: ${{ github.event.pull_request.number }}
+          issue-number: ${{ steps.pr.outputs.number }}
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           body-path: review.md
           edit-mode: replace
