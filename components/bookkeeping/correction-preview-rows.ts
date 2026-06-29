@@ -12,6 +12,14 @@ export interface AccountRow {
   storno: number
   correction: number
   delta: number
+  /**
+   * True when this account appears on at least one (4-digit) corrected line.
+   * Lets the UI tell apart an account the user removed from the rättelse — which
+   * the storno then zeroes (delta = −original) — from one that was never part of
+   * the correction at all. Without this distinction a removed account renders as
+   * a bare "–", reading as "unchanged" when it is in fact being drained.
+   */
+  correctionPresent: boolean
 }
 
 function toNumber(v: string | number | null | undefined): number {
@@ -44,7 +52,14 @@ export function buildCorrectionRows(
   const ensure = (acc: string): AccountRow => {
     let row = map.get(acc)
     if (!row) {
-      row = { account_number: acc, original: 0, storno: 0, correction: 0, delta: 0 }
+      row = {
+        account_number: acc,
+        original: 0,
+        storno: 0,
+        correction: 0,
+        delta: 0,
+        correctionPresent: false,
+      }
       map.set(acc, row)
     }
     return row
@@ -63,6 +78,7 @@ export function buildCorrectionRows(
     const net = toNumber(line.debit_amount) - toNumber(line.credit_amount)
     const row = ensure(line.account_number)
     row.correction += net
+    row.correctionPresent = true
   }
 
   for (const row of map.values()) {

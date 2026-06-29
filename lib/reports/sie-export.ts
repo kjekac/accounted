@@ -56,20 +56,59 @@ export async function generateSIEExport(
       .range(from, to)
   )
 
-  // Fetch all posted journal entries with lines
-  let entriesQuery = supabase
-    .from('journal_entries')
-    .select('*, lines:journal_entry_lines(*)')
-    .eq('company_id', companyId)
-    .eq('fiscal_period_id', options.fiscal_period_id)
-    .in('status', ['posted', 'reversed'])
-    .order('voucher_number')
+  // Fetch all posted journal entries — paginated to avoid truncation.
+  // The previous nested `select('*, lines:journal_entry_lines(*)')` hit
+  // PostgREST's response-row ceiling on the embedded resource and silently
+  // truncated large periods (~30 vouchers). Fetch entries and lines as two
+  // separate paginated queries and stitch them together in memory, mirroring
+  // journal-register.ts.
+  const entries = await fetchAllRows<JournalEntry>(({ from, to }) => {
+    let q = supabase
+      .from('journal_entries')
+      .select('*')
+      .eq('company_id', companyId)
+      .eq('fiscal_period_id', options.fiscal_period_id)
+      .in('status', ['posted', 'reversed'])
 
-  if (options.exclude_year_end_closing) {
-    entriesQuery = entriesQuery.neq('source_type', 'year_end')
+    if (options.exclude_year_end_closing) {
+      q = q.neq('source_type', 'year_end')
+    }
+
+    return q.order('voucher_number').range(from, to)
+  })
+
+  // Fetch all lines for those entries, filtered server-side via an inner join
+  // so the same company/period/status (and year-end exclusion) constraints
+  // apply, then group by journal_entry_id.
+  const allLines = await fetchAllRows<JournalEntryLine & { journal_entry_id: string }>(({ from, to }) => {
+    let q = supabase
+      .from('journal_entry_lines')
+      .select('*, journal_entries!inner(company_id, fiscal_period_id, status, source_type)')
+      .eq('journal_entries.company_id', companyId)
+      .eq('journal_entries.fiscal_period_id', options.fiscal_period_id)
+      .in('journal_entries.status', ['posted', 'reversed'])
+
+    if (options.exclude_year_end_closing) {
+      q = q.neq('journal_entries.source_type', 'year_end')
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return q.range(from, to) as any
+  })
+
+  const linesByEntryId = new Map<string, JournalEntryLine[]>()
+  for (const line of allLines) {
+    const list = linesByEntryId.get(line.journal_entry_id)
+    if (list) {
+      list.push(line)
+    } else {
+      linesByEntryId.set(line.journal_entry_id, [line])
+    }
   }
 
-  const { data: entries } = await entriesQuery
+  for (const entry of entries) {
+    entry.lines = linesByEntryId.get(entry.id) || []
+  }
 
   // Fetch cost centers and projects for dimension records
   const { data: costCenters } = await supabase

@@ -4,7 +4,6 @@ import { useTranslations } from 'next-intl'
 import { useState, useCallback } from 'react'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/components/ui/use-toast'
 import type { CompanySettings } from '@/types'
@@ -113,17 +112,16 @@ export function PdfPrintSettings({ settings, onUpdate }: PdfPrintSettingsProps) 
           />
         </div>
 
-        {/* Swish on invoices is "coming soon" — the toggle is disabled until the
-            payment-QR flow ships (gated by SHOW_SWISH_ON_INVOICE in pdf-template). */}
-        <div className="flex items-center justify-between opacity-60">
+        <div className="flex items-center justify-between">
           <div>
-            <div className="flex items-center gap-2">
-              <Label>{t('show_swish_label')}</Label>
-              <Badge variant="secondary" className="text-[10px]">{t('coming_soon')}</Badge>
-            </div>
+            <Label>{t('show_swish_label')}</Label>
             <p className="text-xs text-muted-foreground">{t('show_swish_help')}</p>
           </div>
-          <Switch checked={false} disabled aria-label={t('show_swish_label')} />
+          <Switch
+            checked={settings.invoice_show_swish ?? false}
+            onCheckedChange={(v) => saveToggle('invoice_show_swish', v)}
+            aria-label={t('show_swish_label')}
+          />
         </div>
 
         <div className="flex items-center justify-between">

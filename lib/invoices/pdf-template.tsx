@@ -159,10 +159,9 @@ const LABELS = {
   },
 } as const
 
-// Swish on invoices (the number row + the payment QR) is "coming soon" — gated
-// off until the QR flow is finished. Flip to true to re-enable both at once;
-// the settings "Visa Swish" toggle is disabled while this is false.
-export const SHOW_SWISH_ON_INVOICE = false
+// Swish on invoices (the number row + the payment QR). When true, the Swish row
+// and QR render on the invoice PDF and the settings "Visa Swish" toggle is live.
+export const SHOW_SWISH_ON_INVOICE = true
 
 // Labor-only disclaimer for the ROT/RUT block. Kept Swedish-only in both
 // locales — references Skatteverket's fakturamodell directly, which is a
@@ -395,6 +394,7 @@ function createStyles(branding?: InvoiceBranding) {
       padding: 15,
       backgroundColor: '#f8f9fa',
       borderRadius: 4,
+      position: 'relative',
     },
     paymentTitle: {
       fontSize: 11,
@@ -1086,9 +1086,9 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
               </View>
             )}
             {swishQrDataUrl && (
-              <View style={{ marginTop: 10, alignItems: 'center' }}>
+              <View style={{ position: 'absolute', top: 15, right: 15, width: 96, alignItems: 'center' }}>
                 <Image src={swishQrDataUrl} style={{ width: 96, height: 96 }} />
-                <Text style={[styles.paymentLabel, { marginTop: 2 }]}>{L.swishQrCaption}</Text>
+                <Text style={[styles.paymentLabel, { width: 'auto', marginTop: 2, textAlign: 'center' }]}>{L.swishQrCaption}</Text>
               </View>
             )}
           </View>

@@ -27,6 +27,7 @@ import {
   BookkeepingDatabaseError,
   CannotCorrectNonPostedError,
   CannotReverseNonPostedError,
+  CannotReverseStornoError,
   EntryAlreadyReversedError,
   EntryDateOutsideFiscalPeriodError,
   FiscalPeriodNotFoundError,
@@ -347,6 +348,9 @@ function extractBookkeepingDetails(err: unknown): { code: string; details?: unkn
   if (err instanceof JournalEntryNotFoundError) return { code: err.code }
   if (err instanceof CannotReverseNonPostedError) {
     return { code: err.code, details: { currentStatus: err.currentStatus } }
+  }
+  if (err instanceof CannotReverseStornoError) {
+    return { code: err.code, details: { sourceType: err.sourceType } }
   }
   if (err instanceof CannotCorrectNonPostedError) {
     return { code: err.code, details: { currentStatus: err.currentStatus } }

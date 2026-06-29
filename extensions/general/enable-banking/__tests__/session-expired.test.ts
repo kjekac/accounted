@@ -260,3 +260,112 @@ describe('POST /connect (enable-banking) — reconnect in place', () => {
     expect(updateSpy.mock.calls[1][0]).toEqual({ authorization_id: 'auth-123' })
   })
 })
+
+describe('POST /connect (enable-banking) — psu_type persistence', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function stubAuth() {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({ url: 'https://bank.example/auth', authorization_id: 'auth-123' }),
+        text: async () => '',
+      }))
+    )
+  }
+
+  it('reuses the stored psu_type on reconnect when the client sends no override', async () => {
+    // A 'personal' connection must NOT silently flip to 'business' on renewal —
+    // that was the Handelsbanken signing-failure trap.
+    stubAuth()
+    const updateSpy = vi.fn()
+    const ctx = makeContext(
+      {
+        id: 'conn-1',
+        company_id: 'company-1',
+        bank_name: 'Handelsbanken',
+        provider: 'handelsbanken-se',
+        session_id: null,
+        status: 'expired',
+        psu_type: 'personal',
+      },
+      updateSpy
+    )
+
+    const req = new Request('http://localhost/api/extensions/ext/enable-banking/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connection_id: 'conn-1', aspsp_name: 'Handelsbanken', aspsp_country: 'SE' }),
+    })
+
+    const res = await connectRoute.handler(req, ctx)
+    expect(res.status).toBe(200)
+    // The CSRF-state staging update (first write) carries the reused type.
+    expect(updateSpy.mock.calls[0][0]).toMatchObject({ psu_type: 'personal' })
+  })
+
+  it('lets an explicit psu_type override the stored type (switch account type in place)', async () => {
+    stubAuth()
+    const updateSpy = vi.fn()
+    const ctx = makeContext(
+      {
+        id: 'conn-1',
+        company_id: 'company-1',
+        bank_name: 'Handelsbanken',
+        provider: 'handelsbanken-se',
+        session_id: null,
+        status: 'expired',
+        psu_type: 'business',
+      },
+      updateSpy
+    )
+
+    const req = new Request('http://localhost/api/extensions/ext/enable-banking/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        connection_id: 'conn-1',
+        aspsp_name: 'Handelsbanken',
+        aspsp_country: 'SE',
+        psu_type: 'personal',
+      }),
+    })
+
+    const res = await connectRoute.handler(req, ctx)
+    expect(res.status).toBe(200)
+    expect(updateSpy.mock.calls[0][0]).toMatchObject({ psu_type: 'personal' })
+  })
+
+  it('persists psu_type on a fresh connect (derived from entity_type)', async () => {
+    stubAuth()
+    const insertSpy = vi.fn()
+    // Fresh connect: the shared single() resolver returns this object for BOTH
+    // the companies entity_type lookup and the post-insert row read, so giving it
+    // entity_type drives the derivation and id provides the returned row.
+    const ctx = makeContext(
+      { id: 'conn-new', entity_type: 'enskild_firma' },
+      vi.fn(),
+      insertSpy
+    )
+
+    const req = new Request('http://localhost/api/extensions/ext/enable-banking/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aspsp_name: 'Handelsbanken', aspsp_country: 'SE' }),
+    })
+
+    const res = await connectRoute.handler(req, ctx)
+    expect(res.status).toBe(200)
+    expect(insertSpy).toHaveBeenCalledTimes(1)
+    expect(insertSpy.mock.calls[0][0]).toMatchObject({ psu_type: 'personal' })
+  })
+})

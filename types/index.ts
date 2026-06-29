@@ -333,6 +333,10 @@ export interface BankConnection {
   // Status
   status: BankConnectionStatus
 
+  // PSD2 PSU type chosen at authorization. Reused on reconnect so consent
+  // renewals keep the account type that actually worked. NULL on legacy rows.
+  psu_type: 'personal' | 'business' | null
+
   // Consent
   consent_expires: string | null
   last_synced_at: string | null

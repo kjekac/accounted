@@ -2,7 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { InvoicePDF } from '@/lib/invoices/pdf-template'
-import { prepareInvoicePdfRender } from '@/lib/invoices/pdf-render-helpers'
+import { prepareInvoicePdfRender, buildSwishQrDataUrl } from '@/lib/invoices/pdf-render-helpers'
 import { getVatRules } from '@/lib/invoices/vat-rules'
 import { requireCompanyId } from '@/lib/company/context'
 import type { Invoice, InvoiceItem, Customer, CompanySettings, InvoiceDocumentType } from '@/types'
@@ -180,6 +180,7 @@ export async function POST(request: Request) {
     const { branding, company: renderCompany } = await prepareInvoicePdfRender(
       company as CompanySettings,
     )
+    const swishQrDataUrl = await buildSwishQrDataUrl(company as CompanySettings, previewInvoice)
     const pdfBuffer = await renderToBuffer(
       InvoicePDF({
         invoice: previewInvoice,
@@ -188,6 +189,7 @@ export async function POST(request: Request) {
         company: renderCompany,
         isPreview: true,
         branding,
+        swishQrDataUrl,
       })
     )
 

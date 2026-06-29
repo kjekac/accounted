@@ -178,7 +178,14 @@ export default function CorrectionEntryDialog({ entry, open, onOpenChange, onCor
 
         {/* Corrected lines (editable) */}
         <div className="space-y-2">
-          <p className="text-sm font-medium">Rättade rader</p>
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Rättade rader</p>
+            <p className="text-xs text-muted-foreground">
+              Det här är hela den nya verifikationen — alla konton som ska finnas kvar måste stå
+              kvar. Tar du bort ett konto nollställs det (stornon återför det). Vill du bara återföra
+              hela verifikatet utan att ersätta det, använd Återför (storno) istället.
+            </p>
+          </div>
 
           <div className="space-y-2">
             {lines.map((line, index) => (

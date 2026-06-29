@@ -3,6 +3,13 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { formatDate } from '@/lib/utils'
 import { getDaysUntilExpiry, isConsentExpiringSoon } from '../lib/api-client'
 import Link from 'next/link'
@@ -14,6 +21,7 @@ import {
   Trash2,
   Loader2,
   CheckCircle,
+  ChevronDown,
   XCircle,
   Upload,
 } from 'lucide-react'
@@ -23,7 +31,7 @@ interface BankConnectionStatusProps {
   connection: BankConnection
   onSync: (connectionId: string) => void
   onDisconnect: (connectionId: string) => void
-  onReconnect?: (connection: BankConnection) => void
+  onReconnect?: (connection: BankConnection, psuType?: 'personal' | 'business') => void
   onManageAccounts?: (connectionId: string) => void
   isSyncing?: boolean
 }
@@ -133,13 +141,30 @@ export function BankConnectionStatus({
         </div>
         <div className="flex items-center gap-2">
           {(isConnectionExpired || isConnectionError) && onReconnect && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onReconnect(connection)}
-            >
-              Förnya anslutning
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-1.5">
+                  Förnya anslutning
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {/* Let the user pick the account type for the bank login. The
+                    server reuses the last-used type by default, but some banks
+                    (notably Handelsbanken) only sign with one of them — e.g. an
+                    AB owner who signs with a personal Mobile BankID needs
+                    "Privatkonto", not the company default "Företagskonto". */}
+                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                  Logga in på banken som
+                </DropdownMenuLabel>
+                <DropdownMenuItem onSelect={() => onReconnect(connection, 'business')}>
+                  Företagskonto
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onReconnect(connection, 'personal')}>
+                  Privatkonto
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           {isConnectionError && (
             <Button

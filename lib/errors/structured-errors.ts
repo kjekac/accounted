@@ -180,6 +180,11 @@ const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
     message_sv: 'Endast bokförda verifikationer kan stornas.',
     message_en: 'Only posted entries can be reversed.',
   },
+  CANNOT_REVERSE_STORNO: {
+    httpStatus: 400,
+    message_sv: 'En stornering eller rättelse kan inte stornas.',
+    message_en: 'A storno or correction entry cannot be reversed.',
+  },
   CANNOT_CORRECT_NON_POSTED: {
     httpStatus: 400,
     message_sv: 'Endast bokförda verifikationer kan rättas.',

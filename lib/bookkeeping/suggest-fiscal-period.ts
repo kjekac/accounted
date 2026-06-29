@@ -14,6 +14,9 @@ import type { FiscalPeriod } from '@/types'
 /** Minimal shape needed for the date math — `FiscalPeriod` satisfies it. */
 type PeriodRange = Pick<FiscalPeriod, 'period_start' | 'period_end'>
 
+/** A period plus its id, for resolving which räkenskapsår a view scopes to. */
+type IdentifiablePeriod = Pick<FiscalPeriod, 'id' | 'period_start' | 'period_end'>
+
 export interface SuggestedPeriod {
   name: string
   period_start: string
@@ -120,4 +123,37 @@ export function suggestSeedDate(periods: PeriodRange[], today: string): string {
   }
 
   return addDays(sorted[sorted.length - 1].period_end, 1)
+}
+
+/**
+ * Resolve which fiscal period a period-scoped view (e.g. the verifikat list)
+ * should default to: the räkenskapsår the user is currently in.
+ *
+ * Verifikationsnummer run as an unbroken series *per räkenskapsår* (BFL 5 kap
+ * 7§), so the same number (e.g. A42) legitimately recurs once per year. Showing
+ * every year at once makes those look like duplicates and makes a bare "A42"
+ * reference ambiguous — a period-oriented view should land on a single year.
+ *
+ * Resolution, given `today` (YYYY-MM-DD):
+ *  1. The period that contains today.
+ *  2. Else the most recent period that has already started (period_start ≤ today)
+ *     — covers a gap after the last year before the next one is created.
+ *  3. Else the earliest period (a company whose only/first year is still upcoming).
+ *  4. Else null (no periods at all → caller falls back to "all years").
+ */
+export function resolveCurrentPeriodId(
+  periods: IdentifiablePeriod[],
+  today: string,
+): string | null {
+  if (periods.length === 0) return null
+
+  const containing = periods.find((p) => p.period_start <= today && today <= p.period_end)
+  if (containing) return containing.id
+
+  const started = periods
+    .filter((p) => p.period_start <= today)
+    .sort((a, b) => b.period_start.localeCompare(a.period_start))
+  if (started.length > 0) return started[0].id
+
+  return [...periods].sort((a, b) => a.period_start.localeCompare(b.period_start))[0].id
 }

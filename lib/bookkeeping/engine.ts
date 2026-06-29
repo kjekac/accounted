@@ -6,6 +6,7 @@ import {
   BookkeepingDatabaseError,
   CannotEditNonDraftError,
   CannotReverseNonPostedError,
+  CannotReverseStornoError,
   EntryAlreadyReversedError,
   EntryDateOutsideFiscalPeriodError,
   FiscalPeriodNotFoundError,
@@ -637,6 +638,14 @@ export async function reverseEntry(
 
   if (original.status !== 'posted') {
     throw new CannotReverseNonPostedError(original.status)
+  }
+
+  // A storno or correction entry must never itself be reversed: a
+  // storno-of-a-storno makes the original verifikat's cancellation chain
+  // ambiguous (BFL 5 kap 5§). The UI hides "Återför" for these source types;
+  // this is the server-side backstop against a direct API call.
+  if (original.source_type === 'storno' || original.source_type === 'correction') {
+    throw new CannotReverseStornoError(original.source_type)
   }
 
   const lines = (original.lines as JournalEntryLine[]) || []

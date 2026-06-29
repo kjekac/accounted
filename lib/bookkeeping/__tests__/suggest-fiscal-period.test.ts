@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { computeSuggestedPeriod, suggestSeedDate } from '../suggest-fiscal-period'
+import {
+  computeSuggestedPeriod,
+  suggestSeedDate,
+  resolveCurrentPeriodId,
+} from '../suggest-fiscal-period'
 
 type Range = { period_start: string; period_end: string }
 
@@ -69,5 +73,32 @@ describe('suggestSeedDate', () => {
 
   it('returns the day after the only period for a single period', () => {
     expect(suggestSeedDate([FY2024], today)).toBe('2025-01-01')
+  })
+})
+
+describe('resolveCurrentPeriodId', () => {
+  const P2024 = { id: 'p2024', period_start: '2024-01-01', period_end: '2024-12-31' }
+  const P2025 = { id: 'p2025', period_start: '2025-01-01', period_end: '2025-12-31' }
+  const P2026 = { id: 'p2026', period_start: '2026-01-01', period_end: '2026-12-31' }
+
+  it('returns null when there are no periods', () => {
+    expect(resolveCurrentPeriodId([], '2026-06-29')).toBeNull()
+  })
+
+  it('returns the period that contains today', () => {
+    expect(resolveCurrentPeriodId([P2024, P2025, P2026], '2026-06-29')).toBe('p2026')
+  })
+
+  it('is order-independent', () => {
+    expect(resolveCurrentPeriodId([P2026, P2024, P2025], '2025-03-01')).toBe('p2025')
+  })
+
+  it('falls back to the most recent started period when today sits in a gap after the last year', () => {
+    // Today is in 2027 but only periods up to 2026 exist (next year not created yet).
+    expect(resolveCurrentPeriodId([P2024, P2025, P2026], '2027-02-15')).toBe('p2026')
+  })
+
+  it('falls back to the earliest period when every period is still upcoming', () => {
+    expect(resolveCurrentPeriodId([P2025, P2026], '2024-06-01')).toBe('p2025')
   })
 })

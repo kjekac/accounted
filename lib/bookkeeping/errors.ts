@@ -10,6 +10,7 @@ export const FISCAL_PERIOD_NOT_FOUND = 'FISCAL_PERIOD_NOT_FOUND' as const
 export const ENTRY_DATE_OUTSIDE_FISCAL_PERIOD = 'ENTRY_DATE_OUTSIDE_FISCAL_PERIOD' as const
 export const JOURNAL_ENTRY_NOT_FOUND = 'JOURNAL_ENTRY_NOT_FOUND' as const
 export const CANNOT_REVERSE_NON_POSTED = 'CANNOT_REVERSE_NON_POSTED' as const
+export const CANNOT_REVERSE_STORNO = 'CANNOT_REVERSE_STORNO' as const
 export const CANNOT_CORRECT_NON_POSTED = 'CANNOT_CORRECT_NON_POSTED' as const
 export const CANNOT_EDIT_NON_DRAFT = 'CANNOT_EDIT_NON_DRAFT' as const
 export const ENTRY_ALREADY_REVERSED = 'ENTRY_ALREADY_REVERSED' as const
@@ -116,6 +117,22 @@ export class CannotReverseNonPostedError extends Error {
   constructor(public readonly currentStatus: string) {
     super('Can only reverse posted entries')
     this.name = 'CannotReverseNonPostedError'
+  }
+}
+
+/**
+ * Raised when a storno (reversal) is attempted on an entry that is itself a
+ * storno or a correction. Reversing such an entry would produce a
+ * storno-of-a-storno and make the original verifikat's cancellation chain
+ * ambiguous, violating the traceable-correction requirement of BFL 5 kap 5§.
+ * The UI hides the "Återför" action for these source types; this is the
+ * server-side backstop so a direct API call cannot bypass it.
+ */
+export class CannotReverseStornoError extends Error {
+  readonly code = CANNOT_REVERSE_STORNO
+  constructor(public readonly sourceType: string) {
+    super('Cannot reverse a storno or correction entry')
+    this.name = 'CannotReverseStornoError'
   }
 }
 
@@ -283,6 +300,7 @@ export function isBookkeepingError(err: unknown): boolean {
     err instanceof EntryDateOutsideFiscalPeriodError ||
     err instanceof JournalEntryNotFoundError ||
     err instanceof CannotReverseNonPostedError ||
+    err instanceof CannotReverseStornoError ||
     err instanceof CannotCorrectNonPostedError ||
     err instanceof CannotEditNonDraftError ||
     err instanceof EntryAlreadyReversedError ||
@@ -393,6 +411,19 @@ export function bookkeepingErrorResponse(err: unknown): NextResponse | null {
           code: err.code,
           message: err.message,
           details: { currentStatus: err.currentStatus },
+        },
+      },
+      { status: 400 }
+    )
+  }
+
+  if (err instanceof CannotReverseStornoError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: { sourceType: err.sourceType },
         },
       },
       { status: 400 }

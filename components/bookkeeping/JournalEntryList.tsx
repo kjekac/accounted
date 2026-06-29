@@ -26,15 +26,17 @@ import {
   STORAGE_KEY_PREFIX as FISCAL_YEAR_STORAGE_KEY_PREFIX,
   ALL_YEARS_VALUE as FISCAL_YEAR_ALL_VALUE,
 } from '@/components/common/FiscalYearSelector'
-import { ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, Paperclip, AlertTriangle, CircleSlash, Loader2, BookOpen, X, Copy, Lock, Search, SlidersHorizontal } from 'lucide-react'
+import { ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, Paperclip, AlertTriangle, CircleSlash, Loader2, BookOpen, X, Copy, Lock, Search, SlidersHorizontal, RotateCcw } from 'lucide-react'
 import { formatDate, formatCurrency } from '@/lib/utils'
 import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
+import { resolveCurrentPeriodId } from '@/lib/bookkeeping/suggest-fiscal-period'
 import { Input } from '@/components/ui/input'
 import { AccountNumber } from '@/components/ui/account-number'
 import { getAccountDescription } from '@/lib/bookkeeping/account-descriptions'
 import JournalEntryAttachments from '@/components/bookkeeping/JournalEntryAttachments'
 import NoDocRequiredToggle from '@/components/bookkeeping/NoDocRequiredToggle'
 import CorrectionEntryDialog from '@/components/bookkeeping/CorrectionEntryDialog'
+import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import JournalEntryStatusBadge from '@/components/bookkeeping/JournalEntryStatusBadge'
 import AttachmentPreviewSheet from '@/components/bookkeeping/AttachmentPreviewSheet'
 import { useToast } from '@/components/ui/use-toast'
@@ -92,6 +94,8 @@ export default function JournalEntryList() {
   const [bulkReason, setBulkReason] = useState('')
   const [bulkSubmitting, setBulkSubmitting] = useState(false)
   const [correctionEntry, setCorrectionEntry] = useState<JournalEntry | null>(null)
+  const [reverseEntryTarget, setReverseEntryTarget] = useState<JournalEntry | null>(null)
+  const [isReversing, setIsReversing] = useState(false)
   const [previewEntryId, setPreviewEntryId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<SortBy>('date_desc')
   const [sortHydrated, setSortHydrated] = useState(false)
@@ -214,41 +218,53 @@ export default function JournalEntryList() {
     setPageSizeHydrated(true)
   }, [company?.id])
 
-  // Restore the persisted fiscal-year selection (per company), reading the same
-  // localStorage key FiscalYearSelector writes. The selector lives inside the
-  // filter dialog and only mounts when opened, so we resolve the saved scope
-  // here — independent of the dialog — to keep the initial fetch correct.
-  // periodHydrated gates the first fetch so the list loads already scoped.
-  useEffect(() => {
-    if (company?.id && typeof window !== 'undefined') {
-      const stored = window.localStorage.getItem(FISCAL_YEAR_STORAGE_KEY_PREFIX + company.id)
-      setPeriodId(stored && stored !== FISCAL_YEAR_ALL_VALUE ? stored : null)
-    } else {
-      setPeriodId(null)
-    }
-    setPeriodHydrated(true)
-  }, [company?.id])
-
-  // Fetch fiscal periods so the active räkenskapsår can be labelled on the
-  // filter bar without opening the dialog (BFL period-orientation: the user
-  // should always see which year the ledger is scoped to). Read-only — the
-  // dialog's FiscalYearSelector still owns selection; this copy resolves the
-  // name for display.
+  // Fetch fiscal periods AND resolve the initial fiscal-year scope in one pass.
+  // The list is period-oriented (BFL): verifikationsnummer run as an unbroken
+  // series *per räkenskapsår*, so the same number (e.g. A42) recurs once per
+  // year. Showing every year at once makes those look like duplicates and makes
+  // a bare "A42" reference ambiguous — so we default to the räkenskapsår the
+  // user is currently in rather than "all years". An explicit "Alla
+  // räkenskapsår" choice (persisted as ALL_YEARS_VALUE) is still honoured.
+  // Resolving the scope here — not in the dialog's FiscalYearSelector, which
+  // only mounts when opened — keeps the first fetch correct. periodHydrated
+  // gates that first fetch so the list loads already scoped to the resolved year.
   useEffect(() => {
     if (!company?.id) {
       setPeriods([])
+      setPeriodId(null)
+      setPeriodHydrated(true)
       return
     }
     let cancelled = false
     ;(async () => {
+      let fetched: FiscalPeriod[] = []
       try {
         const res = await fetch('/api/bookkeeping/fiscal-periods')
-        if (!res.ok) return
-        const { data } = await res.json()
-        if (!cancelled) setPeriods((data || []) as FiscalPeriod[])
+        if (res.ok) {
+          const { data } = await res.json()
+          fetched = (data || []) as FiscalPeriod[]
+        }
       } catch {
-        // Non-critical — the chip falls back to the active-filter count badge.
+        // Non-critical — fall through with an empty list (scope stays "all years").
       }
+      if (cancelled) return
+      setPeriods(fetched)
+
+      const stored =
+        typeof window !== 'undefined'
+          ? window.localStorage.getItem(FISCAL_YEAR_STORAGE_KEY_PREFIX + company.id)
+          : null
+      if (stored === FISCAL_YEAR_ALL_VALUE) {
+        // User explicitly chose "all years" — respect it.
+        setPeriodId(null)
+      } else if (stored && fetched.some((p) => p.id === stored)) {
+        setPeriodId(stored)
+      } else {
+        // No (valid) saved scope → default to the current räkenskapsår.
+        const today = new Date().toISOString().split('T')[0]
+        setPeriodId(resolveCurrentPeriodId(fetched, today))
+      }
+      setPeriodHydrated(true)
     })()
     return () => {
       cancelled = true
@@ -299,13 +315,21 @@ export default function JournalEntryList() {
     const loadedEntries = data || []
     setEntries(loadedEntries)
     setCount(total || 0)
+
+    // The pristine empty card vs. the (toggle-bearing) "drafts exist" state hinges
+    // on draftCount. When the committed list comes back empty, resolve the draft
+    // count BEFORE clearing loading so the toggle doesn't flash out for a frame on
+    // a stale count of 0. Every other case refreshes the badge in the background.
+    if (loadedEntries.length === 0 && listMode === 'committed') {
+      await fetchDraftCount()
+    } else {
+      fetchDraftCount()
+    }
     setLoading(false)
 
     // Fetch attachment counts for the loaded entries
     const ids = loadedEntries.map((e: JournalEntry) => e.id)
     fetchAttachmentCounts(ids)
-
-    fetchDraftCount()
   }
 
   // Cheap count-only query for the "Utkast" badge — all years, so the badge
@@ -361,6 +385,35 @@ export default function JournalEntryList() {
       toast({ title: t('toast_post_failed_generic'), variant: 'destructive' })
     } finally {
       setCommittingId(null)
+    }
+  }
+
+  // Pure reversal (storno) of a posted verifikat — books a stornoverifikation
+  // with no replacement, per BFL 5 kap 5§. Routes through the engine's
+  // reverseEntry (storno + reverses_id link; original → 'reversed', never
+  // deleted). "Rätta" stays the path for booking a replacement entry instead.
+  const handleReverse = async () => {
+    const target = reverseEntryTarget
+    if (!target) return
+    setIsReversing(true)
+    try {
+      const res = await fetch(`/api/bookkeeping/journal-entries/${target.id}/reverse`, { method: 'POST' })
+      const result = await res.json()
+      if (res.ok) {
+        const storno = result.data
+        toast({
+          title: t('toast_reverse_done_title'),
+          description: t('toast_reverse_done_description', { voucher: formatVoucher(storno ?? {}) }),
+        })
+        setReverseEntryTarget(null)
+        await fetchEntries()
+      } else {
+        toast({ title: t('toast_reverse_failed'), description: getErrorMessage(result, { context: 'journal_entry' }), variant: 'destructive' })
+      }
+    } catch {
+      toast({ title: t('toast_reverse_failed'), variant: 'destructive' })
+    } finally {
+      setIsReversing(false)
     }
   }
 
@@ -560,7 +613,12 @@ export default function JournalEntryList() {
     })
   }
 
-  if (!loading && entries.length === 0 && !hasActiveFilters) {
+  // Pristine, untouched ledger: nothing posted, no drafts, no filters, and we're
+  // on the committed view. ONLY this genuinely-empty case may short-circuit the
+  // whole component — every other empty state (a draft exists, or we're in the
+  // drafts view) must fall through to the main render below so the
+  // Verifikat/Utkast toggle stays reachable.
+  if (!loading && entries.length === 0 && !hasActiveFilters && listMode === 'committed' && draftCount === 0) {
     return (
       <Card>
         <CardContent className="flex flex-col items-center justify-center py-12">
@@ -897,14 +955,32 @@ export default function JournalEntryList() {
           </CardContent>
         </Card>
       ) : filteredEntries.length === 0 ? (
+        // Empty placeholder, scoped to the situation: an empty drafts view, a
+        // filtered committed view with no matches, or a committed view with no
+        // posted entries yet (but drafts exist — hence we got here, not the
+        // pristine early return above).
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <div className="p-4 rounded-full bg-muted mb-4">
-              <Search className="h-6 w-6 text-muted-foreground" />
+              {listMode === 'drafts' || !hasActiveFilters ? (
+                <BookOpen className="h-6 w-6 text-muted-foreground" />
+              ) : (
+                <Search className="h-6 w-6 text-muted-foreground" />
+              )}
             </div>
-            <h3 className="text-lg font-medium mb-1">{t('no_results_title')}</h3>
+            <h3 className="text-lg font-medium mb-1">
+              {listMode === 'drafts'
+                ? t('empty_drafts_title')
+                : hasActiveFilters
+                  ? t('no_results_title')
+                  : t('empty_title')}
+            </h3>
             <p className="text-sm text-muted-foreground text-center max-w-sm">
-              {t('no_results_description')}
+              {listMode === 'drafts'
+                ? t('empty_drafts_description')
+                : hasActiveFilters
+                  ? t('no_results_description')
+                  : t('empty_description')}
             </p>
           </CardContent>
         </Card>
@@ -1276,6 +1352,17 @@ export default function JournalEntryList() {
                         {t('create_correction')}
                       </Button>
                     )}
+                    {canWrite && entry.status === 'posted' && entry.source_type !== 'storno' && entry.source_type !== 'correction' && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full sm:w-auto"
+                        onClick={() => setReverseEntryTarget(entry)}
+                      >
+                        <RotateCcw className="mr-2 h-4 w-4" />
+                        {t('reverse_action')}
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
@@ -1363,6 +1450,27 @@ export default function JournalEntryList() {
           onOpenChange={(open) => { if (!open) setCorrectionEntry(null) }}
           onCorrected={() => { setCorrectionEntry(null); fetchEntries() }}
         />
+      )}
+
+      {/* Reverse (storno) confirmation dialog */}
+      {reverseEntryTarget && (
+        <ConfirmationDialog
+          open={!!reverseEntryTarget}
+          onOpenChange={(open) => { if (!open && !isReversing) setReverseEntryTarget(null) }}
+          onConfirm={handleReverse}
+          isSubmitting={isReversing}
+          title={t('reverse_confirm_title')}
+          warningText={t('reverse_warning')}
+          confirmLabel={t('reverse_confirm_label')}
+        >
+          <div className="flex items-start gap-3 rounded-lg border bg-muted/50 p-4">
+            <RotateCcw className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
+            <div className="text-sm">
+              <p className="font-medium mb-1">{t('reverse_dialog_heading', { voucher: formatVoucher(reverseEntryTarget) })}</p>
+              <p className="text-muted-foreground">{t('reverse_dialog_body')}</p>
+            </div>
+          </div>
+        </ConfirmationDialog>
       )}
 
       {/* Attachment preview sheet */}

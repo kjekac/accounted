@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { validateBalance, getSwedishLocalDate, createDraftEntry, reverseEntry } from '../engine'
-import { BookkeepingDatabaseError, AccountsNotInChartError } from '../errors'
+import { BookkeepingDatabaseError, AccountsNotInChartError, CannotReverseStornoError } from '../errors'
 import type { CreateJournalEntryLineInput, JournalEntryStatus } from '@/types'
 
 // Mock Supabase client for createDraftEntry/reverseEntry tests
@@ -610,6 +610,55 @@ describe('reverseEntry — entry_date defaults to original entry date', () => {
 
     expect(insertedEntryDate).toBe('2025-01-01')
   })
+})
+
+describe('reverseEntry — rejects reversing a storno or correction', () => {
+  // BFL 5 kap 5§: a storno-of-a-storno makes the original verifikat's
+  // cancellation chain ambiguous. The UI hides "Återför" for these source
+  // types; the engine is the server-side backstop against a direct API call.
+  function supabaseReturningOriginal(original: Record<string, unknown>) {
+    return {
+      rpc: vi.fn(),
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === 'journal_entries') {
+          const b: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'in', 'update', 'insert']) b[m] = vi.fn().mockReturnValue(b)
+          b.single = vi.fn().mockResolvedValue({ data: original, error: null })
+          return b
+        }
+        return createMockChain()
+      }),
+    }
+  }
+
+  for (const sourceType of ['storno', 'correction'] as const) {
+    it(`throws CannotReverseStornoError for source_type '${sourceType}'`, async () => {
+      const original = {
+        id: 'entry-1',
+        company_id: 'company-1',
+        status: 'posted',
+        fiscal_period_id: 'period-1',
+        voucher_series: 'A',
+        voucher_number: 3,
+        entry_date: '2024-11-15',
+        description: 'Makulering: Hyra november',
+        source_type: sourceType,
+        source_id: null,
+        lines: [
+          { account_number: '1930', debit_amount: 10000, credit_amount: 0 },
+          { account_number: '5010', debit_amount: 0, credit_amount: 10000 },
+        ],
+      }
+      const supabase = supabaseReturningOriginal(original)
+
+      await expect(
+        reverseEntry(supabase as never, 'company-1', 'user-1', 'entry-1'),
+      ).rejects.toBeInstanceOf(CannotReverseStornoError)
+
+      // No reversal was written — the guard fires before any voucher number is drawn.
+      expect(supabase.rpc).not.toHaveBeenCalled()
+    })
+  }
 })
 
 describe('reverseEntry — bank transaction unlink', () => {

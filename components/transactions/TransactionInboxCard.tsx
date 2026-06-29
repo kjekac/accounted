@@ -25,6 +25,7 @@ import {
   FileText,
   Link2,
   Loader2,
+  MessageCircle,
   MoreHorizontal,
   Paperclip,
   Pencil,
@@ -46,6 +47,7 @@ import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-exten
 const HAS_AI_EXTRACTION = ENABLED_EXTENSION_IDS.has('document-extraction')
 import { TransactionAttachmentIndicator } from './TransactionAttachmentIndicator'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
+import { useAgentSheet } from '@/components/agent/AgentSheetProvider'
 import type { TransactionWithInvoice, CategorizeHandler } from './transaction-types'
 
 interface TransactionInboxCardProps {
@@ -104,6 +106,11 @@ export default function TransactionInboxCard({
   // Attaching underlag is a write — hide the affordance from viewers so they
   // don't dead-end on a 403 (mirrors the gate in TransactionHistoryList).
   const { canWrite } = useCanWrite()
+  // The transaction-side entry point to the assistant ("Lena"). openAgentSheet
+  // hands this specific bank line to the transaction.categorization intent —
+  // the mirror of "Fråga assistenten" in Dokumentinkorgen, so the user can
+  // start a booking with the agent from the inbox they actually live in.
+  const { openAgentSheet, identity } = useAgentSheet()
   const isProcessing = processingId === transaction.id
   const isDisabled = processingId !== null && processingId !== transaction.id
   const isIncome = transaction.amount > 0
@@ -142,6 +149,12 @@ export default function TransactionInboxCard({
   // Unbooked rows are still actionable (match, split, edit, categorize) — that
   // includes imported bank rows, which are the whole point of the inbox.
   const isUnbooked = !transaction.journal_entry_id
+  // "Fråga [namn]" hands the row to the assistant for categorization/booking.
+  // Only on unbooked rows (nothing to categorize once it's a verifikat) and
+  // only after the user has built their agent in /onboarding/agent
+  // (identity.isVerified) — same gate as the FAB / AgentSparkleButton.
+  const assistantName = identity.displayName?.trim() || 'min assistent'
+  const showAskAssistant = isUnbooked && identity.isVerified
   // ...but only rows the USER created in the app may be deleted. Imported rows
   // (bank sync / CSV) are ignore-only — mirrors the server guard in
   // DELETE /api/transactions/[id]. See lib/transactions/origin.ts.
@@ -326,13 +339,35 @@ export default function TransactionInboxCard({
                     <Link2 className="h-4 w-4" />
                   </Button>
                 )}
-                {/* The Paperclip indicator next to the description
-                    (TransactionAttachmentIndicator) is the single click
-                    target for opening the underlag. We deliberately don't
-                    duplicate that with a second icon in the trailing slot.
-                    Per-transaction agent help has moved to Dokumentinkorgen:
-                    match the underlag to the transaction and ask from there,
-                    where the receipt/invoice is in view. */}
+                {/* "Fråga [namn]" — hand this bank line to the assistant for
+                    categorization/booking. The transaction-side entry point to
+                    the agent, mirroring "Fråga assistenten" in Dokumentinkorgen.
+                    The intent reads any linked underlag automatically, so it
+                    works whether or not the row already has a receipt attached.
+                    Icon-only ghost so it sits quietly in the row's action
+                    group. (The Paperclip indicator next to the description
+                    stays the single click target for opening the underlag —
+                    we don't duplicate that here.) */}
+                {showAskAssistant && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 text-muted-foreground hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      openAgentSheet({
+                        intentId: 'transaction.categorization',
+                        intentArgs: { transaction_id: transaction.id },
+                        contextRef: `transaction:${transaction.id}`,
+                      })
+                    }}
+                    aria-label={`Fråga ${assistantName}`}
+                    title={`Fråga ${assistantName}`}
+                    disabled={isProcessing || isDisabled}
+                  >
+                    <MessageCircle className="h-4 w-4" />
+                  </Button>
+                )}
                 {/* Secondary actions (split, edit, delete) collapse into a ⋯
                     overflow menu so the row stays uncluttered. */}
                 {showOverflowMenu && (

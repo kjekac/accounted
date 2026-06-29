@@ -12,6 +12,13 @@ import type { Transaction } from '@/types'
 
 ensureInitialized()
 
+// Bank-file imports run a sequential, per-row ingest (insert + invoice/supplier
+// matching + FX lookup). A full-year file (300+ rows) takes ~85s of server time,
+// which sits right on the platform's default function limit and gets killed
+// mid-run — the import "spins then aborts" for the user. Give it the same 5-minute
+// budget the SIE import route uses (app/api/import/sie/execute/route.ts).
+export const maxDuration = 300
+
 interface ExecuteRequest {
   transactions: ParsedBankTransaction[]
   format: BankFileFormatId

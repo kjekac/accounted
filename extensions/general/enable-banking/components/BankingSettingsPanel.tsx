@@ -170,7 +170,7 @@ export default function BankingSettingsPanel() {
   // same row (revoking the dead session, issuing fresh authorization), then
   // hands off to the bank's consent screen. The OAuth callback drives the row
   // back through account selection to active.
-  async function handleReconnect(connection: BankConnection) {
+  async function handleReconnect(connection: BankConnection, psuTypeOverride?: 'personal' | 'business') {
     if (connectingRef.current) return
     connectingRef.current = true
     setIsConnecting(true)
@@ -185,6 +185,9 @@ export default function BankingSettingsPanel() {
           connection_id: connection.id,
           aspsp_name: connection.bank_name,
           aspsp_country: country,
+          // Omitted → server reuses the connection's stored psu_type (falling
+          // back to entity_type). Set → switch account type in place.
+          ...(psuTypeOverride ? { psu_type: psuTypeOverride } : {}),
         }),
       })
 

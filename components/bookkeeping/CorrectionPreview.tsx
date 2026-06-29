@@ -4,6 +4,7 @@ import { AccountNumber } from '@/components/ui/account-number'
 import {
   buildCorrectionRows,
   formatSignedAmount,
+  type AccountRow,
   type CorrectionLineInput,
 } from '@/components/bookkeeping/correction-preview-rows'
 import type { JournalEntryLine } from '@/types'
@@ -27,6 +28,18 @@ export default function CorrectionPreview({ originalLines, correctedLines }: Pro
     const c = typeof l.credit_amount === 'string' ? parseFloat(l.credit_amount) : l.credit_amount
     return (Number.isFinite(d) && d > 0) || (Number.isFinite(c) && c > 0)
   })
+
+  // An account that was on the original but the user dropped from the rättelse:
+  // the storno still drains it to zero (delta = −original). Flag it so the cell
+  // reads "tas bort" instead of a bare "–", which would imply "unchanged".
+  const isRemoved = (row: AccountRow) =>
+    hasAnyCorrection && !row.correctionPresent && Math.abs(row.original) >= 0.005
+
+  // The per-account deltas sum to the corrected lines' debit − credit. A non-zero
+  // sum means the proposed rättelse is not yet balanced — surface that here so the
+  // förändring column is read as a work-in-progress, not a miscalculation.
+  const netDelta = rows.reduce((sum, r) => sum + r.delta, 0)
+  const unbalanced = hasAnyCorrection && Math.abs(netDelta) >= 0.005
 
   if (rows.length === 0) return null
 
@@ -62,8 +75,8 @@ export default function CorrectionPreview({ originalLines, correctedLines }: Pro
                 <td className={`px-3 py-1.5 text-right tabular-nums ${signClass(row.storno)}`}>
                   {formatSignedAmount(row.storno)}
                 </td>
-                <td className={`px-3 py-1.5 text-right tabular-nums ${signClass(row.correction)}`}>
-                  {hasAnyCorrection ? formatSignedAmount(row.correction) : '–'}
+                <td className={`px-3 py-1.5 text-right tabular-nums ${isRemoved(row) ? 'text-muted-foreground' : signClass(row.correction)}`}>
+                  {!hasAnyCorrection ? '–' : isRemoved(row) ? 'tas bort' : formatSignedAmount(row.correction)}
                 </td>
                 <td
                   className={`px-3 py-1.5 text-right tabular-nums border-l font-medium ${signClass(row.delta)}`}
@@ -96,8 +109,8 @@ export default function CorrectionPreview({ originalLines, correctedLines }: Pro
               </div>
               <div>
                 <dt className="text-muted-foreground">Rättelse</dt>
-                <dd className={`tabular-nums ${signClass(row.correction)}`}>
-                  {hasAnyCorrection ? formatSignedAmount(row.correction) : '–'}
+                <dd className={`tabular-nums ${isRemoved(row) ? 'text-muted-foreground' : signClass(row.correction)}`}>
+                  {!hasAnyCorrection ? '–' : isRemoved(row) ? 'tas bort' : formatSignedAmount(row.correction)}
                 </dd>
               </div>
             </dl>
@@ -107,8 +120,13 @@ export default function CorrectionPreview({ originalLines, correctedLines }: Pro
 
       <p className="text-xs text-muted-foreground">
         Förändring = storno + rättelse. Det är det netto som tillkommer ovanpå originalet när du
-        bokför.
+        bokför. Ett konto du tar bort nollställs av stornon.
       </p>
+      {unbalanced && (
+        <p className="text-xs text-destructive">
+          Förslaget balanserar inte ännu – debet och kredit i rättelsen måste vara lika.
+        </p>
+      )}
     </div>
   )
 }

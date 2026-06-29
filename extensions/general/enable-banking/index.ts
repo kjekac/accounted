@@ -121,12 +121,12 @@ export const enableBankingExtension: Extension = {
           // For reconnect, load the existing connection up front (company-scoped)
           // so we can revoke its dead session and reuse its bank identity.
           let existing:
-            | { id: string; bank_name: string; provider: string; session_id: string | null }
+            | { id: string; bank_name: string; provider: string; session_id: string | null; psu_type: string | null }
             | null = null
           if (isReconnect) {
             const { data, error: findErr } = await supabase
               .from('bank_connections')
-              .select('id, bank_name, provider, session_id')
+              .select('id, bank_name, provider, session_id, psu_type')
               .eq('id', reconnectId)
               .eq('company_id', companyId)
               .single()
@@ -155,10 +155,18 @@ export const enableBankingExtension: Extension = {
             )
           }
 
-          // Detect PSU type: explicit override > company entity_type > default 'business'
+          // Detect PSU type: explicit override > stored type (reconnect) >
+          // company entity_type > default 'business'. Reusing the stored type on
+          // reconnect is the key fix: re-deriving from entity_type would flip a
+          // working 'personal' connection (e.g. an AB owner who signs with a
+          // personal Mobile BankID) back to 'business' on every consent renewal,
+          // failing at the bank's signing step. The client can still pass an
+          // explicit psu_type to switch account type in place.
           let psuType: 'personal' | 'business' = 'business'
           if (explicitPsuType === 'personal' || explicitPsuType === 'business') {
             psuType = explicitPsuType
+          } else if (isReconnect && (existing?.psu_type === 'personal' || existing?.psu_type === 'business')) {
+            psuType = existing.psu_type
           } else {
             const { data: company } = await supabase
               .from('companies')
@@ -249,6 +257,7 @@ export const enableBankingExtension: Extension = {
                 status: 'expired',
                 session_id: null,
                 error_message: null,
+                psu_type: psuType,
               })
               .eq('id', existing.id)
               .eq('company_id', companyId)
@@ -329,6 +338,7 @@ export const enableBankingExtension: Extension = {
               authorization_id,
               oauth_state: oauthState,
               status: 'pending',
+              psu_type: psuType,
             })
             .select()
             .single()
