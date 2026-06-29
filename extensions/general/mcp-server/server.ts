@@ -26,6 +26,7 @@ import {
   calculateVatLiability,
 } from '@/lib/reports/kpi'
 import { generateTrialBalance } from '@/lib/reports/trial-balance'
+import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { generateARLedger } from '@/lib/reports/ar-ledger'
 import { generateMonthlyBreakdown } from '@/lib/reports/monthly-breakdown'
 import { uiWidgets, findUiWidget, WIDGET_MIME_TYPE } from './widgets'
@@ -1035,18 +1036,26 @@ export async function computeVatReport(
     endDate = `${year}-12-31`
   }
 
-  const { data: lines, error } = await supabase
-    .from('journal_entry_lines')
-    .select('account_number, debit_amount, credit_amount, journal_entries!inner(entry_date, status, user_id)')
-    .eq('journal_entries.company_id', companyId)
-    .in('journal_entries.status', ['posted', 'reversed'])
-    .gte('journal_entries.entry_date', startDate)
-    .lte('journal_entries.entry_date', endDate)
-
-  if (error) throw new Error(`Database error: ${error.message}`)
+  // Paginate. An unbounded .select() caps at PostgREST's 1000-row default,
+  // which silently truncates a yearly (or busy quarterly) VAT period with
+  // >1000 entry lines and under-reports the momsdeklaration.
+  const lines = await fetchAllRows<{
+    account_number: string
+    debit_amount: number
+    credit_amount: number
+  }>(({ from, to }) =>
+    supabase
+      .from('journal_entry_lines')
+      .select('account_number, debit_amount, credit_amount, journal_entries!inner(entry_date, status, user_id)')
+      .eq('journal_entries.company_id', companyId)
+      .in('journal_entries.status', ['posted', 'reversed'])
+      .gte('journal_entries.entry_date', startDate)
+      .lte('journal_entries.entry_date', endDate)
+      .range(from, to)
+  )
 
   const accountTotals = new Map<string, { debit: number; credit: number }>()
-  for (const line of lines ?? []) {
+  for (const line of lines) {
     const acc = line.account_number
     const existing = accountTotals.get(acc) ?? { debit: 0, credit: 0 }
     existing.debit += Number(line.debit_amount) || 0
@@ -3396,47 +3405,26 @@ export const tools: McpTool[] = [
 
       if (!period) throw new Error('Fiscal period not found.')
 
-      // Aggregate journal entry lines
-      const { data: lines, error } = await supabase
-        .from('journal_entry_lines')
-        .select('account_number, debit_amount, credit_amount, journal_entries!inner(status, user_id, fiscal_period_id)')
-        .eq('journal_entries.company_id', companyId)
-        .eq('journal_entries.fiscal_period_id', periodId)
-        .in('journal_entries.status', ['posted', 'reversed'])
+      // Delegate to the canonical, paginated trial-balance builder. The
+      // previous inline query had no pagination, so PostgREST's 1000-row
+      // default silently truncated any period with >1000 entry lines (wrong
+      // sums, false "not balanced"), and it ignored opening balances.
+      // generateTrialBalance paginates and rolls IB forward.
+      const trialBalance = await generateTrialBalance(supabase, companyId, periodId!)
 
-      if (error) throw new Error(`Database error: ${error.message}`)
-
-      // Get account names
-      const { data: accounts } = await supabase
-        .from('chart_of_accounts')
-        .select('account_number, account_name')
-        .eq('company_id', companyId)
-
-      const accountMap = new Map((accounts ?? []).map((a: { account_number: string; account_name: string }) => [a.account_number, a.account_name]))
-
-      // Aggregate by account
-      const totals = new Map<string, { debit: number; credit: number }>()
-      for (const line of lines ?? []) {
-        const acc = line.account_number
-        const existing = totals.get(acc) ?? { debit: 0, credit: 0 }
-        existing.debit += Number(line.debit_amount) || 0
-        existing.credit += Number(line.credit_amount) || 0
-        totals.set(acc, existing)
-      }
-
-      const rows = Array.from(totals.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([accNum, t]) => {
-          const net = Math.round((t.debit - t.credit) * 100) / 100
+      const rows = trialBalance.rows
+        .map((r) => {
+          const net = Math.round((r.closing_debit - r.closing_credit) * 100) / 100
           return {
-            account_number: accNum,
-            account_name: accountMap.get(accNum) ?? accNum,
-            period_debit: Math.round(t.debit * 100) / 100,
-            period_credit: Math.round(t.credit * 100) / 100,
+            account_number: r.account_number,
+            account_name: r.account_name,
+            period_debit: r.period_debit,
+            period_credit: r.period_credit,
             closing_debit: net > 0 ? net : 0,
             closing_credit: net < 0 ? Math.abs(net) : 0,
           }
         })
+        .sort((a, b) => a.account_number.localeCompare(b.account_number))
 
       const totalDebit = Math.round(rows.reduce((s, r) => s + r.closing_debit, 0) * 100) / 100
       const totalCredit = Math.round(rows.reduce((s, r) => s + r.closing_credit, 0) * 100) / 100

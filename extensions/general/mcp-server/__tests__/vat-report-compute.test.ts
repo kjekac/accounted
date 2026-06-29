@@ -17,12 +17,14 @@ interface MockLine {
 
 function mockSupabaseWithLines(lines: MockLine[]) {
   // Build a chain that matches the call path in computeVatReport:
-  //   .from('journal_entry_lines').select(...).eq(...).in(...).gte(...).lte(...)
-  // The terminal `.lte()` returns `{ data, error }`.
+  //   .from('journal_entry_lines').select(...).eq(...).in(...).gte(...).lte(...).range(from, to)
+  // computeVatReport now paginates via fetchAllRows, so the terminal call is
+  // `.range(from, to)`. Returning all lines on the first page (always < the
+  // 1000-row PAGE_SIZE for these fixtures) makes fetchAllRows stop after one page.
   const terminal = { data: lines, error: null }
   const chain: Record<string, () => unknown> = {}
-  // Terminal awaitable: vitest awaits the last call; .lte() returns the data.
-  chain.lte = () => terminal
+  chain.range = () => terminal
+  chain.lte = () => chain
   chain.gte = () => chain
   chain.in = () => chain
   chain.eq = () => chain
