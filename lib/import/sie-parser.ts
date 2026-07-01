@@ -271,11 +271,19 @@ function parseStringField(field: string): string {
 /**
  * Parse a numeric field from SIE
  */
-function parseNumberField(field: string): number {
-  if (!field) return 0
+function parseNumberField(field: string): number | null {
+  if (!field) return null
+
   // Strip quotes and use dot as decimal separator
-  const cleaned = parseStringField(field)
-  return parseFloat(cleaned.replace(',', '.')) || 0
+  const cleaned = parseStringField(field).trim().replace(',', '.')
+  if (!cleaned) return null
+
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(cleaned)) {
+    return null
+  }
+
+  const parsed = Number(cleaned)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 /**
@@ -545,10 +553,18 @@ export function parseSIEFile(content: string): ParsedSIEFile {
           }
 
           const amount = parseNumberField(amountStr)
+          if (amount === null) {
+            addIssue(issues, 'warning', lineNum, `Ogiltigt belopp i #${tag}: ${amountStr} — raden hoppas över`, tag)
+            break
+          }
+
           const quantity = fields[4] ? parseNumberField(fields[4]) : undefined
+          if (quantity === null) {
+            addIssue(issues, 'warning', lineNum, `Ogiltig kvantitet i #${tag}: ${fields[4]} — kvantitet ignoreras`, tag)
+          }
 
           if (account) {
-            openingBalances.push({ yearIndex, account, amount, quantity })
+            openingBalances.push({ yearIndex, account, amount, quantity: quantity ?? undefined })
           }
           break
         }
@@ -565,10 +581,18 @@ export function parseSIEFile(content: string): ParsedSIEFile {
           }
 
           const amount = parseNumberField(amountStr)
+          if (amount === null) {
+            addIssue(issues, 'warning', lineNum, `Ogiltigt belopp i #${tag}: ${amountStr} — raden hoppas över`, tag)
+            break
+          }
+
           const quantity = fields[4] ? parseNumberField(fields[4]) : undefined
+          if (quantity === null) {
+            addIssue(issues, 'warning', lineNum, `Ogiltig kvantitet i #${tag}: ${fields[4]} — kvantitet ignoreras`, tag)
+          }
 
           if (account) {
-            closingBalances.push({ yearIndex, account, amount, quantity })
+            closingBalances.push({ yearIndex, account, amount, quantity: quantity ?? undefined })
           }
           break
         }
@@ -585,10 +609,18 @@ export function parseSIEFile(content: string): ParsedSIEFile {
           }
 
           const amount = parseNumberField(amountStr)
+          if (amount === null) {
+            addIssue(issues, 'warning', lineNum, `Ogiltigt belopp i #${tag}: ${amountStr} — raden hoppas över`, tag)
+            break
+          }
+
           const quantity = fields[4] ? parseNumberField(fields[4]) : undefined
+          if (quantity === null) {
+            addIssue(issues, 'warning', lineNum, `Ogiltig kvantitet i #${tag}: ${fields[4]} — kvantitet ignoreras`, tag)
+          }
 
           if (account) {
-            resultBalances.push({ yearIndex, account, amount, quantity })
+            resultBalances.push({ yearIndex, account, amount, quantity: quantity ?? undefined })
           }
           break
         }
@@ -660,6 +692,10 @@ export function parseSIEFile(content: string): ParsedSIEFile {
           }
 
           const amount = parseNumberField(fields[fieldIndex++])
+          if (amount === null) {
+            addIssue(issues, 'warning', lineNum, `Ogiltigt belopp i #${tag}: ${transAmountStr} — raden hoppas över`, tag)
+            break
+          }
 
           const transLine: SIETransactionLine = {
             account,
@@ -674,7 +710,13 @@ export function parseSIEFile(content: string): ParsedSIEFile {
             transLine.description = parseStringField(fields[fieldIndex++])
           }
           if (fields[fieldIndex]) {
-            transLine.quantity = parseNumberField(fields[fieldIndex++])
+            const quantityStr = fields[fieldIndex++]
+            const quantity = parseNumberField(quantityStr)
+            if (quantity === null) {
+              addIssue(issues, 'warning', lineNum, `Ogiltig kvantitet i #${tag}: ${quantityStr} — kvantitet ignoreras`, tag)
+            } else {
+              transLine.quantity = quantity
+            }
           }
           if (fields[fieldIndex]) {
             transLine.signature = parseStringField(fields[fieldIndex++])

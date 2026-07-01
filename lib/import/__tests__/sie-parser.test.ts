@@ -159,6 +159,24 @@ const SIE_BRACE_ON_VER_LINE = [
   '}',
 ].join('\n')
 
+const FORTNOX_LIKE_SIE4 = [
+  '#FLAGGA 0',
+  '#PROGRAM "Fortnox"',
+  '#FORMAT PC8',
+  '#SIETYP 4',
+  '#FNAMN "Demo AB"',
+  '#RAR 0 20250101 20251231',
+  '#KONTO 1930 "Företagskonto"',
+  '#KONTO 3001 "Försäljning"',
+  '#KONTO 2611 "Utgående moms"',
+  '#VER A 1 20250110 "Test"',
+  '{',
+  '#TRANS 1930 {} 1250.00',
+  '#TRANS 3001 {} -1000.00',
+  '#TRANS 2611 {} -250.00',
+  '}',
+].join('\n')
+
 // --- parseSIEFile tests ---
 
 describe('parseSIEFile', () => {
@@ -327,6 +345,94 @@ describe('parseSIEFile', () => {
 
       const errors = result.issues.filter((i) => i.severity === 'error')
       expect(errors).toHaveLength(0)
+    })
+
+    it('parses a minimal Fortnox-like SIE4 voucher with UTF-8 Swedish names despite #FORMAT PC8', () => {
+      const result = parseSIEFile(FORTNOX_LIKE_SIE4)
+
+      expect(result.header.program).toBe('Fortnox')
+      expect(result.header.format).toBe('PC8')
+      expect(result.accounts.find((a) => a.number === '1930')?.name).toBe('Företagskonto')
+      expect(result.accounts.find((a) => a.number === '3001')?.name).toBe('Försäljning')
+      expect(result.vouchers).toHaveLength(1)
+      expect(result.vouchers[0]).toMatchObject({
+        series: 'A',
+        number: 1,
+        description: 'Test',
+      })
+      expect(result.vouchers[0].lines).toEqual([
+        expect.objectContaining({ account: '1930', amount: 1250 }),
+        expect.objectContaining({ account: '3001', amount: -1000 }),
+        expect.objectContaining({ account: '2611', amount: -250 }),
+      ])
+      expect(result.vouchers[0].lines.reduce((sum, l) => sum + l.amount, 0)).toBe(0)
+    })
+
+    it('parses Fortnox-like empty voucher series and quoted voucher text', () => {
+      const content = FORTNOX_LIKE_SIE4
+        .replace('#VER A 1 20250110 "Test"', '#VER "" 1 20250110 "Quoted voucher text"')
+
+      const result = parseSIEFile(content)
+
+      expect(result.vouchers).toHaveLength(1)
+      expect(result.vouchers[0].series).toBe('')
+      expect(result.vouchers[0].description).toBe('Quoted voucher text')
+      expect(result.issues.filter((i) => i.severity === 'error')).toHaveLength(0)
+    })
+
+    it('parses Fortnox-like tab-separated voucher fields', () => {
+      const content = [
+        '#FLAGGA\t0',
+        '#PROGRAM\t"Fortnox"',
+        '#FORMAT\tPC8',
+        '#SIETYP\t4',
+        '#FNAMN\t"Demo AB"',
+        '#RAR 0 20250101 20251231',
+        '#KONTO\t1930\t"Företagskonto"',
+        '#KONTO\t3001\t"Försäljning"',
+        '#VER\tA\t1\t20250110\t"Tab voucher"',
+        '{',
+        '#TRANS\t1930\t{}\t1250.00',
+        '#TRANS\t3001\t{}\t-1250.00',
+        '}',
+      ].join('\n')
+
+      const result = parseSIEFile(content)
+
+      expect(result.vouchers).toHaveLength(1)
+      expect(result.vouchers[0].description).toBe('Tab voucher')
+      expect(result.vouchers[0].lines).toEqual([
+        expect.objectContaining({ account: '1930', amount: 1250 }),
+        expect.objectContaining({ account: '3001', amount: -1250 }),
+      ])
+    })
+
+    it('skips Fortnox correction audit trail rows (#RTRANS/#BTRANS) and keeps final #TRANS rows', () => {
+      const content = [
+        '#FLAGGA 0',
+        '#PROGRAM "Fortnox"',
+        '#FORMAT PC8',
+        '#SIETYP 4',
+        '#FNAMN "Demo AB"',
+        '#RAR 0 20250101 20251231',
+        '#KONTO 1930 "Företagskonto"',
+        '#KONTO 3001 "Försäljning"',
+        '#VER A 1 20250110 "Correction"',
+        '{',
+        '#RTRANS 1930 {} 100.00',
+        '#BTRANS 3001 {} -100.00',
+        '#TRANS 1930 {} 1250.00',
+        '#TRANS 3001 {} -1250.00',
+        '}',
+      ].join('\n')
+
+      const result = parseSIEFile(content)
+
+      expect(result.vouchers).toHaveLength(1)
+      expect(result.vouchers[0].lines).toEqual([
+        expect.objectContaining({ account: '1930', amount: 1250 }),
+        expect.objectContaining({ account: '3001', amount: -1250 }),
+      ])
     })
 
     it('detects unbalanced vouchers as errors', () => {
@@ -764,6 +870,54 @@ describe('parseSIEFile — missing amount handling', () => {
     expect(result.vouchers).toHaveLength(1)
     expect(result.vouchers[0].lines).toHaveLength(0)
     expect(result.issues.some((i) => i.severity === 'warning' && i.message.includes('Belopp saknas i #TRANS'))).toBe(true)
+  })
+
+  it.each(['12x.00', 'abc', '1 2 3', '--10'])(
+    'skips malformed #TRANS amount %s instead of silently returning zero',
+    (malformedAmount) => {
+      const content = [
+        '#FLAGGA 0',
+        '#SIETYP 4',
+        '#FNAMN "Malformed Amount AB"',
+        '#RAR 0 20240101 20241231',
+        '#KONTO 1930 "Företagskonto"',
+        '#VER A 1 20240115 "Bad amount"',
+        '{',
+        `#TRANS 1930 {} "${malformedAmount}"`,
+        '}',
+      ].join('\n')
+
+      const result = parseSIEFile(content)
+
+      expect(result.vouchers).toHaveLength(1)
+      expect(result.vouchers[0].lines).toHaveLength(0)
+      expect(result.vouchers[0].lines.some((line) => line.account === '1930' && line.amount === 0)).toBe(false)
+      expect(result.issues.some((i) =>
+        i.severity === 'warning' &&
+        i.tag === 'TRANS' &&
+        i.message.includes('Ogiltigt belopp')
+      )).toBe(true)
+    }
+  )
+
+  it('skips malformed #IB amount instead of silently returning zero', () => {
+    const content = [
+      '#FLAGGA 0',
+      '#SIETYP 4',
+      '#FNAMN "Malformed Balance AB"',
+      '#RAR 0 20240101 20241231',
+      '#KONTO 1930 "Företagskonto"',
+      '#IB 0 1930 12x.00',
+    ].join('\n')
+
+    const result = parseSIEFile(content)
+
+    expect(result.openingBalances).toHaveLength(0)
+    expect(result.issues.some((i) =>
+      i.severity === 'warning' &&
+      i.tag === 'IB' &&
+      i.message.includes('Ogiltigt belopp')
+    )).toBe(true)
   })
 
   it('still parses valid #IB lines alongside missing-amount ones', () => {
