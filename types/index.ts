@@ -1778,6 +1778,9 @@ export type PendingOperationType =
   | 'match_batch_allocate'
   // PR #606/#610: bulk-book N bank txs into 1 combined verifikat
   | 'bulk_book_transactions'
+  // Bulk-book N selected Underlag (Dokumentinkorgen) against their matched bank
+  // transactions — one verifikat per item, sharing a category + VAT treatment
+  | 'bulk_book_inbox_items'
   // PR #614: link a single bank tx to an already-posted verifikat (no new JE)
   | 'link_transaction_journal_entry'
   // PR5: Skatteverket filing via MCP. Commit = "send for BankID signing"

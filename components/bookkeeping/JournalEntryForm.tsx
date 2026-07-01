@@ -16,6 +16,7 @@ import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import { JournalEntryReviewContent } from '@/components/bookkeeping/JournalEntryReviewContent'
 import DocumentUploadZone from '@/components/bookkeeping/DocumentUploadZone'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
+import { loadBasCatalog, type CatalogAccount } from '@/lib/bookkeeping/bas-catalog-client'
 import BookingTemplatePicker from '@/components/bookkeeping/BookingTemplatePicker'
 import CreatePeriodDialog from '@/components/bookkeeping/CreatePeriodDialog'
 import { ActivateAccountsDialog } from '@/components/bookkeeping/ActivateAccountsDialog'
@@ -124,6 +125,10 @@ export default function JournalEntryForm({
   const [showNoDocWarning, setShowNoDocWarning] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [accounts, setAccounts] = useState<BASAccount[]>([])
+  // Full BAS catalogue (static reference data, fetched once per session). Lets
+  // the account picker surface standard accounts the company hasn't activated
+  // yet; picking one activates it at commit via the existing rail.
+  const [catalog, setCatalog] = useState<CatalogAccount[]>([])
   const [entryCurrency, setEntryCurrency] = useState<Currency>('SEK')
   const [exchangeRate, setExchangeRate] = useState('')
   const [isFetchingRate, setIsFetchingRate] = useState(false)
@@ -147,6 +152,8 @@ export default function JournalEntryForm({
   // cards + desktop table); we focus whichever one is actually visible.
   const desktopDebitRefs = useRef<(HTMLInputElement | null)[]>([])
   const mobileDebitRefs = useRef<(HTMLInputElement | null)[]>([])
+  // Confirm button in the inline (bare) review, focused on open so Enter posts.
+  const bareConfirmRef = useRef<HTMLButtonElement>(null)
 
   const isForeign = entryCurrency !== 'SEK'
 
@@ -185,6 +192,7 @@ export default function JournalEntryForm({
   useEffect(() => {
     fetchPeriods()
     fetchAccounts()
+    loadBasCatalog().then(setCatalog).catch(() => {/* search degrades to the active chart */})
     // Fetch default voucher series from company settings — prefer the
     // per-source-type mapping when present; fall back to the legacy
     // default_voucher_series, then to 'A'.
@@ -363,7 +371,11 @@ export default function JournalEntryForm({
     // surprising when splitting across several lines. The balancing amount is
     // now opt-in via double-clicking a debit/credit field (handleFillBalance).
     if (field === 'account_number' && value) {
-      const account = accounts.find((a) => a.account_number === value)
+      // Fall back to the BAS catalogue so the description still auto-fills when
+      // the chosen account isn't in the active chart yet.
+      const account =
+        accounts.find((a) => a.account_number === value) ??
+        catalog.find((a) => a.account_number === value)
       if (account) {
         updated[index].line_description = account.account_name
         // Fortnox-style: seed the verifikationstext from the first row's account
@@ -428,6 +440,14 @@ export default function JournalEntryForm({
       return trailingBlank ? prev : [...prev, { ...BLANK_LINE }]
     })
   }, [lines])
+
+  // Inline (bare) review: move focus to the confirm button when it opens so
+  // Enter posts — parity with the ConfirmationDialog's autoFocusConfirm.
+  useEffect(() => {
+    if (bare && showReview) {
+      requestAnimationFrame(() => bareConfirmRef.current?.focus())
+    }
+  }, [bare, showReview])
 
   // Only lines with both an account and a non-zero amount end up in the submit
   // payload (see the filter in handleConfirm). Compute totals and balance from
@@ -528,6 +548,31 @@ export default function JournalEntryForm({
       return
     }
     setShowReview(true)
+  }
+
+  // Whether an Enter should open the review — mirrors the review button's
+  // enable gate exactly, so Enter never submits something the button wouldn't.
+  const canSubmitReview = () =>
+    isBalanced &&
+    !!description &&
+    !!selectedPeriod &&
+    !periodMismatch &&
+    !isUploading &&
+    canWrite &&
+    !isSubmitting &&
+    !isSavingDraft
+
+  // Enter anywhere in the form = "Granska & skapa": opens the review exactly as
+  // the button does, from any field. Navigation is Tab's job. Two Enter
+  // exceptions stay intact: the account combobox (it calls preventDefault to
+  // select the highlighted account — we skip when defaultPrevented) and the
+  // internal-note textarea (newlines). The inline review owns its own Enter.
+  const handleFormKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter') return
+    if (e.defaultPrevented || showReview) return
+    if ((e.target as HTMLElement).tagName === 'TEXTAREA') return
+    e.preventDefault()
+    if (canSubmitReview()) handleReview()
   }
 
   // Inner submit: builds payload, POSTs, throws a structured error on failure
@@ -829,7 +874,7 @@ export default function JournalEntryForm({
         <Button variant="outline" onClick={() => setShowReview(false)} disabled={isSubmitting}>
           {t('review_back')}
         </Button>
-        <Button onClick={handleConfirm} disabled={isSubmitting}>
+        <Button ref={bareConfirmRef} onClick={handleConfirm} disabled={isSubmitting}>
           {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {/* No underlag attached → explicit acknowledgement, equivalent to the
               blocking "Bokför utan underlag" dialog in the non-bare flow (BFL
@@ -843,7 +888,7 @@ export default function JournalEntryForm({
   )
 
   const formContent = (
-    <div className="space-y-4">
+    <div className="space-y-4" onKeyDown={handleFormKeyDown}>
       {bare && showReview ? reviewPanel : (
       <>
       {/* Verifikat metadata — compact bar on top (Fortnox-style). Date, series
@@ -1041,6 +1086,8 @@ export default function JournalEntryForm({
                 <AccountCombobox
                   value={line.account_number}
                   accounts={accounts}
+                  catalog={catalog}
+                  notActivatedLabel={t('account_not_activated')}
                   onChange={(num) => updateLine(index, 'account_number', num)}
                   onCommit={() => focusDebit(index)}
                   onCreateAccount={(prefill) => handleOpenCreateAccount(index, prefill)}
@@ -1158,6 +1205,8 @@ export default function JournalEntryForm({
                   <AccountCombobox
                     value={line.account_number}
                     accounts={accounts}
+                    catalog={catalog}
+                    notActivatedLabel={t('account_not_activated')}
                     onChange={(num) => updateLine(index, 'account_number', num)}
                     onCommit={() => focusDebit(index)}
                     onCreateAccount={(prefill) => handleOpenCreateAccount(index, prefill)}
@@ -1378,6 +1427,7 @@ export default function JournalEntryForm({
         onOpenChange={setShowReview}
         onConfirm={handleConfirm}
         isSubmitting={isSubmitting}
+        autoFocusConfirm
         title={
           !embedded && nextVoucherNumber != null
             ? t('review_title_with_voucher', { voucher: formatVoucher({ voucher_series: voucherSeries, voucher_number: nextVoucherNumber }) })

@@ -18,6 +18,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { Loader2, Plus, Trash2, AlertTriangle, Search, Check } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
+import DocumentViewerPane from '@/components/bookkeeping/DocumentViewerPane'
 import BookingTemplatePicker from '@/components/bookkeeping/BookingTemplatePicker'
 import { ActivateAccountsDialog } from '@/components/bookkeeping/ActivateAccountsDialog'
 import { useCompany } from '@/contexts/CompanyContext'
@@ -71,6 +72,10 @@ interface Props {
   open: boolean
   onOpenChange: (v: boolean) => void
   item: InboxItem
+  /** Signed URL + mime of the inbox document, threaded from the workspace so
+      the underlag can be shown beside the form without an extra round-trip. */
+  docUrl?: string | null
+  docMime?: string | null
   onSuccess: () => void | Promise<void>
 }
 
@@ -149,7 +154,7 @@ function rankBySekCloseness(
   return [...rows].sort((a, b) => Math.abs(txSekAmount(a) - abs) - Math.abs(txSekAmount(b) - abs))
 }
 
-export default function BookDirectlyDialog({ open, onOpenChange, item, onSuccess }: Props) {
+export default function BookDirectlyDialog({ open, onOpenChange, item, docUrl = null, docMime = null, onSuccess }: Props) {
   const { toast } = useToast()
   const { company } = useCompany()
 
@@ -530,7 +535,7 @@ export default function BookDirectlyDialog({ open, onOpenChange, item, onSuccess
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Bokför direkt</DialogTitle>
           <DialogDescription>
@@ -538,7 +543,20 @@ export default function BookDirectlyDialog({ open, onOpenChange, item, onSuccess
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-6 pt-2">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,560px)]">
+          {/* Document column — sticky on desktop so the underlag stays visible
+              while the form scrolls; stacks above the form on smaller screens. */}
+          <div className="h-[45vh] lg:sticky lg:top-0 lg:h-[72vh] lg:self-start">
+            <DocumentViewerPane
+              documentId={item.document_id}
+              mime={docMime}
+              downloadUrl={docUrl}
+              className="h-full"
+            />
+          </div>
+
+          {/* Booking form */}
+          <div className="space-y-6 pt-2">
           {/* Metadata row */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1.5">
@@ -886,6 +904,7 @@ export default function BookDirectlyDialog({ open, onOpenChange, item, onSuccess
                 )}
               </Button>
             </div>
+          </div>
           </div>
         </div>
       </DialogContent>

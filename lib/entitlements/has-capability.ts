@@ -23,6 +23,23 @@ function isSelfHosted(): boolean {
   return process.env.NEXT_PUBLIC_SELF_HOSTED === 'true'
 }
 
+/**
+ * Local development is all-on so every gated feature is testable without a
+ * subscription. Two triggers, both fail-safe for prod:
+ *   - NODE_ENV === 'development' (i.e. `npm run dev`). NOT 'test' — the
+ *     entitlement suite must still exercise the real gate — and NOT
+ *     'production'.
+ *   - DISABLE_PAYWALL === 'true' — explicit escape hatch for a local
+ *     production build. Never set this in a hosted environment.
+ */
+function isPaywallBypassed(): boolean {
+  return (
+    isSelfHosted() ||
+    process.env.NODE_ENV === 'development' ||
+    process.env.DISABLE_PAYWALL === 'true'
+  )
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /**
  * Only server-resolved UUIDs may be interpolated into the PostgREST `.or()`
@@ -38,7 +55,7 @@ export async function hasCapability(
   companyId: string,
   key: CapabilityKey,
 ): Promise<boolean> {
-  if (isSelfHosted()) return true
+  if (isPaywallBypassed()) return true
   if (!isUuid(companyId)) return false // fail-closed: never interpolate a non-UUID
 
   // Resolve the company's firm/team (firm-scoped grants cascade to clients).
@@ -152,7 +169,7 @@ export async function getCompanyCapabilities(
   supabase: SupabaseClient,
   companyId: string,
 ): Promise<CapabilityKey[]> {
-  if (isSelfHosted()) return [...PAID_CAPABILITIES]
+  if (isPaywallBypassed()) return [...PAID_CAPABILITIES]
   if (!isUuid(companyId)) return [] // fail-closed: never interpolate a non-UUID
 
   const { data: company } = await supabase

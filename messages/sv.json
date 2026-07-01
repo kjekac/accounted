@@ -1139,8 +1139,17 @@
     "fy_status_open": "Öppet",
     "fy_status_locked": "Låst",
     "fy_status_closed": "Stängt",
+    "fy_action_lock": "Lås",
+    "fy_action_unlock": "Lås upp",
+    "fy_confirm_cancel": "Avbryt",
+    "fy_lock_confirm_title": "Lås räkenskapsår?",
+    "fy_lock_confirm_body": "{name} låses. Inga nya verifikationer kan bokföras i perioden förrän du låser upp den igen.",
+    "fy_unlock_confirm_title": "Lås upp räkenskapsår?",
+    "fy_unlock_confirm_body": "{name} låses upp så att verifikationer åter kan bokföras i perioden. Åtgärden loggas i behandlingshistoriken.",
+    "fy_lock_success": "Räkenskapsåret är låst",
+    "fy_unlock_success": "Räkenskapsåret är upplåst",
+    "fy_action_error": "Åtgärden kunde inte slutföras",
     "related_heading": "Relaterat",
-    "related_fiscal_year": "Räkenskapsår och ingående balanser",
     "related_chart_of_accounts": "Kontoplan (BAS)"
   },
   "settings_tax": {},
@@ -1778,9 +1787,16 @@
     "doc_attached_count": "{count} bifogade",
     "doc_pick_existing": "Välj befintligt underlag",
     "doc_picked_remove": "Ta bort underlag",
+    "doc_clear": "Ta bort underlag",
     "doc_link_failed_title": "Underlag kunde inte bifogas",
     "doc_link_failed_description": "{count} fil(er) kunde inte länkas till verifikationen. Försök igen via bokföringssidan.",
     "bank_line_description": "Företagskonto"
+  },
+  "document_viewer": {
+    "empty": "Inget underlag bifogat",
+    "header_label": "Underlag",
+    "open_in_new_tab": "Öppna i ny flik",
+    "not_previewable": "Kan inte förhandsvisas"
   },
   "tx_attach_dialog": {
     "title": "Matcha mot underlag",
@@ -3203,6 +3219,7 @@
     "correct_menu": "Rätta",
     "correct_lines": "Rätta rader",
     "correct_date": "Rätta datum",
+    "correct_opening_balances": "Korrigera ingående balanser",
     "reverse_action": "Återför (storno)",
     "reverse_confirm_title": "Återför verifikat",
     "reverse_confirm_label": "Skapa storno",
@@ -3263,6 +3280,7 @@
     "delete_dialog_entry_body": "Verifikatet och dess kontorader tas bort. Kopplade transaktioner och fakturor behåller sina uppgifter men markeras som ej bokförda. Underlag (kvitton, dokument) behålls men avlänkas."
   },
   "journal_form": {
+    "account_not_activated": "Aktiveras vid bokföring",
     "save_edit": "Spara ändringar",
     "toast_updated_title": "Utkast uppdaterat",
     "toast_updated_description": "Ändringarna i utkastet har sparats.",
@@ -3664,6 +3682,8 @@
     "tab_new_entry": "Ny verifikation",
     "tab_accounts": "Kontoplan",
     "new_entry_dialog_title": "Ny verifikation",
+    "create_with_assistant": "Skapa med assistent",
+    "ask_assistant_handoff": "Hellre låta assistenten fylla i?",
     "loading_source_voucher": "Laddar källverifikat...",
     "copy_failed_title": "Kunde inte kopiera verifikat",
     "copy_source_missing": "Källverifikatet hittades inte.",

@@ -59,9 +59,14 @@ describe('tools/list payload size guard', () => {
     //     which have a pre-flight; gnubok_get_agent_briefing also gained a `company`
     //     identity block in its outputSchema. This is wire data the agent depends
     //     on, not trimmable prose — hence a bump rather than a description trim.
+    //   * 38K → 40K as the catalog grew from 92 to 103 tools (gnubok_link_document_
+    //     to_voucher #804, gnubok_bulk_book_inbox_items, the categorize-core additions,
+    //     plus per-line supplier-invoice overrides). Each new tool carries its
+    //     inputSchema + staging _meta; the growth is genuine wire data, not prose,
+    //     so descriptions are already at their trimmed floor (~180–220 chars).
     // Long-term answer to growth is leaning harder on gnubok_search_tools — if this
     // fires again, prefer trimming descriptions or making a tool opt-in via search
     // before bumping further.
-    expect(approxTokens).toBeLessThan(38_000)
+    expect(approxTokens).toBeLessThan(40_000)
   })
 })

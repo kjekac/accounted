@@ -5416,6 +5416,126 @@ export const tools: McpTool[] = [
   },
 
   {
+    name: 'gnubok_bulk_book_inbox_items',
+    title: 'Bulk-Book Underlag',
+    description: 'Bulk-book N selected Underlag (Dokumentinkorgen) against their matched bank transactions with one shared category + VAT treatment. Set reverse_charge for foreign SaaS. Unmatched/booked items are skipped. Stages one approval.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        item_ids: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 200,
+          items: { type: 'string' },
+          description: "Inbox item UUIDs to book — the user's selection in the Underlag view.",
+        },
+        category: { type: 'string', description: 'Shared transaction category applied to every item', enum: [...VALID_CATEGORIES] },
+        vat_treatment: { type: 'string', description: 'Shared VAT treatment. Set reverse_charge for foreign services (omvänd skattskyldighet) where the seller did NOT charge VAT — typical for USD/EUR SaaS subscriptions like Cursor/Anysphere. Defaults to standard_25.', enum: [...VALID_VAT_TREATMENTS] },
+        vat_amount: { type: 'number', exclusiveMinimum: 0, description: "The underlag's exact moms override; only valid with a rate-based vat_treatment. Rarely needed in bulk — all items share one value." },
+        notes: { type: 'string', description: 'Audit-trail note appended to every verifikation. Keep under 200 chars.' },
+        allow_duplicate: { type: 'boolean', description: 'Override the per-item duplicate-booking guard (default false). Set true only after the user confirms these bank lines are genuinely separate events.' },
+      },
+      required: ['item_ids', 'category'],
+    },
+    outputSchema: STAGED_OPERATION_SCHEMA,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, userId, supabase, actor) {
+      const itemIds = args.item_ids as string[]
+      if (!Array.isArray(itemIds) || itemIds.length === 0) throw new Error('item_ids is required (non-empty)')
+      const vatAmount = typeof args.vat_amount === 'number' && Number.isFinite(args.vat_amount)
+        ? args.vat_amount
+        : undefined
+      const notes = typeof args.notes === 'string' && args.notes.trim().length > 0
+        ? args.notes.trim()
+        : undefined
+
+      // Pre-flight: classify the selection so the preview (and the agent) sees
+      // the real shape before staging. Tenant isolation via company_id.
+      const { data: items, error } = await supabase
+        .from('invoice_inbox_items')
+        .select('id, matched_transaction_id, created_journal_entry_id, created_supplier_invoice_id')
+        .in('id', itemIds)
+        .eq('company_id', companyId)
+      if (error) throw new Error(`Kunde inte läsa underlagen: ${error.message}`)
+
+      const found = new Set((items ?? []).map((it) => it.id as string))
+      const resolved = (items ?? []).filter((it) => it.created_journal_entry_id || it.created_supplier_invoice_id)
+      const bookable = (items ?? []).filter(
+        (it) => it.matched_transaction_id && !it.created_journal_entry_id && !it.created_supplier_invoice_id,
+      )
+      const notMatched = (items ?? []).filter(
+        (it) => !it.matched_transaction_id && !it.created_journal_entry_id && !it.created_supplier_invoice_id,
+      ).length
+      const alreadyBooked = resolved.length
+      const notFound = itemIds.filter((id) => !found.has(id)).length
+
+      if (bookable.length === 0) {
+        throw new Error(
+          `Inga av de ${itemIds.length} valda underlagen kan bokföras: ${notMatched} saknar matchad banktransaktion, ` +
+          `${alreadyBooked} är redan bokförda, ${notFound} hittades inte. Matcha underlagen mot en banktransaktion först ` +
+          `(gnubok_match_transaction_to_invoice eller "Matcha mot transaktion" i Dokumentinkorgen).`,
+        )
+      }
+
+      // Resolve matched-tx dates/amounts for the period envelope + an aggregate
+      // total. preview_data carries only aggregate counts + sum — no per-item
+      // PII (GDPR Art.25), same rationale as gnubok_bulk_book_transactions.
+      const txIds = bookable.map((it) => it.matched_transaction_id as string)
+      const { data: txs } = await supabase
+        .from('transactions')
+        .select('id, date, amount, currency, amount_sek, exchange_rate')
+        .in('id', txIds)
+        .eq('company_id', companyId)
+      const txDates = (txs ?? []).map((t) => t.date as string).filter(Boolean).sort()
+      const earliestDate = txDates[0]
+      const totalSek = (txs ?? []).reduce((s, t) => {
+        const cur = String(t.currency ?? 'SEK').toUpperCase()
+        const sek = cur === 'SEK'
+          ? Math.abs(Number(t.amount))
+          : Math.abs(Number(t.amount_sek ?? Number(t.amount) * Number(t.exchange_rate ?? 1)))
+        return s + (Number.isFinite(sek) ? sek : 0)
+      }, 0)
+
+      return stagePendingOperation(supabase, companyId, userId, 'bulk_book_inbox_items',
+        `Bulkbokför ${bookable.length} underlag`,
+        {
+          // Stage only the bookable items — the executor re-checks each and
+          // skips any that changed state between staging and approval.
+          item_ids: bookable.map((it) => it.id as string),
+          category: args.category,
+          vat_treatment: args.vat_treatment ?? null,
+          vat_amount: vatAmount ?? null,
+          notes: notes ?? null,
+          allow_duplicate: args.allow_duplicate === true,
+        },
+        {
+          item_count: itemIds.length,
+          bookable_count: bookable.length,
+          will_skip_count: notMatched + alreadyBooked + notFound,
+          not_matched: notMatched,
+          already_booked: alreadyBooked,
+          not_found: notFound,
+          total_sek: Math.round(totalSek * 100) / 100,
+          category: args.category,
+          vat_treatment: args.vat_treatment ?? null,
+        },
+        actor,
+        {
+          description: 'After approval each underlag is booked against its matched transaction. Verify with gnubok_list_inbox_items or gnubok_query_journal.',
+          tool: 'gnubok_list_inbox_items',
+        },
+        earliestDate ? { dateForPeriodCheck: earliestDate } : {},
+      )
+    },
+  },
+
+  {
     name: 'gnubok_find_voucher_candidates_for_invoice',
     title: 'Find Voucher Candidates (Invoice)',
     description: "List posted verifikat that could be this invoice's payment (faktureringsmetoden: credit 1510; kontantmetoden: debit 19xx). Call before gnubok_link_invoice_to_voucher to mark the faktura paid (no new bokföring).",

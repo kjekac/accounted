@@ -1139,8 +1139,17 @@
     "fy_status_open": "Open",
     "fy_status_locked": "Locked",
     "fy_status_closed": "Closed",
+    "fy_action_lock": "Lock",
+    "fy_action_unlock": "Unlock",
+    "fy_confirm_cancel": "Cancel",
+    "fy_lock_confirm_title": "Lock fiscal year?",
+    "fy_lock_confirm_body": "{name} will be locked. No new entries can be posted in this period until you unlock it again.",
+    "fy_unlock_confirm_title": "Unlock fiscal year?",
+    "fy_unlock_confirm_body": "{name} will be unlocked so entries can be posted in this period again. This action is recorded in the audit log.",
+    "fy_lock_success": "Fiscal year locked",
+    "fy_unlock_success": "Fiscal year unlocked",
+    "fy_action_error": "The action could not be completed",
     "related_heading": "Related",
-    "related_fiscal_year": "Fiscal years and opening balances",
     "related_chart_of_accounts": "Chart of accounts (BAS)"
   },
   "settings_tax": {},
@@ -1778,9 +1787,16 @@
     "doc_attached_count": "{count} attached",
     "doc_pick_existing": "Choose existing document",
     "doc_picked_remove": "Remove document",
+    "doc_clear": "Remove document",
     "doc_link_failed_title": "Receipt could not be attached",
     "doc_link_failed_description": "{count} file(s) could not be linked to the journal entry. Try again from the bookkeeping page.",
     "bank_line_description": "Business account"
+  },
+  "document_viewer": {
+    "empty": "No document attached",
+    "header_label": "Document",
+    "open_in_new_tab": "Open in new tab",
+    "not_previewable": "Can't preview"
   },
   "tx_attach_dialog": {
     "title": "Match to document",
@@ -3203,6 +3219,7 @@
     "correct_menu": "Correct",
     "correct_lines": "Correct lines",
     "correct_date": "Correct date",
+    "correct_opening_balances": "Correct opening balances",
     "reverse_action": "Reverse (storno)",
     "reverse_confirm_title": "Reverse journal entry",
     "reverse_confirm_label": "Create storno",
@@ -3263,6 +3280,7 @@
     "delete_dialog_entry_body": "The journal entry and its lines are removed. Linked transactions and invoices keep their data but are marked as unposted. Documents (receipts, files) are kept but unlinked."
   },
   "journal_form": {
+    "account_not_activated": "Activated when you post",
     "save_edit": "Save changes",
     "toast_updated_title": "Draft updated",
     "toast_updated_description": "Your changes to the draft were saved.",
@@ -3664,6 +3682,8 @@
     "tab_new_entry": "New journal entry",
     "tab_accounts": "Chart of accounts",
     "new_entry_dialog_title": "New journal entry",
+    "create_with_assistant": "Create with assistant",
+    "ask_assistant_handoff": "Let the assistant fill it in?",
     "loading_source_voucher": "Loading source voucher...",
     "copy_failed_title": "Could not copy journal entry",
     "copy_source_missing": "Source voucher not found.",

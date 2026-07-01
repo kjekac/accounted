@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import {
   startAuthorization,
   getASPSPs,
+  getPreferredAuthMethod,
   deleteSession,
   isSandboxMode,
   SessionExpiredError,
@@ -178,11 +179,24 @@ export const enableBankingExtension: Extension = {
             }
           }
 
+          // Resolve the bank's preferred auth method. Handelsbanken (and some
+          // other Swedish banks) expose Mobile BankID only as a hidden DECOUPLED
+          // method; without this, Enable Banking defaults to the REDIRECT method,
+          // which for Handelsbanken *corporate* PSUs cannot complete with Mobile
+          // BankID — the user approves in the app and then hits an error. Returns
+          // undefined for banks with no decoupled method, leaving them untouched.
+          const authMethod = await getPreferredAuthMethod(
+            resolvedAspspName,
+            resolvedAspspCountry,
+            psuType
+          )
+
           log.info('[enable-banking] Starting bank connection', {
             user_id: user.id,
             bank: resolvedAspspName,
             country: resolvedAspspCountry,
             psu_type: psuType,
+            auth_method: authMethod ?? '(aspsp default)',
             reconnect: isReconnect,
           })
 
@@ -293,7 +307,8 @@ export const enableBankingExtension: Extension = {
               resolvedAspspCountry,
               redirectUrl,
               oauthState,
-              psuType
+              psuType,
+              authMethod
             )
 
             // Record the bank's authorization_id for audit/traceability. The
@@ -325,7 +340,8 @@ export const enableBankingExtension: Extension = {
             resolvedAspspCountry,
             redirectUrl,
             oauthState,
-            psuType
+            psuType,
+            authMethod
           )
 
           const { data: connection, error } = await supabase

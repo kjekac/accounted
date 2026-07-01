@@ -118,6 +118,12 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   // a verifikat with caller-supplied lines (template-expanded or manual),
   // the same compliance-critical surface as create_voucher. 'high'.
   bulk_book_transactions: 'high',
+  // Bulk-book N selected Underlag (Dokumentinkorgen): one posted verifikat per
+  // matched bank transaction, each with VAT (incl. reverse charge) derived from
+  // a shared category. Posting N verifikat at once is the same compliance-
+  // critical surface as bulk_book_transactions, so 'high' — never auto-commit;
+  // approval requires confirmed=true.
+  bulk_book_inbox_items: 'high',
   // Link a single bank tx to an already-posted verifikat (no new JE created).
   // Reversible by clearing transactions.journal_entry_id and deleting any
   // invoice_payments row — sits next to link_invoice_voucher semantically;

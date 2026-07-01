@@ -14,6 +14,7 @@ import { formatAccountWithName } from '@/lib/bookkeeping/client-account-names'
 import JournalEntryPreview from './JournalEntryPreview'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import DocumentUploadZone from '@/components/bookkeeping/DocumentUploadZone'
+import DocumentViewerPane from '@/components/bookkeeping/DocumentViewerPane'
 import type { UploadedFile } from '@/components/bookkeeping/DocumentUploadZone'
 import VatTreatmentSelect from './VatTreatmentSelect'
 import { VAT_TREATMENT_OPTIONS } from './transaction-types'
@@ -68,7 +69,6 @@ export default function QuickReviewDialog({
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [showUploadZone, setShowUploadZone] = useState(false)
   const [showVatDropdown, setShowVatDropdown] = useState(false)
-  const [isOpeningDoc, setIsOpeningDoc] = useState(false)
   // Mirror of `transaction` so we can patch in a freshly-fetched SEK conversion
   // before the user confirms — the verifikation must always be in SEK and the
   // engine reads these fields straight off the transaction row.
@@ -77,24 +77,6 @@ export default function QuickReviewDialog({
   const [rateError, setRateError] = useState<string | null>(null)
 
   const preAttachedDocumentId = transaction?.document_id ?? null
-
-  const handleOpenAttachedDoc = useCallback(async () => {
-    if (!preAttachedDocumentId || isOpeningDoc) return
-    setIsOpeningDoc(true)
-    try {
-      const res = await fetch(`/api/documents/${preAttachedDocumentId}`)
-      if (!res.ok) {
-        toast({ title: t('open_attached_failed'), variant: 'destructive' })
-        return
-      }
-      const { data } = await res.json()
-      if (data?.download_url) {
-        window.open(data.download_url, '_blank', 'noopener,noreferrer')
-      }
-    } finally {
-      setIsOpeningDoc(false)
-    }
-  }, [preAttachedDocumentId, isOpeningDoc, toast, t])
 
   // Handle account changes — clear VAT for liability/equity accounts (class 2)
   const handleAccountChange = useCallback((account: string) => {
@@ -248,13 +230,24 @@ export default function QuickReviewDialog({
       }
       onOpenChange(o)
     }}>
-      <DialogContent className="max-w-md sm:max-w-lg max-h-[85vh] overflow-y-auto">
+      <DialogContent className={preAttachedDocumentId ? 'max-w-6xl max-h-[90vh] overflow-y-auto' : 'max-w-md sm:max-w-lg max-h-[85vh] overflow-y-auto'}>
         <DialogHeader>
           <DialogTitle>{t('title')}</DialogTitle>
           <DialogDescription>
             {isTemplateBooking ? t('description_template') : t('description_default')}
           </DialogDescription>
         </DialogHeader>
+
+        {/* When a document is pre-attached, show it side-by-side (receipt left,
+            review right). With no document the wrappers use display:contents so
+            the dialog collapses to the original single-column layout. */}
+        <div className={preAttachedDocumentId ? 'grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,520px)]' : 'contents'}>
+          {preAttachedDocumentId && (
+            <div className="h-[45vh] lg:sticky lg:top-0 lg:h-[72vh] lg:self-start">
+              <DocumentViewerPane documentId={preAttachedDocumentId} className="h-full" />
+            </div>
+          )}
+          <div className={preAttachedDocumentId ? 'space-y-4' : 'contents'}>
 
         {/* Transaction summary */}
         <div className="flex items-center gap-3 rounded-lg border p-3">
@@ -433,27 +426,9 @@ export default function QuickReviewDialog({
           </>
         )}
 
-        {/* Document — either show the doc the inbox attached pre-categorize,
-            or let the user upload one if none is attached yet. */}
-        {preAttachedDocumentId ? (
-          <div className="rounded-lg border flex items-center justify-between px-3 py-2.5 text-sm">
-            <div className="flex items-center gap-2 min-w-0">
-              <Paperclip className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span className="font-medium">{t('attached_doc_label')}</span>
-              <span className="text-xs text-muted-foreground truncate">
-                {t('attached_doc_source')}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={handleOpenAttachedDoc}
-              disabled={isOpeningDoc}
-              className="text-xs text-primary hover:underline shrink-0"
-            >
-              {isOpeningDoc ? t('opening') : t('view')}
-            </button>
-          </div>
-        ) : (
+        {/* No pre-attached document — let the user upload one. (When a document
+            IS pre-attached it's shown in the left preview column instead.) */}
+        {!preAttachedDocumentId && (
           <div className="rounded-lg border">
             <button
               type="button"
@@ -516,6 +491,8 @@ export default function QuickReviewDialog({
             <Check className="mr-2 h-4 w-4" />
             {isProcessing ? t('booking') : rateLoading ? t('fetching_rate') : t('book')}
           </Button>
+        </div>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

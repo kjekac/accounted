@@ -107,3 +107,4 @@ scripts/*.csv
 scripts/reopen-bokslut.sql
 
 .claude/plans/write-up-a-plan-streamed-fiddle.md
+/ingaende-balanser-test.csv

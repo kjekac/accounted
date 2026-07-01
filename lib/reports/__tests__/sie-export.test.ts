@@ -497,6 +497,7 @@ describe('generateSIEExport', () => {
       { data: null, error: null }, // prevPeriod
       { data: [], error: null },   // accounts
       {
+        // journal_entries (fetchAllRows) — no embedded lines; stitched below
         data: [
           // The OB entry itself — must be excluded from movement/VER output
           {
@@ -506,10 +507,6 @@ describe('generateSIEExport', () => {
             voucher_series: 'A',
             description: 'IB 2024',
             status: 'posted',
-            lines: [
-              { account_number: '1933', debit_amount: 96466.59, credit_amount: 0, line_description: 'IB 1933', cost_center: null, project: null },
-              { account_number: '2019', debit_amount: 0, credit_amount: 96466.59, line_description: null, cost_center: null, project: null },
-            ],
           },
           // A real transaction: account 1933 swept to 1930
           {
@@ -519,10 +516,6 @@ describe('generateSIEExport', () => {
             voucher_series: 'A',
             description: 'Stängning Bokio',
             status: 'posted',
-            lines: [
-              { account_number: '1930', debit_amount: 96466.59, credit_amount: 0, line_description: null, cost_center: null, project: null },
-              { account_number: '1933', debit_amount: 0, credit_amount: 96466.59, line_description: null, cost_center: null, project: null },
-            ],
           },
         ],
         error: null,

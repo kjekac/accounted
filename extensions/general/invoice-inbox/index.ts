@@ -24,7 +24,8 @@ import { createJournalEntry } from '@/lib/bookkeeping/engine'
 import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
-import { CreateSupplierInvoiceSchema, BookInboxItemDirectlySchema } from '@/lib/api/schemas'
+import { CreateSupplierInvoiceSchema, BookInboxItemDirectlySchema, BulkBookInboxSchema } from '@/lib/api/schemas'
+import { bulkBookMatchedInboxItems } from '@/lib/transactions/categorize-core'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { checkInboxUploadRateLimit } from '@/lib/rate-limits/inbox'
 import { simpleParser } from 'mailparser'
@@ -2136,6 +2137,49 @@ export const invoiceInboxExtension: Extension = {
             journal_entry: journalEntry,
             inbox_item_id: id,
             transaction_id: transaction?.id ?? null,
+          },
+        })
+      },
+    },
+
+    // ── Bulk-book selected inbox items (Modell B) ─────────────
+    // "Bokför valda" in the Underlag selection bar. Each selected item is
+    // booked against its matched bank transaction (which already carries the
+    // SEK amount) using one shared category + VAT treatment — individual
+    // verifikat, not a samlingsverifikation. Unmatched / already-booked /
+    // supplier-invoice-linked items are skipped, not errored, so the batch is
+    // resilient. Reuses the same categorize core as the single-item agent flow,
+    // so reverse-charge moms on foreign services is handled correctly.
+    {
+      method: 'POST',
+      path: '/items/bulk-book',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+        let body: z.infer<typeof BulkBookInboxSchema>
+        try {
+          const json = await request.json()
+          body = BulkBookInboxSchema.parse(json)
+        } catch (err) {
+          return NextResponse.json(
+            { error: err instanceof Error ? err.message : 'Invalid request body' },
+            { status: 400 }
+          )
+        }
+
+        const { booked, skipped } = await bulkBookMatchedInboxItems(
+          ctx.supabase,
+          ctx.userId,
+          ctx.companyId,
+          body,
+        )
+
+        return NextResponse.json({
+          data: {
+            booked_count: booked.length,
+            skipped_count: skipped.length,
+            booked,
+            skipped,
           },
         })
       },

@@ -42,6 +42,7 @@ import { CAPABILITY } from '@/lib/entitlements/keys'
 import type { WorkspaceComponentProps } from '@/lib/extensions/workspace-registry'
 import type { InvoiceExtractionResult } from '@/types'
 import BookDirectlyDialog from '@/components/extensions/general/BookDirectlyDialog'
+import BulkBookInboxDialog from '@/components/extensions/general/BulkBookInboxDialog'
 import TransactionMatchPicker from '@/components/inbox/TransactionMatchPicker'
 import { useAgentSheet } from '@/components/agent/AgentSheetProvider'
 
@@ -233,6 +234,9 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
   const [isRotating, setIsRotating] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [bookDirectOpen, setBookDirectOpen] = useState(false)
+  // Bulk-book selected underlag (Modell B) — the "Bokför valda" selection-bar
+  // action. The dialog filters the selection to bookable items itself.
+  const [bulkBookOpen, setBulkBookOpen] = useState(false)
   // Match-to-bank-transaction picker (opens when user clicks "Matcha mot
   // transaktion" on an unmatched inbox item).
   const [matchPickerOpen, setMatchPickerOpen] = useState(false)
@@ -605,6 +609,21 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
 
   const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
 
+  // The selected rows, and how many of them can actually be bulk-booked
+  // (matched to a transaction and not yet booked). Drives the "Bokför valda"
+  // button enabled-state and feeds the bulk-book dialog.
+  const selectedItems = useMemo(
+    () => items.filter((it) => selectedIds.has(it.id)),
+    [items, selectedIds],
+  )
+  const bookableSelectedCount = useMemo(
+    () =>
+      selectedItems.filter(
+        (it) => it.matched_transaction_id && !it.created_journal_entry_id && !it.created_supplier_invoice_id,
+      ).length,
+    [selectedItems],
+  )
+
   const handleBulkDelete = useCallback(async () => {
     if (selectedIds.size === 0) return
     if (!confirm(`Ta bort ${selectedIds.size} poster ur inkorgen?`)) return
@@ -822,29 +841,62 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
             </div>
           )}
           {selectedIds.size > 0 && (
-            <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b bg-background/95 backdrop-blur px-3 py-2 text-xs">
-              <span className="font-medium">{selectedIds.size} valda</span>
-              <div className="flex items-center gap-1">
+            <div className="sticky top-0 z-10 flex flex-col gap-3 border-b bg-background/95 backdrop-blur px-4 py-3">
+              {/* Count */}
+              <span className="text-xs text-muted-foreground tabular-nums">
+                <span className="font-medium text-foreground">{selectedIds.size}</span>{' '}
+                {selectedIds.size === 1 ? 'markerad' : 'markerade'}
+              </span>
+              {/* Primary action — the one solid button */}
+              <Button
+                variant="default"
+                size="sm"
+                className="h-8 w-full text-xs"
+                onClick={() => setBulkBookOpen(true)}
+                disabled={isBulkDeleting || bookableSelectedCount === 0}
+                title={
+                  bookableSelectedCount === 0
+                    ? 'Inget av de valda underlagen är matchat mot en banktransaktion'
+                    : undefined
+                }
+              >
+                <Check className="h-3.5 w-3.5 mr-1.5" />
+                Bokför valda
+              </Button>
+              {/* Secondary actions — outlined, so they read as buttons */}
+              <div className="flex items-center gap-2">
+                {identity.isVerified && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 flex-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() =>
+                      openAgentSheet({
+                        intentId: 'inbox.bulk-book',
+                        intentArgs: { item_ids: Array.from(selectedIds) },
+                        contextRef: 'inbox:bulk',
+                      })
+                    }
+                    disabled={isBulkDeleting}
+                  >
+                    <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                    Fråga assistenten
+                  </Button>
+                )}
                 <Button
-                  variant="ghost"
+                  variant="outline"
                   size="sm"
-                  className="h-7 text-xs"
-                  onClick={clearSelection}
-                  disabled={isBulkDeleting}
-                >
-                  Avmarkera
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="h-7 text-xs"
+                  className={cn(
+                    'h-8 px-2 text-xs text-muted-foreground hover:text-destructive hover:border-destructive/40',
+                    identity.isVerified ? 'flex-none' : 'flex-1'
+                  )}
                   onClick={handleBulkDelete}
                   disabled={isBulkDeleting}
                 >
                   {isBulkDeleting ? (
-                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
                   ) : (
-                    <Trash2 className="h-3 w-3 mr-1" />
+                    <Trash2 className="h-3.5 w-3.5 mr-1.5" />
                   )}
                   Ta bort
                 </Button>
@@ -1014,11 +1066,22 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
         open={bookDirectOpen}
         onOpenChange={setBookDirectOpen}
         item={selected}
+        docUrl={docUrl}
+        docMime={docMime}
         onSuccess={async () => {
           await Promise.all([fetchItems(), handleSelect(selected.id)])
         }}
       />
     )}
+    <BulkBookInboxDialog
+      open={bulkBookOpen}
+      onOpenChange={setBulkBookOpen}
+      items={selectedItems}
+      onSuccess={async () => {
+        clearSelection()
+        await fetchItems()
+      }}
+    />
     {selected && (
       <TransactionMatchPicker
         open={matchPickerOpen}

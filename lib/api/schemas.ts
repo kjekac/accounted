@@ -797,6 +797,35 @@ export const BookInboxItemDirectlySchema = z.object({
   transaction_id: uuid.optional(),
 })
 
+/**
+ * Bulk-book selected Underlag (Dokumentinkorgen) against their matched bank
+ * transactions. One shared category + VAT treatment is applied to every
+ * selected item; each item is booked against its own matched transaction (which
+ * carries the SEK amount), so the verifikat are individual — not a
+ * samlingsverifikation. Items without a matched transaction, already booked, or
+ * already linked to a leverantörsfaktura are skipped server-side.
+ *
+ * Used both as the UI route body (POST /items/bulk-book) and as the
+ * pending-operation params for `bulk_book_inbox_items` (Lena-driven flow).
+ */
+export const BulkBookInboxSchema = z.object({
+  item_ids: z.array(uuid).min(1, 'Minst ett underlag krävs').max(200, 'Högst 200 underlag per bokföring'),
+  category: TransactionCategorySchema,
+  // Optional fields are `.nullish()` (not just `.optional()`) because the
+  // `bulk_book_inbox_items` pending operation persists absent optionals as
+  // explicit JSON `null` (stagePendingOperation in mcp-server/server.ts). When
+  // the executor re-parses those params on approval, a bare `.optional()` would
+  // reject the stored `null`. `.transform` normalizes `null → undefined` so the
+  // executor and categorizeMatchedTransaction never receive `null`.
+  vat_treatment: VatTreatmentSchema.nullish().transform((v) => v ?? undefined),
+  // The underlag's actual moms when it differs from rate × belopp (e.g. dricks).
+  // Only valid with a rate-based vat_treatment; rejected otherwise downstream.
+  vat_amount: z.number().positive().nullish().transform((v) => v ?? undefined),
+  notes: z.string().max(2000).nullish().transform((v) => v ?? undefined),
+  allow_duplicate: z.boolean().nullish().transform((v) => v ?? undefined),
+})
+export type BulkBookInboxInput = z.infer<typeof BulkBookInboxSchema>
+
 export const MatchInvoiceSchema = z
   .object({
     invoice_id: uuid,

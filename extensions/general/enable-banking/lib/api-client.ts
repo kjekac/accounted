@@ -31,12 +31,19 @@ export interface ASPSP {
   bic?: string
   beta?: boolean
   max_consent_validity?: number
-  available_auth_methods?: AuthMethod[]
+  // Enable Banking returns this field as `auth_methods` on the ASPSP object.
+  auth_methods?: AuthMethod[]
 }
 
 export interface AuthMethod {
   name: string
   title?: string
+  // How the SCA is performed. Mobile BankID at several Swedish banks is a
+  // DECOUPLED method; the visible default is often a REDIRECT method.
+  approach?: 'REDIRECT' | 'DECOUPLED' | 'EMBEDDED'
+  // When true, Enable Banking only uses this method if it is requested
+  // explicitly via auth_method (it is not the implicit default).
+  hidden_method?: boolean
   psu_types?: ('personal' | 'business')[]
 }
 
@@ -334,6 +341,40 @@ export async function getASPSPs(country: string = 'SE', psuType?: 'personal' | '
 }
 
 /**
+ * Resolve the auth_method we should request for a given bank, or undefined to
+ * let Enable Banking use the ASPSP's visible default.
+ *
+ * Why: several Swedish ASPSPs (notably Handelsbanken) expose Mobile BankID only
+ * as a DECOUPLED method flagged hidden_method=true. When we send no auth_method,
+ * Enable Banking falls back to the visible REDIRECT method — which for
+ * Handelsbanken *corporate* PSUs does not support Mobile BankID, so the consent
+ * fails right after the user approves in the BankID app ("fel efter BankID").
+ * Pinning the decoupled (Mobile BankID) method makes the flow work for both
+ * business and personal PSUs. We return undefined when the bank exposes no
+ * decoupled method or the lookup fails, so banks that already work are untouched.
+ */
+export async function getPreferredAuthMethod(
+  aspspName: string,
+  country: string,
+  psuType: 'personal' | 'business'
+): Promise<string | undefined> {
+  try {
+    const aspsps = await getASPSPs(country, psuType)
+    const aspsp = aspsps.find((a) => a.name === aspspName)
+    const decoupled = aspsp?.auth_methods?.find((m) => m.approach === 'DECOUPLED')
+    return decoupled?.name
+  } catch (error) {
+    console.error('[enable-banking] getPreferredAuthMethod failed; using ASPSP default', {
+      aspspName,
+      country,
+      psuType,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
+/**
  * Get list of supported banks (legacy format for backward compatibility)
  */
 export async function getSupportedBanks(): Promise<Bank[]> {
@@ -367,19 +408,30 @@ export async function getSupportedBanks(): Promise<Bank[]> {
  * @param redirectUrl - URL to redirect user after bank authorization
  * @param state - State parameter returned in callback (e.g., user ID)
  * @param psuType - Type of user: 'personal' or 'business'
+ * @param authMethod - Optional Enable Banking auth_method name. When omitted,
+ *   Enable Banking uses the ASPSP's visible default method. See
+ *   getPreferredAuthMethod for why we pin Mobile BankID at some banks.
  */
 export async function startAuthorization(
   aspspName: string,
   aspspCountry: string,
   redirectUrl: string,
   state: string,
-  psuType: 'personal' | 'business' = 'personal'
+  psuType: 'personal' | 'business' = 'personal',
+  authMethod?: string
 ): Promise<AuthResponse> {
   // Calculate consent validity (90 days)
   const validUntil = new Date()
   validUntil.setDate(validUntil.getDate() + 90)
 
-  const requestBody = {
+  const requestBody: {
+    access: { valid_until: string }
+    aspsp: { name: string; country: string }
+    state: string
+    redirect_url: string
+    psu_type: 'personal' | 'business'
+    auth_method?: string
+  } = {
     access: {
       valid_until: validUntil.toISOString()
     },
@@ -390,6 +442,9 @@ export async function startAuthorization(
     state,
     redirect_url: redirectUrl,
     psu_type: psuType
+  }
+  if (authMethod) {
+    requestBody.auth_method = authMethod
   }
 
   const response = await authenticatedFetch('/auth', {

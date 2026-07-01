@@ -172,14 +172,7 @@ export function BookkeepingSettingsContent() {
         </h2>
         <div className="flex flex-col gap-2">
           <Link
-            href="/bookkeeping"
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-            {t('related_fiscal_year')}
-          </Link>
-          <Link
-            href="/bookkeeping"
+            href="/bookkeeping?tab=accounts"
             className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             <ExternalLink className="h-3.5 w-3.5" />

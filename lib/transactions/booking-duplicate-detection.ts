@@ -57,6 +57,28 @@ export interface BookingTarget {
 }
 
 /**
+ * Same-batch siblings to exclude from booking-time duplicate detection.
+ *
+ * When a bulk run books several DISTINCT bank movements that happen to share a
+ * (date, amount, cash account) — several identical Swish transfers the user
+ * explicitly selected — the second booking must NOT dedupe against the first
+ * booking's freshly-created verifikat: they are separate affärshändelser. The
+ * bulk driver accumulates the ids it has booked so far in THIS batch and passes
+ * them here so intra-batch siblings never flag one another.
+ *
+ * CRITICAL: only ids created within the current batch belong here. A duplicate
+ * that existed BEFORE the batch has neither its transaction id nor its voucher
+ * id in these lists, so it is STILL detected and skipped. Both fields are
+ * optional; the default (no exclusion) keeps single-booking callers unaffected.
+ */
+export interface BookingDuplicateExclusions {
+  /** Sibling transaction ids booked earlier in the same bulk run. */
+  excludeTransactionIds?: string[]
+  /** Journal-entry ids minted earlier in the same bulk run. */
+  excludeJournalEntryIds?: string[]
+}
+
+/**
  * Find an already-booked sibling transaction sharing (date, amount, account).
  * Returns the single best candidate, or null.
  *
@@ -73,9 +95,13 @@ export async function detectBookedDuplicateTransaction(
   supabase: SupabaseClient,
   companyId: string,
   target: BookingTarget,
+  opts?: BookingDuplicateExclusions,
 ): Promise<BookedDuplicateCandidate | null> {
   const targetOre = toOre(target.amount)
   if (targetOre === 0 || Number.isNaN(targetOre)) return null
+  // Siblings booked earlier in this same bulk run are distinct events the user
+  // selected, not duplicates — never flag one against another.
+  const excludeTransactionIds = new Set(opts?.excludeTransactionIds ?? [])
 
   // Same company, same date, already booked, not the target row itself. The
   // amount and account match is applied in JS so a numeric-string amount from
@@ -101,6 +127,7 @@ export async function detectBookedDuplicateTransaction(
   }
   const targetAccount = target.cash_account_id ?? null
   const matches = (data as unknown as Row[]).filter((r) => {
+    if (excludeTransactionIds.has(r.id)) return false
     if (toOre(r.amount) !== targetOre) return false
     // Account guard: both-known must match; a null on either side is compatible.
     if (targetAccount !== null && r.cash_account_id !== null && r.cash_account_id !== targetAccount) {
@@ -179,9 +206,13 @@ export async function detectLedgerDuplicateVoucher(
   supabase: SupabaseClient,
   companyId: string,
   target: BookingTarget,
+  opts?: BookingDuplicateExclusions,
 ): Promise<BookedDuplicateCandidate | null> {
   const targetOre = toOre(target.amount)
   if (targetOre === 0 || Number.isNaN(targetOre)) return null
+  // Vouchers minted earlier in this same bulk run are this batch's own fresh
+  // bookings — a subsequent sibling must not dedupe against them.
+  const excludeJournalEntryIds = new Set(opts?.excludeJournalEntryIds ?? [])
   const targetAmount = roundOre(Math.abs(Number(target.amount)))
   const inbound = targetOre > 0
 
@@ -251,6 +282,8 @@ export async function detectLedgerDuplicateVoucher(
     }
   }
   const candidates = (lines as unknown as LineRow[])
+    // Same-batch vouchers are this run's own fresh bookings, never duplicates.
+    .filter((l) => !excludeJournalEntryIds.has(l.journal_entry.id))
     .filter((l) => {
       const legAmount = roundOre(Number(inbound ? l.debit_amount : l.credit_amount))
       return Math.abs(legAmount - targetAmount) < 0.01
@@ -309,8 +342,9 @@ export async function detectBookingDuplicate(
   supabase: SupabaseClient,
   companyId: string,
   target: BookingTarget,
+  opts?: BookingDuplicateExclusions,
 ): Promise<BookedDuplicateCandidate | null> {
-  const sibling = await detectBookedDuplicateTransaction(supabase, companyId, target)
+  const sibling = await detectBookedDuplicateTransaction(supabase, companyId, target, opts)
   if (sibling) return sibling
-  return detectLedgerDuplicateVoucher(supabase, companyId, target)
+  return detectLedgerDuplicateVoucher(supabase, companyId, target, opts)
 }

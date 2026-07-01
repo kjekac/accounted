@@ -22,8 +22,10 @@ import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
 import JournalEntryAttachments from '@/components/bookkeeping/JournalEntryAttachments'
 import JournalEntryStatusBadge, { useSourceTypeLabels } from '@/components/bookkeeping/JournalEntryStatusBadge'
 import CorrectionEntryDialog from '@/components/bookkeeping/CorrectionEntryDialog'
+import CorrectOpeningBalanceDialog from '@/components/bookkeeping/CorrectOpeningBalanceDialog'
 import EditDraftEntryDialog from '@/components/bookkeeping/EditDraftEntryDialog'
 import RecordateEntryDialog from '@/components/bookkeeping/RecordateEntryDialog'
+import AgentSparkleButton from '@/components/agent/AgentSparkleButton'
 import CorrectionChain from '@/components/bookkeeping/CorrectionChain'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import { useToast } from '@/components/ui/use-toast'
@@ -43,6 +45,7 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showCorrection, setShowCorrection] = useState(false)
+  const [showCorrectIB, setShowCorrectIB] = useState(false)
   const [showEdit, setShowEdit] = useState(false)
   const [showRecordate, setShowRecordate] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -237,6 +240,14 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
   // correction (or the original) and corrects that one.
   const canCorrect = entry.status === 'posted' && entry.source_type !== 'storno'
 
+  // An opening-balance verifikat must be corrected through the IB-aware flow
+  // (storno + rebook + relink the period's opening_balance_entry_id), never the
+  // generic "Rätta rader" — that books a `correction` entry but leaves the
+  // period pointing at the stornoed IB, so the Balansrapport "Ingående balans"
+  // column goes stale. Only surface it on the *active* IB (posted; stornoed
+  // predecessors are `reversed`, so exactly one posted IB exists per period).
+  const isOpeningBalance = entry.source_type === 'opening_balance' && entry.status === 'posted'
+
   // Include current entry in the chain for the visualization
   const fullChain = [entry, ...chain]
 
@@ -265,6 +276,14 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
 
         {(entry.status === 'posted' || entry.status === 'draft') && (
           <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+            {entry.status === 'draft' && (
+              <AgentSparkleButton
+                intentId="verifikation.draft"
+                intentArgs={{ journal_entry_id: id }}
+                contextRef={`verifikation:${id}`}
+                className="w-full sm:w-auto"
+              />
+            )}
             {entry.status === 'draft' && (
               <Button
                 variant="outline"
@@ -303,7 +322,7 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
                 {entry.status === 'draft' ? t('delete_draft') : t('delete_entry')}
               </Button>
             )}
-            {canCorrect && (
+            {canCorrect && !isOpeningBalance && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -334,6 +353,19 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+            )}
+            {canCorrect && isOpeningBalance && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full sm:w-auto"
+                onClick={() => setShowCorrectIB(true)}
+                disabled={!canWrite}
+                title={!canWrite ? t('read_only_tooltip') : undefined}
+              >
+                {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : <Pencil className="mr-2 h-4 w-4" />}
+                {t('correct_opening_balances')}
+              </Button>
             )}
             {entry.status === 'posted' && (
               <Button
@@ -692,6 +724,19 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
           onOpenChange={setShowCorrection}
           onCorrected={() => {
             setShowCorrection(false)
+            fetchData()
+          }}
+        />
+      )}
+
+      {/* Opening-balance correction dialog — IB-aware (storno + rebook + relink) */}
+      {showCorrectIB && entry && (
+        <CorrectOpeningBalanceDialog
+          entry={entry}
+          open={showCorrectIB}
+          onOpenChange={setShowCorrectIB}
+          onCorrected={() => {
+            setShowCorrectIB(false)
             fetchData()
           }}
         />

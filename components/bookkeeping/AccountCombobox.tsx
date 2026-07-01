@@ -4,6 +4,12 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Plus } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { getAccountClassName } from '@/lib/bookkeeping/account-descriptions'
+import {
+  buildAccountIndex,
+  searchAccounts,
+  type SearchableAccount,
+  type AccountSearchItem,
+} from '@/lib/bookkeeping/account-search'
 import type { BASAccount } from '@/types'
 
 interface AccountComboboxProps {
@@ -19,51 +25,60 @@ interface AccountComboboxProps {
   // dropdown's empty state. The current search string is passed so the caller
   // can prefill the create dialog.
   onCreateAccount?: (prefill: string) => void
+  // The full BAS catalogue. When provided, accounts not yet in `accounts`
+  // (the company's active chart) become searchable by name and are surfaced
+  // with the `notActivatedLabel` marker; picking one activates it at commit
+  // via the existing ACCOUNTS_NOT_IN_CHART rail.
+  catalog?: SearchableAccount[]
+  // Label shown next to catalogue-only (not-yet-activated) accounts. Defaults
+  // to Swedish; bilingual hosts pass a localized string.
+  notActivatedLabel?: string
   // Extra classes merged into the trigger Input — callers pass `h-8` for dense
   // table rows, omit it to use the default Input height.
   className?: string
+  // Optional callback ref to the underlying <input>, invoked alongside the
+  // internal one. Lets a parent imperatively focus the field (e.g. auto-advance
+  // to the next konteringsrad's account on Enter — see JournalEntryForm.focusAccount).
+  inputRef?: React.RefCallback<HTMLInputElement>
 }
 
-const MAX_RESULTS = 50
-
-export default function AccountCombobox({ value, accounts, onChange, onCommit, onCreateAccount, className }: AccountComboboxProps) {
+export default function AccountCombobox({ value, accounts, onChange, onCommit, onCreateAccount, catalog, notActivatedLabel = 'Aktiveras vid bokföring', className, inputRef }: AccountComboboxProps) {
   const [search, setSearch] = useState(value)
   const [isOpen, setIsOpen] = useState(false)
   const [highlightedIndex, setHighlightedIndex] = useState(0)
   const containerRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const internalInputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+
+  // Attach the internal ref (used for focus bookkeeping) and forward the element
+  // to any external callback ref the parent passed.
+  const setInputRef = useCallback((el: HTMLInputElement | null) => {
+    internalInputRef.current = el
+    inputRef?.(el)
+  }, [inputRef])
 
   // Sync external value changes into the search field
   useEffect(() => {
     setSearch(value)
   }, [value])
 
-  // Filter accounts based on search input
-  const filteredAccounts = useMemo(() => {
-    if (!search) return accounts.slice(0, MAX_RESULTS)
+  // Index the active chart + the full BAS catalogue once per source change.
+  // Searching it per keystroke is then just substring checks over pre-folded
+  // haystacks (number + name + description, diacritics stripped).
+  const accountIndex = useMemo(
+    () => buildAccountIndex({ active: accounts, catalog }),
+    [accounts, catalog]
+  )
 
-    const trimmed = search.trim()
-    if (!trimmed) return accounts.slice(0, MAX_RESULTS)
-
-    const startsWithDigit = /^\d/.test(trimmed)
-
-    if (startsWithDigit) {
-      return accounts
-        .filter((a) => a.account_number.startsWith(trimmed))
-        .slice(0, MAX_RESULTS)
-    }
-
-    const lowerSearch = trimmed.toLowerCase()
-    return accounts
-      .filter((a) => a.account_name.toLowerCase().includes(lowerSearch))
-      .slice(0, MAX_RESULTS)
-  }, [accounts, search])
+  const filteredAccounts = useMemo(
+    () => searchAccounts(accountIndex, search),
+    [accountIndex, search]
+  )
 
   // Group filtered accounts by class
   const groupedAccounts = useMemo(() => {
-    const groups: { className: string; accounts: BASAccount[] }[] = []
-    const groupMap = new Map<string, BASAccount[]>()
+    const groups: { className: string; accounts: AccountSearchItem[] }[] = []
+    const groupMap = new Map<string, AccountSearchItem[]>()
 
     for (const account of filteredAccounts) {
       const className = getAccountClassName(account.account_class)
@@ -163,8 +178,14 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
     if (/^\d{4}$/.test(newValue)) {
       onChange(newValue)
       // Only treat as a commit when the value newly becomes this account, so
-      // editing an already-committed number doesn't keep stealing focus.
-      if (newValue !== value) onCommit?.(newValue)
+      // editing an already-committed number doesn't keep stealing focus. On
+      // commit, close the dropdown too — focus advances to the amount field, so
+      // a lingering open list would just cover the rows below.
+      if (newValue !== value) {
+        onCommit?.(newValue)
+        setIsOpen(false)
+        return
+      }
     }
     if (!isOpen) {
       setIsOpen(true)
@@ -176,6 +197,9 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
   }
 
   const handleBlur = () => {
+    // Close the dropdown as soon as focus leaves, so it never lingers open over
+    // the rows below when focus advances via keyboard (Enter/Tab).
+    setIsOpen(false)
     // Small delay to allow dropdown click to fire first. Keep any 4-digit
     // numeric value even if it's not in the currently-active chart — the
     // submit handler will prompt to activate it.
@@ -190,7 +214,7 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
   return (
     <div ref={containerRef} className="relative">
       <Input
-        ref={inputRef}
+        ref={setInputRef}
         value={search}
         onChange={handleInputChange}
         onFocus={handleFocus}
@@ -213,12 +237,12 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
               <div className="sticky top-0 px-2 py-1.5 text-xs font-semibold text-muted-foreground bg-muted border-b border-input">
                 {group.className}
               </div>
-              {group.accounts.map((account) => {
-                const flatIndex = flatList.indexOf(account)
+              {group.accounts.map((item) => {
+                const flatIndex = flatList.indexOf(item)
                 const isHighlighted = flatIndex === highlightedIndex
                 return (
                   <button
-                    key={account.account_number}
+                    key={item.account_number}
                     type="button"
                     data-highlighted={isHighlighted}
                     className={`w-full text-left px-2 py-1.5 text-sm cursor-pointer flex items-baseline gap-2 ${
@@ -226,12 +250,19 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
                     }`}
                     onMouseDown={(e) => {
                       e.preventDefault()
-                      selectAccount(account.account_number)
+                      selectAccount(item.account_number)
                     }}
                     onMouseEnter={() => setHighlightedIndex(flatIndex)}
                   >
-                    <span className="font-mono shrink-0">{account.account_number}</span>
-                    <span className="flex-1 min-w-0 break-words">{account.account_name}</span>
+                    <span className={`font-mono shrink-0 ${item.isActive ? '' : 'text-muted-foreground'}`}>
+                      {item.account_number}
+                    </span>
+                    <span className="flex-1 min-w-0 break-words">{item.account_name}</span>
+                    {!item.isActive && (
+                      <span className="shrink-0 self-center text-[11px] text-muted-foreground whitespace-nowrap">
+                        {notActivatedLabel}
+                      </span>
+                    )}
                   </button>
                 )
               })}

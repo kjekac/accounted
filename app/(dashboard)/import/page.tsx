@@ -813,6 +813,7 @@ const OB_STEP_LABELS: Record<OpeningBalanceStep, string> = {
 
 function OpeningBalanceFlow() {
   const { toast } = useToast()
+  const { dialogProps, confirm } = useDestructiveConfirm()
 
   const [obStep, setObStep] = useState<OpeningBalanceStep>('upload')
   const [obIsLoading, setObIsLoading] = useState(false)
@@ -917,12 +918,27 @@ function OpeningBalanceFlow() {
     setObStep('period')
   }, [])
 
-  const handleExecute = useCallback(async (fiscalPeriodId: string) => {
+  const handleExecute = useCallback(async (fiscalPeriodId: string, replace: boolean) => {
+    if (replace) {
+      const ok = await confirm({
+        title: 'Ersätt ingående balanser?',
+        description:
+          'Den befintliga IB-verifikationen makuleras (stornas) och en ny bokförs med beloppen du angett. Detta går inte att ångra automatiskt.',
+        confirmLabel: 'Ersätt',
+        variant: 'warning',
+      })
+      if (!ok) return
+    }
+
     setObIsLoading(true)
     setObError(null)
 
+    const endpoint = replace
+      ? '/api/import/opening-balance/correct'
+      : '/api/import/opening-balance/execute'
+
     try {
-      const res = await fetch('/api/import/opening-balance/execute', {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -938,11 +954,7 @@ function OpeningBalanceFlow() {
       const data = await res.json()
 
       if (!res.ok) {
-        if (res.status === 409) {
-          setObError(data.error || 'Perioden har redan ingående balanser')
-        } else {
-          setObError(data.error || 'Importen misslyckades')
-        }
+        setObError(getErrorMessage(data))
         return
       }
 
@@ -951,7 +963,7 @@ function OpeningBalanceFlow() {
 
       if (data.data.success) {
         toast({
-          title: 'Ingående balanser bokförda',
+          title: replace ? 'Ingående balanser korrigerade' : 'Ingående balanser bokförda',
           description: `${data.data.lines_created} kontorader skapades`,
         })
       }
@@ -960,7 +972,7 @@ function OpeningBalanceFlow() {
     } finally {
       setObIsLoading(false)
     }
-  }, [editedRows, toast])
+  }, [editedRows, toast, confirm])
 
   const handleNewImport = () => {
     setObStep('upload')
@@ -1047,6 +1059,8 @@ function OpeningBalanceFlow() {
           onNewImport={handleNewImport}
         />
       )}
+
+      <DestructiveConfirmDialog {...dialogProps} />
     </div>
   )
 }

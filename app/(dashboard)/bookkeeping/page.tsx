@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import JournalEntryList from '@/components/bookkeeping/JournalEntryList'
 import { type FormLine } from '@/components/bookkeeping/JournalEntryForm'
 import NewJournalEntryDialog, { type CopyPrefill } from '@/components/bookkeeping/NewJournalEntryDialog'
+import AgentSparkleButton from '@/components/agent/AgentSparkleButton'
 import { useToast } from '@/components/ui/use-toast'
 import { Plus } from 'lucide-react'
 import { PageHeader } from '@/components/ui/page-header'
@@ -123,21 +124,30 @@ export default function BookkeepingPage() {
       <PageHeader
         title={t('title')}
         action={
-          <Button
-            className="w-full sm:w-auto"
-            onClick={() => {
-              setCopyPrefill(null)
-              setShowNewEntry(true)
-            }}
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            {t('tab_new_entry')}
-            {nextVoucher && (
-              <span className="ml-1 text-primary-foreground/70 tabular-nums">
-                ({nextVoucher.series}{nextVoucher.next})
-              </span>
-            )}
-          </Button>
+          <div className="flex gap-2 w-full sm:w-auto">
+            <Button
+              className="w-full sm:w-auto"
+              onClick={() => {
+                setCopyPrefill(null)
+                setShowNewEntry(true)
+              }}
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              {t('tab_new_entry')}
+              {nextVoucher && (
+                <span className="ml-1 text-primary-foreground/70 tabular-nums">
+                  ({nextVoucher.series}{nextVoucher.next})
+                </span>
+              )}
+            </Button>
+            <AgentSparkleButton
+              intentId="verifikation.draft"
+              contextRef="verifikation:new"
+              label={t('create_with_assistant')}
+              size="default"
+              className="w-full sm:w-auto"
+            />
+          </div>
         }
       />
 
