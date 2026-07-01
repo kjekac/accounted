@@ -35,6 +35,7 @@ yarn-error.log*
 .env*
 !.env.example
 !.env.docker.example
+!.env.local.example
 
 # vercel
 .vercel

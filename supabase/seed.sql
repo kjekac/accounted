@@ -1,0 +1,2 @@
+-- Local development seed file.
+-- Keep this file safe to run repeatedly after `supabase db reset`.
