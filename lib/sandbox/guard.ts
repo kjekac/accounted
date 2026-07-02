@@ -1,5 +1,20 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
+import {
+  assertExternalAiProviderAllowed,
+  getAiProvider,
+  getLocalAiConfig,
+  isLocalOnlyMode,
+  type ExternalAiProvider,
+} from '@/lib/ai/provider'
+
+export {
+  assertExternalAiProviderAllowed,
+  getAiProvider,
+  getLocalAiConfig,
+  isLocalOnlyMode,
+  type ExternalAiProvider,
+}
 
 /**
  * Sandbox guard — returns true if the given company is a sandbox company

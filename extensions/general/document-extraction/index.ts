@@ -1,6 +1,7 @@
 import type { Extension } from '@/lib/extensions/types'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { extractInvoiceFields } from '@/extensions/general/invoice-inbox/lib/extract-invoice-fields'
+import { getAiProvider } from '@/lib/ai/provider'
 import { hasCapability } from '@/lib/entitlements/has-capability'
 import { CAPABILITY } from '@/lib/entitlements/keys'
 import { createLogger } from '@/lib/logger'
@@ -170,7 +171,9 @@ async function extractAndPersist(
         return
       }
       extractedData = data as unknown as Record<string, unknown>
-      model = process.env.BEDROCK_MODEL_ID || 'eu.anthropic.claude-sonnet-4-6'
+      model = getAiProvider() === 'bedrock'
+        ? process.env.BEDROCK_MODEL_ID || 'eu.anthropic.claude-sonnet-4-6'
+        : `skipped:ai_provider_${getAiProvider()}`
     } catch (err) {
       log.warn('extraction threw', {
         doc: document.id,

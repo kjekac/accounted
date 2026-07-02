@@ -15,6 +15,7 @@ import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import { z } from 'zod'
 import type { InvoiceExtractionResult } from '@/types'
 import { createLogger } from '@/lib/logger'
+import { assertBedrockAllowed, getAiProvider, getLocalAiConfig } from '@/lib/ai/provider'
 
 const log = createLogger('invoice-inbox-extract')
 
@@ -246,6 +247,24 @@ export async function extractInvoiceFields(
     return { data: emptyResult(), rawText: null }
   }
 
+  const aiProvider = getAiProvider()
+  if (aiProvider === 'none') {
+    log.info('AI extraction skipped — AI_PROVIDER=none', {
+      file_name_hash: createHash('sha256').update(input.fileName).digest('hex').slice(0, 12),
+    })
+    return { data: emptyResult(), rawText: null }
+  }
+
+  if (aiProvider === 'local') {
+    const local = getLocalAiConfig()
+    log.info('AI extraction skipped — local AI extraction endpoint not wired yet', {
+      file_name_hash: createHash('sha256').update(input.fileName).digest('hex').slice(0, 12),
+      has_local_endpoint: local.baseUrl != null,
+      local_model: local.model,
+    })
+    return { data: emptyResult(), rawText: null }
+  }
+
   if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
     log.warn('AWS Bedrock credentials missing — returning empty extraction', {
       file_name_hash: createHash('sha256').update(input.fileName).digest('hex').slice(0, 12),
@@ -253,6 +272,7 @@ export async function extractInvoiceFields(
     return { data: emptyResult(), rawText: null }
   }
 
+  assertBedrockAllowed()
   const client = new AnthropicBedrock({
     awsRegion: process.env.AWS_REGION || 'eu-north-1',
     awsAccessKey: process.env.AWS_ACCESS_KEY_ID,

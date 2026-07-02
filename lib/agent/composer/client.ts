@@ -1,4 +1,5 @@
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
+import { assertBedrockAllowed } from '@/lib/ai/provider'
 
 let cached: AnthropicBedrock | null = null
 
@@ -20,6 +21,7 @@ let cached: AnthropicBedrock | null = null
 // API.
 export function getAnthropic(): AnthropicBedrock {
   if (cached) return cached
+  assertBedrockAllowed()
   const awsRegion = process.env.AWS_REGION || 'eu-north-1'
   const awsAccessKey = process.env.AWS_ACCESS_KEY_ID
   const awsSecretKey = process.env.AWS_SECRET_ACCESS_KEY

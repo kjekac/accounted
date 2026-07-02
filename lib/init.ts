@@ -26,9 +26,13 @@ const REQUIRED_CORE_VARS = [
 const REQUIRED_EXTENSION_VARS: ReadonlyArray<readonly string[]> = [
   ['ENABLE_BANKING_APP_ID_PRODUCTION', 'ENABLE_BANKING_APP_ID'],
   ['ENABLE_BANKING_PRIVATE_KEY_PRODUCTION', 'ENABLE_BANKING_PRIVATE_KEY'],
-  ['ANTHROPIC_API_KEY'],
-  ['OPENAI_API_KEY'],
 ] as const
+
+const REQUIRED_AI_VARS_BY_PROVIDER: Readonly<Record<string, ReadonlyArray<readonly string[]>>> = {
+  bedrock: [['AWS_ACCESS_KEY_ID'], ['AWS_SECRET_ACCESS_KEY']],
+  local: [['LOCAL_AI_BASE_URL'], ['LOCAL_AI_MODEL']],
+  none: [],
+}
 
 function validateEnvironment(): void {
   // During builds (CI, Docker, Vercel), env vars may be absent or set to
@@ -49,6 +53,14 @@ function validateEnvironment(): void {
 
   const missingExt: string[] = []
   for (const aliases of REQUIRED_EXTENSION_VARS) {
+    if (!aliases.some((v) => !!process.env[v])) {
+      missingExt.push(aliases.join(' or '))
+    }
+  }
+
+  const aiProvider = (process.env.AI_PROVIDER ?? 'bedrock').trim().toLowerCase()
+  const aiVars = REQUIRED_AI_VARS_BY_PROVIDER[aiProvider] ?? []
+  for (const aliases of aiVars) {
     if (!aliases.some((v) => !!process.env[v])) {
       missingExt.push(aliases.join(' or '))
     }

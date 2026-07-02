@@ -172,12 +172,42 @@ Additionally, migration 048 schedules a `pg_cron` job inside the database that m
 
 ### AI Features
 
-The self-hosted Docker image includes these AI-powered extensions: receipt OCR, AI categorization, AI chat, and invoice inbox. To enable them, add API keys to your `.env`:
+The self-hosted Docker image includes these AI-powered surfaces: assistant chat, onboarding composer, document field extraction, and AI-backed categorization paths. They are controlled by `AI_PROVIDER`:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...    # Required for all AI features
-OPENAI_API_KEY=sk-...           # Required for embedding-based features (categorization, chat)
+AI_PROVIDER=none     # No model calls. Assistant/document extraction unavailable; composer uses fallback.
+AI_PROVIDER=bedrock  # Current behavior: AWS Bedrock Claude models.
+AI_PROVIDER=local    # Only a local model endpoint is allowed.
 ```
+
+For Bedrock, set AWS credentials and leave direct Anthropic/OpenAI keys unset:
+
+```bash
+AI_PROVIDER=bedrock
+AWS_REGION=eu-north-1
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+```
+
+For local-only use, make the policy explicit and do not set external AI credentials:
+
+```bash
+AI_PROVIDER=local
+LOCAL_ONLY=true
+LOCAL_AI_BASE_URL=http://127.0.0.1:11434/v1
+LOCAL_AI_MODEL=llama3.1
+LOCAL_AI_TIMEOUT_MS=30000
+```
+
+If `AI_PROVIDER=local` is set without `LOCAL_AI_BASE_URL`, the app fails closed for Bedrock/OpenAI construction and degrades cleanly: deterministic classification and bookkeeping still work, onboarding composer falls back, and the assistant/document extraction surfaces are unavailable until a local endpoint is wired.
+
+For a strict local-only deployment, leave these unset unless you intentionally enable the related external feature:
+
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, Bedrock model env vars
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+- `ENABLE_BANKING_APP_ID`, `ENABLE_BANKING_PRIVATE_KEY`
+- `FORTNOX_CLIENT_ID`, `FORTNOX_CLIENT_SECRET`, `FORTNOX_REDIRECT_URI`
+- other provider OAuth credentials for migration, bank sync, cloud backup, email, or tax filing
 
 Each user must individually grant AI consent in the UI before AI features activate (per GDPR requirements).
 

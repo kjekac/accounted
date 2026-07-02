@@ -14,6 +14,8 @@ vi.mock('@anthropic-ai/bedrock-sdk', () => {
 
 const ORIG_AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID
 const ORIG_AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY
+const ORIG_AI_PROVIDER = process.env.AI_PROVIDER
+const ORIG_LOCAL_AI_BASE_URL = process.env.LOCAL_AI_BASE_URL
 
 function aiResponse(json: string | object) {
   const text = typeof json === 'string' ? json : JSON.stringify(json)
@@ -55,6 +57,8 @@ const VALID_RESULT = {
 describe('extractInvoiceFields', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    process.env.AI_PROVIDER = 'bedrock'
+    delete process.env.LOCAL_AI_BASE_URL
     process.env.AWS_ACCESS_KEY_ID = 'test-key'
     process.env.AWS_SECRET_ACCESS_KEY = 'test-secret'
   })
@@ -74,6 +78,29 @@ describe('extractInvoiceFields', () => {
   it('returns empty result and skips API when AWS creds are missing', async () => {
     delete process.env.AWS_ACCESS_KEY_ID
     delete process.env.AWS_SECRET_ACCESS_KEY
+    const { data } = await extractInvoiceFields({
+      buffer: Buffer.from('%PDF'),
+      mimeType: 'application/pdf',
+      fileName: 'f.pdf',
+    })
+    expect(data.totals.total).toBeNull()
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('returns empty result and skips API when AI_PROVIDER=none', async () => {
+    process.env.AI_PROVIDER = 'none'
+    const { data } = await extractInvoiceFields({
+      buffer: Buffer.from('%PDF'),
+      mimeType: 'application/pdf',
+      fileName: 'f.pdf',
+    })
+    expect(data.totals.total).toBeNull()
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('returns empty result and skips Bedrock when AI_PROVIDER=local', async () => {
+    process.env.AI_PROVIDER = 'local'
+    process.env.LOCAL_AI_BASE_URL = 'http://127.0.0.1:11434/v1'
     const { data } = await extractInvoiceFields({
       buffer: Buffer.from('%PDF'),
       mimeType: 'application/pdf',
@@ -188,5 +215,9 @@ describe('extractInvoiceFields', () => {
     else delete process.env.AWS_ACCESS_KEY_ID
     if (ORIG_AWS_SECRET_ACCESS_KEY) process.env.AWS_SECRET_ACCESS_KEY = ORIG_AWS_SECRET_ACCESS_KEY
     else delete process.env.AWS_SECRET_ACCESS_KEY
+    if (ORIG_AI_PROVIDER) process.env.AI_PROVIDER = ORIG_AI_PROVIDER
+    else delete process.env.AI_PROVIDER
+    if (ORIG_LOCAL_AI_BASE_URL) process.env.LOCAL_AI_BASE_URL = ORIG_LOCAL_AI_BASE_URL
+    else delete process.env.LOCAL_AI_BASE_URL
   })
 })

@@ -110,8 +110,15 @@ The self-hosted image ships with all extensions enabled (except Enable Banking, 
 ### AI Features (ai-categorization, ai-chat, receipt-ocr, invoice-inbox)
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
+AI_PROVIDER=none      # no external AI calls
+# AI_PROVIDER=bedrock # AWS Bedrock
+# AI_PROVIDER=local   # local endpoint only
+# LOCAL_ONLY=true
+# LOCAL_AI_BASE_URL=http://127.0.0.1:11434/v1
+# LOCAL_AI_MODEL=llama3.1
+# AWS_REGION=eu-north-1
+# AWS_ACCESS_KEY_ID=...
+# AWS_SECRET_ACCESS_KEY=...
 ```
 
 ### Email (invoice sending, reminders)

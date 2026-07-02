@@ -21,6 +21,14 @@ export function friendlyModelError(err: unknown): string {
   const raw = err instanceof Error ? err.message : ''
   const text = `${name} ${raw}`.toLowerCase()
   if (
+    name === 'AiProviderUnavailableError' ||
+    text.includes('ai_provider=none') ||
+    text.includes('ai_provider=local') ||
+    text.includes('local_only=true')
+  ) {
+    return 'Assistenten är inte aktiverad i den här installationen.'
+  }
+  if (
     status === 429 ||
     text.includes('throttl') ||
     text.includes('too many') ||
