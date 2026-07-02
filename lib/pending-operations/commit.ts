@@ -26,6 +26,7 @@ import {
   createCreditNoteJournalEntry,
 } from '@/lib/bookkeeping/invoice-entries'
 import { createJournalEntry, findFiscalPeriod, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
+import { coerceDimensionsBag } from '@/lib/bookkeeping/dimension-resolver'
 import { cancelOrphanedPaymentEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
 import { runWithActor } from '@/lib/bookkeeping/actor-context-node'
 import type { CommitActor } from '@/lib/bookkeeping/actor-context'
@@ -2667,6 +2668,9 @@ function normalizeVoucherLines(raw: unknown): CreateJournalEntryLineInput[] {
       amount_in_currency: line.amount_in_currency !== undefined ? Number(line.amount_in_currency) : undefined,
       exchange_rate: line.exchange_rate !== undefined ? Number(line.exchange_rate) : undefined,
       tax_code: line.tax_code ? String(line.tax_code) : undefined,
+      // Boundary-validated with the same constraints as the Zod line schema —
+      // staged payloads must not bypass API-layer validation (SOC 2 PI1.1).
+      dimensions: coerceDimensionsBag(line.dimensions),
       cost_center: line.cost_center ? String(line.cost_center) : undefined,
       project: line.project ? String(line.project) : undefined,
     }
