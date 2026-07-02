@@ -35,6 +35,10 @@ export default function EditDraftEntryDialog({ entry, open, onOpenChange, onUpda
       debit_amount: Number(l.debit_amount) > 0 ? String(l.debit_amount) : '',
       credit_amount: Number(l.credit_amount) > 0 ? String(l.credit_amount) : '',
       line_description: l.line_description || '',
+      // Carry the line's dimensions into the form — the PATCH replaces all
+      // lines, so omitting this would silently strip existing tags.
+      dimensions:
+        l.dimensions && Object.keys(l.dimensions).length > 0 ? { ...l.dimensions } : undefined,
     }))
 
   return (

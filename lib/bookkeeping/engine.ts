@@ -14,7 +14,11 @@ import {
   JournalEntryNotFoundError,
 } from '@/lib/bookkeeping/errors'
 import { resolveDefaultSeriesForSource } from '@/lib/bookkeeping/voucher-series-resolver'
-import { normalizeLineDimensions, lineDimensionColumns } from '@/lib/bookkeeping/dimension-resolver'
+import {
+  normalizeLineDimensions,
+  lineDimensionColumns,
+  validateEntryDimensions,
+} from '@/lib/bookkeeping/dimension-resolver'
 import { backfillStandardBASAccounts } from '@/lib/bookkeeping/account-backfill'
 import { syncInvoiceStatusFromPaymentEntry, isPaymentSourceType } from '@/lib/bookkeeping/payment-sync'
 import { getActor } from '@/lib/bookkeeping/actor-context'
@@ -224,6 +228,13 @@ export async function createDraftEntry(
     throw new JournalEntryNotBalancedError(balance.totalDebit, balance.totalCredit, 'draft')
   }
 
+  // Soft dimension validation (dimensions plan PR3): free for untagged
+  // entries; free-text passthrough unless company_settings.dimensions_enabled;
+  // enabled companies get registry validation with a typed Swedish rejection.
+  // Runs before any insert so a rejection leaves no orphan rows. Reversal/
+  // storno/correction paths bypass this — they copy posted data verbatim.
+  await validateEntryDimensions(supabase, companyId, input.lines)
+
   // Validate that entry_date falls within the selected fiscal period
   const { data: period, error: periodError } = await supabase
     .from('fiscal_periods')
@@ -396,6 +407,10 @@ export async function updateDraftEntry(
   if (!balance.valid) {
     throw new JournalEntryNotBalancedError(balance.totalDebit, balance.totalCredit, 'draft')
   }
+
+  // Same soft dimension validation as createDraftEntry — before any write, so
+  // a rejection leaves both the header and the existing lines untouched.
+  await validateEntryDimensions(supabase, companyId, input.lines)
 
   // Entry date must fall within the selected fiscal period.
   const { data: period, error: periodError } = await supabase

@@ -10,12 +10,14 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
-import { Plus, Trash2, AlertTriangle, Loader2, Lock, CalendarPlus, Eraser } from 'lucide-react'
+import { Plus, Trash2, AlertTriangle, Loader2, Lock, CalendarPlus, Eraser, Tags } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import { JournalEntryReviewContent } from '@/components/bookkeeping/JournalEntryReviewContent'
 import DocumentUploadZone from '@/components/bookkeeping/DocumentUploadZone'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
+import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
 import { loadBasCatalog, type CatalogAccount } from '@/lib/bookkeeping/bas-catalog-client'
 import BookingTemplatePicker from '@/components/bookkeeping/BookingTemplatePicker'
 import CreatePeriodDialog from '@/components/bookkeeping/CreatePeriodDialog'
@@ -53,6 +55,8 @@ export interface FormLine {
   currency?: string
   amount_in_currency?: number
   exchange_rate?: number
+  /** SIE dimension map {sie_dim_no: object_code}, e.g. {"1":"KS01","6":"P001"}. */
+  dimensions?: Record<string, string>
 }
 
 interface Props {
@@ -106,6 +110,20 @@ export default function JournalEntryForm({
   const [description, setDescription] = useState(initialDescription ?? '')
   const [notes, setNotes] = useState(initialNotes ?? '')
   const [showNotes, setShowNotes] = useState(false)
+  // Dimension tagging (kostnadsställe/projekt). The affordances render only
+  // when company_settings.dimensions_enabled — a UI-visibility gate; lines
+  // that already carry dimensions (e.g. a draft being edited) still round-trip
+  // untouched when the toggle is off.
+  const [dimensionsEnabled, setDimensionsEnabled] = useState(false)
+  const [showDims, setShowDims] = useState(false)
+  // Header-level default dims ("gäller alla rader"). The per-row maps on
+  // `lines` are the ONE source of truth — this state only drives the header
+  // comboboxes; setHeaderDimension writes the default through to the rows.
+  const [headerDims, setHeaderDims] = useState<Record<string, string>>({})
+  // Which row's dimension popover is open (desktop table), and its container
+  // for the outside-click close.
+  const [dimPopoverRow, setDimPopoverRow] = useState<number | null>(null)
+  const dimPopoverRef = useRef<HTMLDivElement | null>(null)
   const [lines, setLines] = useState<FormLine[]>(
     initialLines ?? [{ ...BLANK_LINE }, { ...BLANK_LINE }]
   )
@@ -193,14 +211,16 @@ export default function JournalEntryForm({
     fetchPeriods()
     fetchAccounts()
     loadBasCatalog().then(setCatalog).catch(() => {/* search degrades to the active chart */})
-    // Fetch default voucher series from company settings — prefer the
-    // per-source-type mapping when present; fall back to the legacy
-    // default_voucher_series, then to 'A'.
-    // In edit mode the draft's own series is pre-filled — never override it
-    // from the company defaults.
-    if (!embedded && !editEntryId) {
-      fetch('/api/settings').then(r => r.json()).then(({ data }) => {
-        if (!data) return
+    // Company settings power two things here: dimensions_enabled gates the
+    // tagging affordances (all modes, incl. the TransactionBookingDialog
+    // embed), and the default voucher series seeds the standalone form —
+    // prefer the per-source-type mapping when present; fall back to the legacy
+    // default_voucher_series, then to 'A'. In edit mode the draft's own series
+    // is pre-filled — never override it from the company defaults.
+    fetch('/api/settings').then(r => r.json()).then(({ data }) => {
+      if (!data) return
+      setDimensionsEnabled(data.dimensions_enabled === true)
+      if (!embedded && !editEntryId) {
         const effectiveSourceType = sourceType ?? 'manual'
         const perSource = resolveDefaultSeriesForSource(
           data as { default_voucher_series_per_source_type?: Record<string, string> | null } | null,
@@ -208,8 +228,8 @@ export default function JournalEntryForm({
         )
         const fallback = data.default_voucher_series || 'A'
         setVoucherSeries(perSource !== 'A' ? perSource : fallback)
-      }).catch(() => {/* keep 'A' */})
-    }
+      }
+    }).catch(() => {/* keep 'A' + hidden dimension affordances */})
   }, [embedded, sourceType, editEntryId])
 
   // Auto-select period when entry date changes
@@ -346,14 +366,94 @@ export default function JournalEntryForm({
     }
   }, [accountsKey, entryDate])
 
+  // New rows inherit the current header default (a row without a per-row
+  // override follows the header — see setHeaderDimension).
+  const makeBlankLine = useCallback(
+    (): FormLine =>
+      Object.keys(headerDims).length > 0
+        ? { ...BLANK_LINE, dimensions: { ...headerDims } }
+        : { ...BLANK_LINE },
+    [headerDims]
+  )
+
   const addLine = () => {
-    setLines([...lines, { ...BLANK_LINE }])
+    setLines([...lines, makeBlankLine()])
   }
 
   const removeLine = (index: number) => {
     if (lines.length <= 2) return
     setLines(lines.filter((_, i) => i !== index))
+    // Keep the open dimension popover attached to the same row after the splice.
+    setDimPopoverRow((r) => (r === null ? r : r === index ? null : r > index ? r - 1 : r))
   }
+
+  /**
+   * Header default write-through. Inheritance rule: a row inherits dimension
+   * `dimNo` iff its current value equals the previous header default (unset
+   * counts as equal to an unset default). Inheriting rows follow the change
+   * (including clearing); rows whose value differs are per-row overrides and
+   * are left untouched. A row explicitly set to the same code as the header is
+   * indistinguishable from an inherited one and follows later header changes
+   * by design — the per-row maps stay the single source of truth.
+   */
+  const setHeaderDimension = (dimNo: string, code: string | null) => {
+    const prev = headerDims[dimNo]
+    const next = code?.trim() || undefined
+    setHeaderDims((h) => {
+      const out = { ...h }
+      if (next) out[dimNo] = next
+      else delete out[dimNo]
+      return out
+    })
+    setLines((ls) =>
+      ls.map((l) => {
+        if (l.dimensions?.[dimNo] !== prev) return l // per-row override — keep
+        const dims = { ...(l.dimensions ?? {}) }
+        if (next) dims[dimNo] = next
+        else delete dims[dimNo]
+        return { ...l, dimensions: Object.keys(dims).length > 0 ? dims : undefined }
+      })
+    )
+  }
+
+  const updateLineDimension = (index: number, dimNo: string, code: string | null) => {
+    setLines((ls) =>
+      ls.map((l, i) => {
+        if (i !== index) return l
+        const dims = { ...(l.dimensions ?? {}) }
+        const trimmed = code?.trim()
+        if (trimmed) dims[dimNo] = trimmed
+        else delete dims[dimNo]
+        return { ...l, dimensions: Object.keys(dims).length > 0 ? dims : undefined }
+      })
+    )
+  }
+
+  // Compact per-row display, e.g. "KS01 · P001" (dim number order).
+  const compactDims = (dims: Record<string, string>) =>
+    Object.entries(dims)
+      .filter(([, v]) => v)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([, v]) => v)
+      .join(' · ')
+
+  // Close the row dimension popover on outside click (same pattern as the
+  // comboboxes' own dropdowns; their option clicks preventDefault so a
+  // selection never counts as outside).
+  useEffect(() => {
+    if (dimPopoverRow === null) return
+    function handlePointerDown(e: MouseEvent | TouchEvent) {
+      if (dimPopoverRef.current && !dimPopoverRef.current.contains(e.target as Node)) {
+        setDimPopoverRow(null)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('touchstart', handlePointerDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('touchstart', handlePointerDown)
+    }
+  }, [dimPopoverRow])
 
   const updateLine = (index: number, field: keyof FormLine, value: string) => {
     const updated = [...lines]
@@ -437,9 +537,9 @@ export default function JournalEntryForm({
       if (!last) return prev
       const trailingBlank =
         last.account_number === '' && last.debit_amount === '' && last.credit_amount === ''
-      return trailingBlank ? prev : [...prev, { ...BLANK_LINE }]
+      return trailingBlank ? prev : [...prev, makeBlankLine()]
     })
-  }, [lines])
+  }, [lines, makeBlankLine])
 
   // Inline (bare) review: move focus to the confirm button when it opens so
   // Enter posts — parity with the ConfirmationDialog's autoFocusConfirm.
@@ -518,6 +618,7 @@ export default function JournalEntryForm({
     setNotes('')
     setUploadedFiles([])
     setLines([{ ...BLANK_LINE }, { ...BLANK_LINE }])
+    setHeaderDims({})
     setEntryCurrency('SEK')
     setExchangeRate('')
     setForeignAmount('')
@@ -587,6 +688,13 @@ export default function JournalEntryForm({
           debit_amount: parseFloat(l.debit_amount) || 0,
           credit_amount: parseFloat(l.credit_amount) || 0,
           line_description: l.line_description || undefined,
+        }
+
+        if (l.dimensions) {
+          const dims = Object.fromEntries(
+            Object.entries(l.dimensions).filter(([, v]) => typeof v === 'string' && v.trim() !== '')
+          )
+          if (Object.keys(dims).length > 0) base.dimensions = dims
         }
 
         if (l.currency) {
@@ -675,6 +783,7 @@ export default function JournalEntryForm({
       setNotes('')
       setUploadedFiles([])
       setLines([{ ...BLANK_LINE }, { ...BLANK_LINE }])
+      setHeaderDims({})
       setEntryCurrency('SEK')
       setExchangeRate('')
       setForeignAmount('')
@@ -762,6 +871,7 @@ export default function JournalEntryForm({
       setNotes('')
       setUploadedFiles([])
       setLines([{ ...BLANK_LINE }, { ...BLANK_LINE }])
+      setHeaderDims({})
       setEntryCurrency('SEK')
       setExchangeRate('')
       setForeignAmount('')
@@ -995,6 +1105,15 @@ export default function JournalEntryForm({
               + {t('internal_note')}
             </button>
           )}
+          {dimensionsEnabled && !showDims && (
+            <button
+              type="button"
+              onClick={() => setShowDims(true)}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              + {t('add_dimensions')}
+            </button>
+          )}
         </div>
 
         {isForeign && (
@@ -1054,6 +1173,19 @@ export default function JournalEntryForm({
               rows={2}
               maxLength={2000}
             />
+          </div>
+        )}
+
+        {/* Header default dims — writes through to all rows without a per-row
+            override (see setHeaderDimension for the inheritance rule). */}
+        {dimensionsEnabled && showDims && (
+          <div className="max-w-md space-y-1">
+            <LineDimensionFields
+              dimensions={headerDims}
+              onChange={setHeaderDimension}
+              inputClassName="h-8"
+            />
+            <p className="text-xs text-muted-foreground">{t('dimensions_apply_all_hint')}</p>
           </div>
         )}
 
@@ -1141,6 +1273,12 @@ export default function JournalEntryForm({
                 />
               </div>
             </div>
+            {dimensionsEnabled && (
+              <LineDimensionFields
+                dimensions={line.dimensions}
+                onChange={(dimNo, code) => updateLineDimension(index, dimNo, code)}
+              />
+            )}
             {/^\d{4}$/.test(line.account_number) && (
               <div className="flex justify-end text-xs text-muted-foreground tabular-nums pt-0.5">
                 {accountBalances[line.account_number] === null || accountBalances[line.account_number] === undefined ? (
@@ -1220,6 +1358,13 @@ export default function JournalEntryForm({
                     placeholder={t('line_description_placeholder')}
                     className="h-8"
                   />
+                  {line.dimensions &&
+                    Object.keys(line.dimensions).length > 0 &&
+                    (line.account_number || line.debit_amount || line.credit_amount) && (
+                      <Badge variant="outline" className="mt-1 font-mono text-[11px] font-normal">
+                        {compactDims(line.dimensions)}
+                      </Badge>
+                    )}
                 </td>
                 <td className="py-1.5 px-1">
                   <Input
@@ -1261,15 +1406,61 @@ export default function JournalEntryForm({
                   })()}
                 </td>
                 <td className="py-1.5">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeLine(index)}
-                    disabled={lines.length <= 2}
-                    className="h-8 w-8 p-0 min-h-[44px] min-w-[44px]"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  <div className="flex items-center justify-end">
+                    {dimensionsEnabled && (
+                      <div
+                        className="relative"
+                        ref={dimPopoverRow === index ? dimPopoverRef : undefined}
+                      >
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDimPopoverRow(dimPopoverRow === index ? null : index)}
+                          className={`h-8 w-8 p-0 min-h-[44px] min-w-[44px] ${
+                            line.dimensions && Object.keys(line.dimensions).length > 0
+                              ? 'text-foreground'
+                              : 'text-muted-foreground'
+                          }`}
+                          aria-label={t('row_dimensions_aria')}
+                          aria-expanded={dimPopoverRow === index}
+                          title={t('row_dimensions_aria')}
+                        >
+                          <Tags className="h-3.5 w-3.5" />
+                        </Button>
+                        {dimPopoverRow === index && (
+                          <div
+                            className="absolute right-0 top-full z-50 mt-1 w-64 rounded-md border bg-card p-3 shadow-md"
+                            onKeyDown={(e) => {
+                              // The comboboxes preventDefault their own Escape
+                              // (closing their dropdown) — only an unhandled
+                              // Escape closes the popover.
+                              if (e.key === 'Escape' && !e.defaultPrevented) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                setDimPopoverRow(null)
+                              }
+                            }}
+                          >
+                            <LineDimensionFields
+                              stacked
+                              dimensions={line.dimensions}
+                              onChange={(dimNo, code) => updateLineDimension(index, dimNo, code)}
+                              inputClassName="h-8"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeLine(index)}
+                      disabled={lines.length <= 2}
+                      className="h-8 w-8 p-0 min-h-[44px] min-w-[44px]"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}

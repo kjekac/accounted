@@ -3351,7 +3351,10 @@
     "fill_balance_tooltip": "Double-click to fill the balancing amount",
     "fill_balance_hint": "Tip: double-click debit or credit to fill the remaining difference.",
     "review_month_changed": "Note: different month than the previous voucher ({prev} → {current}).",
-    "review_period_locked": "This period is closed or locked — posting may be rejected."
+    "review_period_locked": "This period is closed or locked — posting may be rejected.",
+    "add_dimensions": "Cost centre/Project",
+    "dimensions_apply_all_hint": "Applies to all rows without their own tag.",
+    "row_dimensions_aria": "Cost centre/project for this row"
   },
   "chart_of_accounts": {
     "class_1": "Assets",

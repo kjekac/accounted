@@ -1,4 +1,24 @@
 import { NextResponse } from 'next/server'
+import { DimensionValidationError } from './dimension-errors'
+
+// ============================================================================
+// Dimension validation error — class lives in ./dimension-errors.ts (pure
+// module, no next/server) because dimension-resolver.ts is reachable from
+// client bundles via lib/api/schemas.ts. Re-exported here so this file stays
+// the single import surface for all typed bookkeeping errors.
+// ============================================================================
+
+export {
+  DIMENSION_VALIDATION_FAILED,
+  DimensionValidationError,
+  formatDimensionValidationIssue,
+  formatDimensionValidationIssues,
+  isDimensionValidationError,
+} from './dimension-errors'
+export type {
+  DimensionValidationIssue,
+  DimensionValidationReason,
+} from './dimension-errors'
 
 // ============================================================================
 // Error codes
@@ -310,7 +330,8 @@ export function isBookkeepingError(err: unknown): boolean {
     err instanceof MeaninglessCorrectionError ||
     err instanceof NoOpenPeriodForDateError ||
     err instanceof TargetPeriodClosedError ||
-    err instanceof TargetPeriodLockedError
+    err instanceof TargetPeriodLockedError ||
+    err instanceof DimensionValidationError
   )
 }
 
@@ -535,6 +556,21 @@ export function bookkeepingErrorResponse(err: unknown): NextResponse | null {
         },
       },
       { status: 409 }
+    )
+  }
+
+  if (err instanceof DimensionValidationError) {
+    // err.message is already the user-facing Swedish sentence(s) naming the
+    // offending code(s); details.issues carries the machine-readable list.
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: { issues: err.issues },
+        },
+      },
+      { status: 400 }
     )
   }
 

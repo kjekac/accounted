@@ -3351,7 +3351,10 @@
     "fill_balance_tooltip": "Dubbelklicka för att fylla i balanserande belopp",
     "fill_balance_hint": "Tips: dubbelklicka på debet eller kredit för att fylla i differensen.",
     "review_month_changed": "Obs: annan månad än föregående verifikat ({prev} → {current}).",
-    "review_period_locked": "Perioden är stängd eller låst — bokföring kan nekas."
+    "review_period_locked": "Perioden är stängd eller låst — bokföring kan nekas.",
+    "add_dimensions": "Kostnadsställe/Projekt",
+    "dimensions_apply_all_hint": "Gäller alla rader utan egen märkning.",
+    "row_dimensions_aria": "Kostnadsställe/Projekt för raden"
   },
   "chart_of_accounts": {
     "class_1": "Tillgångar",

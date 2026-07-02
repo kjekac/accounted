@@ -18,6 +18,8 @@
  */
 
 import { formatCurrency } from '@/lib/utils'
+// Pure module (no next/server) — safe for the client bundles this file lives in.
+import { formatDimensionValidationIssues } from '@/lib/bookkeeping/dimension-errors'
 import { getErrorEntry } from './structured-errors'
 
 type ErrorContext =
@@ -339,6 +341,20 @@ export function getErrorMessage(
 
       if (structured.code === 'INVALID_MAPPING_RESULT') {
         return 'Kontering saknas för transaktionen. Kontrollera bokföringsreglerna.'
+      }
+
+      if (structured.code === 'DIMENSION_VALIDATION_FAILED') {
+        // Prefer reconstructing the per-code Swedish sentences from the
+        // machine-readable issue list (present on both the dashboard and the
+        // v1/registry error envelopes); fall back to the message, which the
+        // engine already emits in Swedish naming the offending codes.
+        const details = structured.details as { issues?: unknown } | undefined
+        const formatted = formatDimensionValidationIssues(details?.issues)
+        if (formatted) return formatted
+        if (typeof structured.message === 'string' && structured.message.trim()) {
+          return structured.message
+        }
+        return 'Ett angivet kostnadsställe/projekt finns inte i dimensionsregistret eller är arkiverat. Skapa värdet i registret först.'
       }
 
       if (structured.code === 'NO_OPEN_PERIOD_FOR_DATE') {

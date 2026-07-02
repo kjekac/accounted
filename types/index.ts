@@ -1800,6 +1800,9 @@ export type PendingOperationType =
   // (returns a signing link); the user's signature in the browser files it.
   | 'submit_vat_declaration'
   | 'submit_agi'
+  // Dimensions PR3: stage a new dimension value (kostnadsställe/projekt object
+  // code, SIE #OBJEKT) — agents never silently mint reporting values.
+  | 'create_dimension_value'
 export type PendingOperationStatus = 'pending' | 'committing' | 'committed' | 'rejected'
 
 // 'agent_chat' = the in-app AI chat (DB CHECK widened in migration

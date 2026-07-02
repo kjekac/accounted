@@ -28,8 +28,10 @@ import RecordateEntryDialog from '@/components/bookkeeping/RecordateEntryDialog'
 import AgentSparkleButton from '@/components/agent/AgentSparkleButton'
 import CorrectionChain from '@/components/bookkeeping/CorrectionChain'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
+import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
+import { fetchDimensions, type DimensionDto } from '@/components/dimensions/types'
 import type { JournalEntry, JournalEntryLine } from '@/types'
 import type { UnderlagReference } from '@/lib/core/bookkeeping/journal-entry-references'
 
@@ -59,6 +61,25 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
   const [editingNotes, setEditingNotes] = useState(false)
   const [notesValue, setNotesValue] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
+  // Dimension registry, fetched once when any line carries a dimensions map —
+  // used to resolve display names for the line badges ('KS: Butik'); badges
+  // fall back to raw codes when the fetch fails or a code is unregistered.
+  const [registryDims, setRegistryDims] = useState<DimensionDto[] | null>(null)
+
+  useEffect(() => {
+    if (registryDims !== null) return
+    const entryLines = (entry?.lines || []) as JournalEntryLine[]
+    if (!entryLines.some((l) => l.dimensions && Object.keys(l.dimensions).length > 0)) return
+    let cancelled = false
+    fetchDimensions()
+      .then((dims) => {
+        if (!cancelled) setRegistryDims(dims)
+      })
+      .catch(() => {/* display-only — raw codes are fine */})
+    return () => {
+      cancelled = true
+    }
+  }, [entry, registryDims])
 
   const fetchData = useCallback(async () => {
     setIsLoading(true)
@@ -250,6 +271,39 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
 
   // Include current entry in the chain for the visualization
   const fullChain = [entry, ...chain]
+
+  // SIE dimension badge prefixes — statutory Swedish abbreviations
+  // (kostnadsställe/projekt); stays Swedish per .claude/rules/i18n.md.
+  const DIM_BADGE_PREFIX: Record<string, string> = { '1': 'KS', '6': 'PR' }
+
+  // Display-only dimension badges for a line (e.g. 'KS: Butik', 'PR: P001').
+  // Names resolve through the registry when loaded; raw codes otherwise.
+  const renderDimensionBadges = (line: JournalEntryLine) => {
+    const entries = Object.entries(line.dimensions ?? {})
+      .filter(([, code]) => code)
+      .sort(([a], [b]) => Number(a) - Number(b))
+    if (entries.length === 0) return null
+    return (
+      <div className="mt-1 flex flex-wrap gap-1">
+        {entries.map(([dimNo, code]) => {
+          const dim = registryDims?.find((d) => String(d.sie_dim_no) === dimNo)
+          const value = dim?.values.find((v) => v.code === code)
+          const prefix = DIM_BADGE_PREFIX[dimNo] ?? dim?.name ?? `Dim ${dimNo}`
+          const hasName = !!value && value.name !== '' && value.name !== value.code
+          return (
+            <Badge
+              key={dimNo}
+              variant="outline"
+              className="font-mono text-[11px] font-normal"
+              title={`${dim?.name ?? prefix} ${code}${hasName ? ` – ${value.name}` : ''}`}
+            >
+              {prefix}: {hasName ? value.name : code}
+            </Badge>
+          )
+        })}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-8">
@@ -575,7 +629,10 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
                   return (
                     <tr key={line.id} className="border-b last:border-0">
                       <td className="py-2"><AccountNumber number={line.account_number} showName /></td>
-                      <td className="py-2 text-muted-foreground">{line.line_description || ''}</td>
+                      <td className="py-2 text-muted-foreground">
+                        {line.line_description || ''}
+                        {renderDimensionBadges(line)}
+                      </td>
                       <td className="py-2 text-right tabular-nums">
                         {Number(line.debit_amount) > 0 && (
                           <>
@@ -629,6 +686,7 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
                     {line.line_description && (
                       <p className="text-xs text-muted-foreground truncate">{line.line_description}</p>
                     )}
+                    {renderDimensionBadges(line)}
                   </div>
                   <div className="text-right shrink-0 text-sm tabular-nums">
                     {Number(line.debit_amount) > 0 && (

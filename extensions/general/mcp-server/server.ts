@@ -36,6 +36,15 @@ import { findSkill, loadAllSkills, toSummary, SKILL_MIME_TYPE, SKILL_URI_PREFIX,
 import type { SkillTier } from './skills'
 import { getRiskLevel } from '@/lib/pending-operations/risk-tiers'
 import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/create-supplier'
+import { CreateDimensionValueParamsSchema } from '@/lib/pending-operations/schemas/dimension-value'
+import {
+  ensureCompanyDimensions,
+  fetchDimensionRegistry,
+  parseDimensionsArg,
+  mergeLineDimensions,
+  resolveDimensionBags,
+} from './dimensions'
+import Fuse from 'fuse.js'
 import { z } from 'zod'
 import {
   checkIdempotencyKey,
@@ -2110,7 +2119,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_get_agent_briefing',
     title: 'Get Agent Briefing',
-    description: 'Bootstrap this company\'s accountant context in one call: user_name, profile_summary, loaded atoms (metadata only — gnubok_load_skill for bodies), top-30 active memories. Call once at session start.',
+    description: 'Bootstrap this company\'s accountant context in one call: user_name, profile_summary, loaded atoms (metadata only — gnubok_load_skill for bodies), top-30 active memories, dimensions snapshot (when registered). Call once at session start.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2177,6 +2186,41 @@ export const tools: McpTool[] = [
             required: ['id', 'kind', 'content'],
           },
         },
+        dimensions: {
+          type: 'object',
+          additionalProperties: false,
+          description: 'Dimension registry snapshot (kostnadsställe/projekt). OMITTED when the company has none registered; presence means lines can be tagged via the dims bag on gnubok_create_voucher.',
+          properties: {
+            enabled: { type: 'boolean', description: 'When true, dims-bag values are validated against the registry.' },
+            dimensions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  sie_dim_no: { type: 'number' },
+                  name: { type: 'string' },
+                  active_value_count: { type: 'number' },
+                  top_values: {
+                    type: 'array',
+                    description: 'Up to 10 active values; full list via gnubok_list_dimension_values.',
+                    items: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        code: { type: 'string' },
+                        name: { type: 'string' },
+                      },
+                      required: ['code', 'name'],
+                    },
+                  },
+                },
+                required: ['sie_dim_no', 'name', 'active_value_count', 'top_values'],
+              },
+            },
+          },
+          required: ['enabled', 'dimensions'],
+        },
       },
       required: ['company', 'user_name', 'profile_summary', 'atoms', 'memory'],
     },
@@ -2187,7 +2231,25 @@ export const tools: McpTool[] = [
       openWorldHint: false,
     },
     async execute(_args, companyId, userId, supabase) {
-      const [profileRes, memoryRes, userRes, companyRes, settingsRes] = await Promise.all([
+      // Dimension registry is best-effort and cheap: one indexed read, skipped
+      // output when empty (most companies never register dimensions — lazy
+      // seeding means zero rows until first use). Errors never block the
+      // briefing.
+      const safeDimensionsRead = (async () => {
+        try {
+          return await supabase
+            .from('dimensions')
+            .select('id, sie_dim_no, name')
+            .eq('company_id', companyId)
+            .eq('is_active', true)
+            .order('sort_order', { ascending: true })
+            .order('sie_dim_no', { ascending: true })
+        } catch {
+          return { data: null, error: new Error('dimensions read failed') }
+        }
+      })()
+
+      const [profileRes, memoryRes, userRes, companyRes, settingsRes, dimensionsRes] = await Promise.all([
         supabase
           .from('agent_profiles')
           .select('profile_summary, horizontal_atoms, vertical_atoms, modifier_atoms')
@@ -2222,9 +2284,10 @@ export const tools: McpTool[] = [
           .maybeSingle(),
         supabase
           .from('company_settings')
-          .select('accounting_method')
+          .select('accounting_method, dimensions_enabled')
           .eq('company_id', companyId)
           .maybeSingle(),
+        safeDimensionsRead,
       ])
 
       if (profileRes.error) throw new Error(`Failed to load agent profile: ${profileRes.error.message}`)
@@ -2260,13 +2323,67 @@ export const tools: McpTool[] = [
       const companyRow = companyRes.data as
         | { name: string | null; org_number: string | null; entity_type: string | null }
         | null
+      const settingsRow = settingsRes.data as
+        | { accounting_method: string | null; dimensions_enabled?: boolean | null }
+        | null
       const company = {
         id: companyId,
         name: companyRow?.name ?? null,
         org_number: companyRow?.org_number ?? null,
         entity_type: companyRow?.entity_type ?? null,
-        accounting_method:
-          (settingsRes.data as { accounting_method: string | null } | null)?.accounting_method ?? null,
+        accounting_method: settingsRow?.accounting_method ?? null,
+      }
+
+      // Dimensions block — skipped entirely when the registry is empty so an
+      // untagged company pays nothing (and the agent isn't told about a
+      // feature with no data behind it).
+      const dimensionRows = (dimensionsRes.error ? [] : dimensionsRes.data ?? []) as Array<{
+        id: string
+        sie_dim_no: number
+        name: string
+      }>
+      let dimensionsBlock:
+        | {
+            enabled: boolean
+            dimensions: Array<{
+              sie_dim_no: number
+              name: string
+              active_value_count: number
+              top_values: Array<{ code: string; name: string }>
+            }>
+          }
+        | undefined
+      if (dimensionRows.length > 0) {
+        try {
+          const { data: valueRows, error: valueErr } = await supabase
+            .from('dimension_values')
+            .select('dimension_id, code, name')
+            .eq('company_id', companyId)
+            .eq('is_active', true)
+            .order('code', { ascending: true })
+          if (!valueErr) {
+            const byDimension = new Map<string, Array<{ code: string; name: string }>>()
+            for (const v of (valueRows ?? []) as Array<{ dimension_id: string; code: string; name: string }>) {
+              const bucket = byDimension.get(v.dimension_id) ?? []
+              bucket.push({ code: v.code, name: v.name })
+              byDimension.set(v.dimension_id, bucket)
+            }
+            dimensionsBlock = {
+              enabled: settingsRow?.dimensions_enabled === true,
+              dimensions: dimensionRows.map((d) => {
+                const values = byDimension.get(d.id) ?? []
+                return {
+                  sie_dim_no: d.sie_dim_no,
+                  name: d.name,
+                  active_value_count: values.length,
+                  top_values: values.slice(0, 10),
+                }
+              }),
+            }
+          }
+        } catch {
+          // Best-effort — a values-read failure just omits the block.
+        }
       }
 
       const atomIds = [
@@ -2309,6 +2426,7 @@ export const tools: McpTool[] = [
           content: m.content,
           relevance_score: m.relevance_score,
         })),
+        ...(dimensionsBlock ? { dimensions: dimensionsBlock } : {}),
       }
     },
   },
@@ -4332,6 +4450,314 @@ export const tools: McpTool[] = [
       if (error) throw new Error(`Database error: ${error.message}`)
 
       return { accounts: data ?? [], count: data?.length ?? 0 }
+    },
+  },
+
+  // ── Dimensions (kostnadsställe/projekt) ──────────────────────
+
+  {
+    name: 'gnubok_list_dimensions',
+    title: 'List Dimensions (Kostnadsställe/Projekt)',
+    description: 'List the dimension registry with values: 1 = kostnadsställe, 6 = projekt, plus custom dims. Call before tagging voucher lines via the dimensions bag on gnubok_create_voucher. System dims are seeded on first call.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        dimensions: {
+          type: 'array',
+          description: 'Registry entries keyed by sie_dim_no (the dims-bag key), each with its values. code = what goes in the bag; is_active false = archived (unusable on new lines).',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string' },
+              sie_dim_no: { type: 'number' },
+              name: { type: 'string' },
+              resets_annually: { type: 'boolean' },
+              is_system: { type: 'boolean' },
+              is_active: { type: 'boolean' },
+              sort_order: { type: 'number' },
+              values: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    id: { type: 'string' },
+                    code: { type: 'string' },
+                    name: { type: 'string' },
+                    is_active: { type: 'boolean' },
+                    start_date: { type: ['string', 'null'] },
+                    end_date: { type: ['string', 'null'] },
+                  },
+                  required: ['id', 'code', 'name', 'is_active', 'start_date', 'end_date'],
+                },
+              },
+            },
+            required: ['id', 'sie_dim_no', 'name', 'resets_annually', 'is_system', 'is_active', 'sort_order', 'values'],
+          },
+        },
+      },
+      required: ['dimensions'],
+    },
+    annotations: {
+      // The lazy ensure_company_dimensions seed is an idempotent get-or-create
+      // of the two system registry rows — semantically a read (the dashboard
+      // GET /api/dimensions does the same).
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(_args, companyId, _userId, supabase) {
+      await ensureCompanyDimensions(supabase, companyId)
+      const dimensions = await fetchDimensionRegistry(supabase, companyId)
+      return { dimensions }
+    },
+  },
+
+  {
+    name: 'gnubok_list_dimension_values',
+    title: 'List Dimension Values',
+    description: 'List values (SIE #OBJEKT codes) for one dimension, optionally fuzzy-matched by query. Use to find the right kostnadsställe/projekt code before tagging lines. sie_dim_no: 1 = kostnadsställe, 6 = projekt.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        sie_dim_no: { type: 'number', description: '1 = kostnadsställe, 6 = projekt, or a custom dim from gnubok_list_dimensions.' },
+        query: { type: 'string', description: 'Optional fuzzy search over code + name, ranked by confidence.' },
+        include_inactive: { type: 'boolean', description: 'Include archived values (default false).' },
+        limit: { type: 'number', description: 'Max results, 1–200 (default 50).' },
+      },
+      required: ['sie_dim_no'],
+    },
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        dimension: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            id: { type: 'string' },
+            sie_dim_no: { type: 'number' },
+            name: { type: 'string' },
+            resets_annually: { type: 'boolean' },
+            is_active: { type: 'boolean' },
+          },
+          required: ['id', 'sie_dim_no', 'name', 'resets_annually', 'is_active'],
+        },
+        values: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string' },
+              code: { type: 'string' },
+              name: { type: 'string' },
+              is_active: { type: 'boolean' },
+              start_date: { type: ['string', 'null'] },
+              end_date: { type: ['string', 'null'] },
+              confidence: { type: 'number', description: 'Fuzzy confidence 0–1; present only with query.' },
+            },
+            required: ['id', 'code', 'name', 'is_active', 'start_date', 'end_date'],
+          },
+        },
+        count: { type: 'number' },
+      },
+      required: ['dimension', 'values', 'count'],
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, _userId, supabase) {
+      const sieDimNo = Number(args.sie_dim_no)
+      if (!Number.isInteger(sieDimNo) || sieDimNo < 1) {
+        throw new Error('sie_dim_no must be a positive integer SIE dimension number (1 = kostnadsställe, 6 = projekt).')
+      }
+      const includeInactive = args.include_inactive === true
+      const limit = Math.min(Math.max(1, Number(args.limit) || 50), 200)
+      const query = typeof args.query === 'string' ? args.query.trim() : ''
+
+      await ensureCompanyDimensions(supabase, companyId)
+
+      const { data: dimension, error: dimError } = await supabase
+        .from('dimensions')
+        .select('id, sie_dim_no, name, resets_annually, is_active')
+        .eq('company_id', companyId)
+        .eq('sie_dim_no', sieDimNo)
+        .maybeSingle()
+      if (dimError) throw new Error(`Database error: ${dimError.message}`)
+      if (!dimension) {
+        throw new Error(
+          `Dimension ${sieDimNo} finns inte i registret. Anropa gnubok_list_dimensions för att se registrerade dimensioner.`,
+        )
+      }
+
+      let valuesQuery = supabase
+        .from('dimension_values')
+        .select('id, code, name, is_active, start_date, end_date')
+        .eq('company_id', companyId)
+        .eq('dimension_id', dimension.id)
+        .order('code', { ascending: true })
+      if (!includeInactive) valuesQuery = valuesQuery.eq('is_active', true)
+
+      const { data: rows, error: valuesError } = await valuesQuery
+      if (valuesError) throw new Error(`Database error: ${valuesError.message}`)
+      const all = (rows ?? []) as Array<{
+        id: string
+        code: string
+        name: string
+        is_active: boolean
+        start_date: string | null
+        end_date: string | null
+      }>
+
+      if (!query) {
+        const values = all.slice(0, limit)
+        return { dimension, values, count: values.length }
+      }
+
+      // Fuzzy ranking — same fuse.js setup as the resolve step so what this
+      // tool shows matches what a dims bag would resolve to.
+      const fuse = new Fuse(all, { keys: ['code', 'name'], includeScore: true, threshold: 0.4 })
+      const values = fuse
+        .search(query)
+        .slice(0, limit)
+        .map((hit) => ({
+          ...hit.item,
+          confidence: roundOre(1 - (hit.score ?? 1)),
+        }))
+      return { dimension, values, count: values.length }
+    },
+  },
+
+  {
+    name: 'gnubok_create_dimension_value',
+    title: 'Create Dimension Value',
+    description: 'Stage a new dimension value (kostnadsställe/projekt object code, SIE #OBJEKT) for user approval — agents never silently mint reporting values. Use when a dims-bag value has no registry match. sie_dim_no: 1 = kostnadsställe, 6 = projekt.',
+    outputSchema: STAGED_OPERATION_SCHEMA,
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        sie_dim_no: { type: 'number', description: '1 = kostnadsställe, 6 = projekt, or a custom dim.' },
+        code: {
+          type: 'string',
+          maxLength: 20,
+          pattern: '^[A-Za-z0-9\\u00C5\\u00C4\\u00D6\\u00E5\\u00E4\\u00F6_+\\-]{1,20}$',
+          description: 'Object code, strict Fortnox format: letters A–Ö, digits, _, + and -. Immutable after creation.',
+        },
+        name: { type: 'string', maxLength: 120, description: 'Human-readable name shown in registers and reports.' },
+        start_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Optional ISO start date; only on accumulating dims (projekt).' },
+        end_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Optional ISO end date ≥ start_date; only on accumulating dims.' },
+        dry_run: {
+          type: 'boolean',
+          description: 'If true, validate inputs and return the would-be preview without staging. No DB writes, no side-effects.',
+        },
+        idempotency_key: {
+          type: 'string',
+          description: 'Random per-operation UUID. Repeat calls with the same key + same payload return the original response (24h TTL). Different payload → IDEMPOTENCY_KEY_REUSE error.',
+        },
+      },
+      required: ['sie_dim_no', 'code', 'name'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, userId, supabase, actor) {
+      // Strip MCP control fields, then re-validate with the same Zod schema
+      // the commit executor uses (defense in depth, mirrors create_supplier).
+      const { dry_run, idempotency_key, ...valueArgs } = args
+      let params
+      try {
+        params = CreateDimensionValueParamsSchema.parse(valueArgs)
+      } catch (err) {
+        if (err instanceof z.ZodError) {
+          const issue = err.issues[0]
+          const path = issue?.path?.join('.') ?? 'params'
+          throw new Error(`Invalid ${path}: ${issue?.message ?? 'validation failed'}`)
+        }
+        throw err
+      }
+
+      await ensureCompanyDimensions(supabase, companyId)
+
+      // Pre-flight for a tight agent feedback loop; the executor re-checks all
+      // of this at commit time (the staged row is never trusted).
+      const { data: dimension, error: dimError } = await supabase
+        .from('dimensions')
+        .select('id, sie_dim_no, name, resets_annually')
+        .eq('company_id', companyId)
+        .eq('sie_dim_no', params.sie_dim_no)
+        .maybeSingle()
+      if (dimError) throw new Error(`Database error: ${dimError.message}`)
+      if (!dimension) {
+        throw new Error(
+          `Okänd dimension ${params.sie_dim_no}. Endast registrerade dimensioner kan få nya värden — ` +
+          'anropa gnubok_list_dimensions (1 = kostnadsställe och 6 = projekt skapas automatiskt).',
+        )
+      }
+      if (dimension.resets_annually && (params.start_date || params.end_date)) {
+        throw new Error(
+          `Start-/slutdatum är inte tillåtna på dimensionen "${dimension.name}" (nollställs årligen).`,
+        )
+      }
+
+      const { data: existing, error: existingError } = await supabase
+        .from('dimension_values')
+        .select('id, code, name, is_active')
+        .eq('company_id', companyId)
+        .eq('dimension_id', dimension.id)
+        .eq('code', params.code)
+        .maybeSingle()
+      if (existingError) throw new Error(`Database error: ${existingError.message}`)
+      if (existing?.is_active) {
+        throw new Error(
+          `Värdet "${params.code}" (${existing.name}) finns redan i ${dimension.name} — använd koden direkt i dimensions-baggen.`,
+        )
+      }
+      if (existing) {
+        throw new Error(
+          `"${params.code}" är arkiverat — återaktivera värdet i registret för att använda det.`,
+        )
+      }
+
+      return stagePendingOperation(supabase, companyId, userId, 'create_dimension_value',
+        `Nytt värde i ${dimension.name}: ${params.code} — ${params.name}`,
+        params,
+        {
+          sie_dim_no: dimension.sie_dim_no,
+          dimension_name: dimension.name,
+          code: params.code,
+          name: params.name,
+          start_date: params.start_date ?? null,
+          end_date: params.end_date ?? null,
+          will: 'create the value in the dimension registry so lines can be tagged with it',
+        },
+        actor,
+        {
+          description: 'Once approved, tag voucher lines with the new code via the dimensions bag on gnubok_create_voucher, or verify it with gnubok_list_dimension_values.',
+          tool: 'gnubok_list_dimension_values',
+          args: { sie_dim_no: dimension.sie_dim_no },
+        },
+        {
+          dryRun: Boolean(dry_run),
+          idempotencyKey: typeof idempotency_key === 'string' ? idempotency_key : undefined,
+        }
+      )
     },
   },
 
@@ -8808,6 +9234,11 @@ export const tools: McpTool[] = [
         fiscal_period_id: { type: 'string', description: 'UUID of fiscal period. If omitted, resolved from entry_date.' },
         voucher_series: { type: 'string', description: 'Single letter A–Z. Defaults to A.' },
         notes: { type: 'string', description: 'Internal notes (max 2000 chars) — visible on the verifikation but not on reports.' },
+        default_dimensions: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'Dimension tags {sie_dim_no: kod eller namn}, e.g. {"6":"P001"}, applied to every line not setting the key itself. Unknown values are rejected — never auto-created.',
+        },
         is_opening_balance: { type: 'boolean', description: 'Set true ONLY for a migrated ingående balans (IB). Marks the entry source_type=opening_balance so bank reconciliation excludes it from period movement. Requires every line to be a balance-sheet account (class 1/2) and entry_date = fiscal period start, else rejected. Defaults false.' },
         inbox_item_id: { type: 'string', description: 'Optional inbox item UUID to book directly. On confirm, the inbox item is linked to the new verifikat and its OCR document is attached to the journal entry. Fails if the inbox item is already booked (as voucher) or converted (to supplier invoice).' },
         lines: {
@@ -8824,8 +9255,13 @@ export const tools: McpTool[] = [
               amount_in_currency: { type: 'number', description: 'Original amount if currency is not SEK' },
               exchange_rate: { type: 'number' },
               tax_code: { type: 'string', description: 'Free-text tag — does NOT drive momsdeklaration ruta mapping. The BAS account number is what determines which ruta the line lands in (e.g. 2641 → ruta 48, 2614 → ruta 30). Pick the correct account first.' },
-              cost_center: { type: 'string' },
-              project: { type: 'string' },
+              dimensions: {
+                type: 'object',
+                additionalProperties: { type: 'string' },
+                description: 'Dimension tags {sie_dim_no: kod eller namn}, e.g. {"1":"KS01","6":"P001"}. Names resolve against the registry (high-confidence only, echoed). Wins per key over default_dimensions and cost_center/project.',
+              },
+              cost_center: { type: 'string', description: 'DEPRECATED alias for dimensions["1"].' },
+              project: { type: 'string', description: 'DEPRECATED alias for dimensions["6"].' },
             },
             required: ['account_number'],
           },
@@ -8848,7 +9284,7 @@ export const tools: McpTool[] = [
       }
 
       // Normalize so validateBalance + preview see consistent numeric types.
-      const lines = rawLines.map((l) => ({
+      const lines = rawLines.map((l, i) => ({
         account_number: String(l.account_number ?? ''),
         debit_amount: Number(l.debit_amount) || 0,
         credit_amount: Number(l.credit_amount) || 0,
@@ -8857,6 +9293,7 @@ export const tools: McpTool[] = [
         amount_in_currency: l.amount_in_currency !== undefined ? Number(l.amount_in_currency) : undefined,
         exchange_rate: l.exchange_rate !== undefined ? Number(l.exchange_rate) : undefined,
         tax_code: l.tax_code ? String(l.tax_code) : undefined,
+        dimensions: parseDimensionsArg(l.dimensions, `lines[${i}].dimensions`),
         cost_center: l.cost_center ? String(l.cost_center) : undefined,
         project: l.project ? String(l.project) : undefined,
       }))
@@ -8869,6 +9306,22 @@ export const tools: McpTool[] = [
           `Lines are not balanced: debits ${balance.totalDebit} SEK, credits ${balance.totalCredit} SEK. ` +
           'Both must be positive and equal.'
         )
+      }
+
+      // Resolve-don't-select: merge voucher-level default_dimensions under each
+      // line's own bag/aliases, then resolve codes AND natural-language names
+      // against the registry in ONE pass (zero queries when nothing is tagged;
+      // free-text passthrough while dimensions_enabled is off). Non-exact
+      // resolutions are echoed in the preview so the approver and the agent
+      // both see what "Villa Almgren tak" actually attached to.
+      const defaultDimensions = parseDimensionsArg(args.default_dimensions, 'default_dimensions')
+      const { bags: resolvedBags, resolutions: dimensionResolutions } = await resolveDimensionBags(
+        supabase,
+        companyId,
+        lines.map((l) => mergeLineDimensions(l, defaultDimensions)),
+      )
+      for (const [i, line] of lines.entries()) {
+        line.dimensions = resolvedBags[i]
       }
 
       // Resolve fiscal period. Two paths:
@@ -8953,6 +9406,7 @@ export const tools: McpTool[] = [
         debit_amount: l.debit_amount,
         credit_amount: l.credit_amount,
         line_description: l.line_description ?? null,
+        dimensions: l.dimensions ?? null,
       }))
 
       // Optional inbox-direct booking. Validate at staging so the agent gets a
@@ -9018,6 +9472,9 @@ export const tools: McpTool[] = [
           total_credit: balance.totalCredit,
           line_count: lines.length,
           lines: previewLines,
+          // Echoed for every non-exact dimension resolution (resolve-don't-
+          // select) so the agent can verify what a name attached to.
+          ...(dimensionResolutions.length > 0 ? { dimension_resolutions: dimensionResolutions } : {}),
           inbox_item_id: inboxItemId,
           document_attached: Boolean(inboxDocumentId),
           will: inboxItemId
@@ -9043,6 +9500,11 @@ export const tools: McpTool[] = [
       additionalProperties: false,
       properties: {
         entry_id: { type: 'string', description: 'Journal entry UUID OR voucher ref like "A-113". Prefer voucher refs: UUIDs reused from earlier tool output are frequently hallucinated by LLM callers.' },
+        default_dimensions: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'Dimension tags {sie_dim_no: kod eller namn}, e.g. {"6":"P001"}, applied to every replacement line not setting the key itself. Unknown values are rejected — never auto-created.',
+        },
         lines: {
           type: 'array',
           description: 'Replacement lines (≥ 2, balanced). Use the same accounts as the original where unchanged.',
@@ -9057,8 +9519,13 @@ export const tools: McpTool[] = [
               amount_in_currency: { type: 'number' },
               exchange_rate: { type: 'number' },
               tax_code: { type: 'string', description: 'Free-text tag — does NOT drive momsdeklaration ruta. Pick the correct BAS account first.' },
-              cost_center: { type: 'string' },
-              project: { type: 'string' },
+              dimensions: {
+                type: 'object',
+                additionalProperties: { type: 'string' },
+                description: 'Dimension tags {sie_dim_no: kod eller namn}. Names resolve against the registry (high-confidence only, echoed). Wins per key over default_dimensions and cost_center/project.',
+              },
+              cost_center: { type: 'string', description: 'DEPRECATED alias for dimensions["1"].' },
+              project: { type: 'string', description: 'DEPRECATED alias for dimensions["6"].' },
             },
             required: ['account_number'],
           },
@@ -9076,7 +9543,7 @@ export const tools: McpTool[] = [
         throw new Error('entry_id and at least two lines are required')
       }
 
-      const lines = rawLines.map((l) => ({
+      const lines = rawLines.map((l, i) => ({
         account_number: String(l.account_number ?? ''),
         debit_amount: Number(l.debit_amount) || 0,
         credit_amount: Number(l.credit_amount) || 0,
@@ -9085,6 +9552,7 @@ export const tools: McpTool[] = [
         amount_in_currency: l.amount_in_currency !== undefined ? Number(l.amount_in_currency) : undefined,
         exchange_rate: l.exchange_rate !== undefined ? Number(l.exchange_rate) : undefined,
         tax_code: l.tax_code ? String(l.tax_code) : undefined,
+        dimensions: parseDimensionsArg(l.dimensions, `lines[${i}].dimensions`),
         cost_center: l.cost_center ? String(l.cost_center) : undefined,
         project: l.project ? String(l.project) : undefined,
       }))
@@ -9095,6 +9563,19 @@ export const tools: McpTool[] = [
           `Correction lines not balanced: debits ${balance.totalDebit}, credits ${balance.totalCredit}. ` +
           'Both must be positive and equal.'
         )
+      }
+
+      // Resolve-don't-select — same one-pass registry resolution as
+      // gnubok_create_voucher (codes AND names; unknown/archived/ambiguous
+      // values reject with candidates; nothing is ever auto-created).
+      const defaultDimensions = parseDimensionsArg(args.default_dimensions, 'default_dimensions')
+      const { bags: resolvedBags, resolutions: dimensionResolutions } = await resolveDimensionBags(
+        supabase,
+        companyId,
+        lines.map((l) => mergeLineDimensions(l, defaultDimensions)),
+      )
+      for (const [i, line] of lines.entries()) {
+        line.dimensions = resolvedBags[i]
       }
 
       const entryId = await resolveJournalEntryRef(supabase, companyId, entryRef)
@@ -9182,8 +9663,10 @@ export const tools: McpTool[] = [
               debit_amount: l.debit_amount,
               credit_amount: l.credit_amount,
               line_description: l.line_description ?? null,
+              dimensions: l.dimensions ?? null,
             })),
           },
+          ...(dimensionResolutions.length > 0 ? { dimension_resolutions: dimensionResolutions } : {}),
           will: 'post a storno that mirrors the original, then post a new corrected entry, then mark the original as reversed (BFL 5 kap 5§)',
         },
         actor,

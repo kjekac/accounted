@@ -28,6 +28,7 @@ import {
   CannotCorrectNonPostedError,
   CannotReverseNonPostedError,
   CannotReverseStornoError,
+  DimensionValidationError,
   EntryAlreadyReversedError,
   EntryDateOutsideFiscalPeriodError,
   FiscalPeriodNotFoundError,
@@ -365,6 +366,9 @@ function extractBookkeepingDetails(err: unknown): { code: string; details?: unkn
   }
   if (err instanceof MeaninglessCorrectionError) {
     return { code: err.code, details: { reason: err.reason } }
+  }
+  if (err instanceof DimensionValidationError) {
+    return { code: err.code, details: { issues: err.issues } }
   }
   if (err instanceof NoOpenPeriodForDateError) {
     return { code: err.code, details: { date: err.date } }

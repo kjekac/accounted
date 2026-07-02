@@ -27,6 +27,11 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   // update sit at the lowest tier next to create_customer.
   create_article: 'low',
   update_article: 'low',
+  // Dimension values (kostnadsställe/projekt object codes, SIE #OBJEKT) are
+  // reporting master data — no journal impact, no external side-effect, no
+  // payment-routing surface. Staged (agents never silently mint reporting
+  // values) but at the lowest tier next to create_customer/create_article.
+  create_dimension_value: 'low',
 
   // ── Medium: reversible booking ─────────────────────────────────────
   categorize_transaction: 'medium',

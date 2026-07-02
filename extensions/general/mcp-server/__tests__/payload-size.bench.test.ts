@@ -64,9 +64,16 @@ describe('tools/list payload size guard', () => {
     //     plus per-line supplier-invoice overrides). Each new tool carries its
     //     inputSchema + staging _meta; the growth is genuine wire data, not prose,
     //     so descriptions are already at their trimmed floor (~180–220 chars).
+    //   * 40K → 42K with dimensions PR3: gnubok_list_dimensions +
+    //     gnubok_list_dimension_values (nested registry output schemas) + staged
+    //     gnubok_create_dimension_value (STAGED_OPERATION_SCHEMA + _meta), the
+    //     dims bag + default_dimensions on create_voucher/correct_entry, and the
+    //     agent-briefing dimensions block. Descriptions were trimmed first
+    //     (~200 tokens recovered); the remainder is schema structure agents
+    //     depend on for resolve-don't-select, not trimmable prose.
     // Long-term answer to growth is leaning harder on gnubok_search_tools — if this
     // fires again, prefer trimming descriptions or making a tool opt-in via search
     // before bumping further.
-    expect(approxTokens).toBeLessThan(40_000)
+    expect(approxTokens).toBeLessThan(42_000)
   })
 })

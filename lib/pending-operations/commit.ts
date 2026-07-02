@@ -74,6 +74,7 @@ import { createLogger } from '@/lib/logger'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/create-supplier'
 import { CreateArticleParamsSchema, UpdateArticleParamsSchema } from '@/lib/pending-operations/schemas/article'
+import { CreateDimensionValueParamsSchema } from '@/lib/pending-operations/schemas/dimension-value'
 import { BulkBookInboxSchema } from '@/lib/api/schemas'
 import { ensureArticleNumber } from '@/lib/articles/ensure-article-number'
 import { isValidRevenueAccount } from '@/lib/articles/validate-revenue-account'
@@ -431,6 +432,129 @@ async function commitCreateSupplier(
   await eventBus.emit({ type: 'supplier.created', payload: { supplier: data as Supplier, userId, companyId } })
 
   return { data: { supplier_id: data.id } }
+}
+
+/**
+ * Executor for the staged create_dimension_value operation
+ * (gnubok_create_dimension_value — dimensions PR3). Inserts a dimension value
+ * (SIE #OBJEKT) into the registry. Agents never silently mint reporting
+ * values: this always arrives via a human-approved pending_operation.
+ *
+ * Idempotent on duplicate code: a 23505 on (company_id, dimension_id, code)
+ * re-reads the existing row and reports success with already_existed=true, so
+ * a raced or re-committed approval never fails on "already there".
+ */
+async function commitCreateDimensionValue(
+  supabase: SupabaseClient,
+  _userId: string,
+  companyId: string,
+  params: Record<string, unknown>
+): Promise<ExecutorResult> {
+  // Defense in depth: re-validate the staged params at the commit boundary so
+  // a tampered pending_operations row cannot inject a non-portable code or
+  // malformed dates into the registry (ASVS V4.5) — mirrors commitCreateSupplier.
+  let validated
+  try {
+    validated = CreateDimensionValueParamsSchema.parse(params)
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      const issue = err.issues[0]
+      const path = issue?.path?.join('.') ?? 'params'
+      return { error: `Invalid ${path}: ${issue?.message ?? 'validation failed'}`, status: 400 }
+    }
+    throw err
+  }
+
+  // Get-or-create the system dims (1 = kostnadsställe, 6 = projekt) —
+  // idempotent lazy seeding. Custom dims must already exist in the registry:
+  // agents may stage new VALUES, never new dimensions.
+  if (validated.sie_dim_no === 1 || validated.sie_dim_no === 6) {
+    const { error: ensureError } = await supabase.rpc('ensure_company_dimensions', {
+      p_company_id: companyId,
+    })
+    if (ensureError) {
+      return { error: `Kunde inte skapa systemdimensionerna: ${ensureError.message}`, status: 500 }
+    }
+  }
+
+  const { data: dimension, error: dimError } = await supabase
+    .from('dimensions')
+    .select('id, sie_dim_no, name, resets_annually')
+    .eq('company_id', companyId)
+    .eq('sie_dim_no', validated.sie_dim_no)
+    .maybeSingle()
+
+  if (dimError) return { error: dimError.message, status: 500 }
+  if (!dimension) {
+    return {
+      error:
+        `Okänd dimension ${validated.sie_dim_no}. Endast registrerade dimensioner kan få nya värden ` +
+        '(1 = kostnadsställe och 6 = projekt skapas automatiskt; övriga skapas i registret).',
+      status: 400,
+    }
+  }
+
+  // Value dates only make sense on accumulating dimensions (projekt-style
+  // ranges) — mirrors POST /api/dimensions/[id]/values.
+  if (dimension.resets_annually && (validated.start_date || validated.end_date)) {
+    return {
+      error: `Start-/slutdatum är inte tillåtna på dimensionen "${dimension.name}" (nollställs årligen).`,
+      status: 400,
+    }
+  }
+
+  const { data: created, error: insertError } = await supabase
+    .from('dimension_values')
+    .insert({
+      company_id: companyId,
+      dimension_id: dimension.id,
+      code: validated.code,
+      name: validated.name,
+      start_date: validated.start_date ?? null,
+      end_date: validated.end_date ?? null,
+    })
+    .select('id, code, name, is_active')
+    .single()
+
+  if (insertError) {
+    if (insertError.code === '23505') {
+      // Duplicate code — treat the existing value as success (idempotency).
+      const { data: existing, error: existingError } = await supabase
+        .from('dimension_values')
+        .select('id, code, name, is_active')
+        .eq('company_id', companyId)
+        .eq('dimension_id', dimension.id)
+        .eq('code', validated.code)
+        .maybeSingle()
+      if (existingError || !existing) {
+        return { error: insertError.message, status: 500 }
+      }
+      return {
+        data: {
+          dimension_value_id: existing.id,
+          sie_dim_no: dimension.sie_dim_no,
+          dimension_name: dimension.name,
+          code: existing.code,
+          name: existing.name,
+          is_active: existing.is_active,
+          already_existed: true,
+        },
+      }
+    }
+    return { error: insertError.message, status: 500 }
+  }
+
+  return {
+    data: {
+      dimension_value_id: created.id,
+      sie_dim_no: dimension.sie_dim_no,
+      dimension_name: dimension.name,
+      code: created.code,
+      name: created.name,
+      is_active: created.is_active,
+      already_existed: false,
+    },
+  }
 }
 
 async function commitCreateTransaction(
@@ -3526,6 +3650,9 @@ async function commitPendingOperationInner(
         break
       case 'create_supplier':
         result = await commitCreateSupplier(supabase, userId, companyId, pendingOp.params)
+        break
+      case 'create_dimension_value':
+        result = await commitCreateDimensionValue(supabase, userId, companyId, pendingOp.params)
         break
       case 'create_invoice':
         result = await commitCreateInvoice(supabase, userId, companyId, pendingOp.params)

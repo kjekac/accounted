@@ -204,6 +204,11 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_list_fiscal_periods:             'reports:read',
   gnubok_get_reconciliation_status:       'reports:read',
   gnubok_list_accrual_schedules:          'reports:read',
+  // Dimensions (kostnadsställe/projekt) registry — reads next to the report
+  // tools; the staged value-create is a bookkeeping write (dimensions PR3).
+  gnubok_list_dimensions:                 'reports:read',
+  gnubok_list_dimension_values:           'reports:read',
+  gnubok_create_dimension_value:          'bookkeeping:write',
   // Document inbox
   gnubok_upload_document:                 'transactions:write',
   gnubok_list_inbox_items:                'transactions:read',
