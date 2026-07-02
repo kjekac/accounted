@@ -2678,13 +2678,13 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_categorize_transaction',
     title: 'Categorize Bank Transaction',
-    description: 'Categorize a bank transaction. Stages the journal entry; commit via gnubok_approve_pending_operation. vat_amount overrides computed moms; reverse_charge is rejected when the underlag shows the seller charged VAT.',
+    description: 'Categorize a bank transaction by allowed category enum only. Stages for approval; server code maps BAS accounts and rechecks duplicates, periods, and documents. vat_amount overrides computed moms; reverse_charge is rejected when underlag shows seller-charged VAT.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        transaction_id: { type: 'string', description: 'UUID of the transaction to categorize' },
-        category: { type: 'string', description: 'Transaction category', enum: [...VALID_CATEGORIES] },
+        transaction_id: { type: 'string', description: 'UUID of the transaction row to categorize. Never pass document_id or journal_entry_id.' },
+        category: { type: 'string', description: 'Transaction category. Must be exactly one enum value; do not invent categories or BAS accounts.', enum: [...VALID_CATEGORIES] },
         vat_treatment: { type: 'string', description: 'VAT treatment override. Defaults to standard_25 for business expenses. Set reverse_charge ONLY when the underlag confirms the seller did NOT charge VAT (omvänd skattskyldighet). An invoice with foreign VAT already debited is NOT reverse charge.', enum: [...VALID_VAT_TREATMENTS] },
         vat_amount: { type: 'number', exclusiveMinimum: 0, description: 'The underlag\'s exact moms (> 0) when it differs from rate × belopp — e.g. dricks carries no VAT. Requires a rate-based vat_treatment. Swedish moms only — foreign VAT is never deductible. For a 0-moms document use vat_treatment="exempt".' },
         notes: { type: 'string', description: 'Audit-trail context appended to the verifikation description. For category=representation use this to record deltagare + syfte ("Anna Andersson (Acme AB), kundmöte om Y"). For project work, include the project ref. Keep under 200 chars; pure metadata, not a re-description of the transaction.' },

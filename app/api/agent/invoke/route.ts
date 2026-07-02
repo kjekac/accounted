@@ -150,6 +150,7 @@ export async function POST(request: Request) {
 
   // Resolve / create the conversation row.
   let conversationId = body.conversation_id ?? null
+  let conversationContextRef = body.context_ref ?? null
   if (!conversationId) {
     const { data: newConv, error: convErr } = await supabase
       .from('agent_conversations')
@@ -169,6 +170,14 @@ export async function POST(request: Request) {
       )
     }
     conversationId = newConv.id as string
+  } else if (!conversationContextRef) {
+    const { data: existingConv } = await supabase
+      .from('agent_conversations')
+      .select('context_ref')
+      .eq('id', conversationId)
+      .eq('company_id', companyId)
+      .maybeSingle()
+    conversationContextRef = (existingConv?.context_ref as string | null) ?? null
   }
 
   // Compute the user message to send to Anthropic. On the first turn (no
@@ -239,6 +248,7 @@ export async function POST(request: Request) {
           firstName,
           intent,
           conversationId: convId,
+          contextRef: conversationContextRef,
           userMessage: effectiveUserMessage,
           userMessageHidden,
           persist: true,

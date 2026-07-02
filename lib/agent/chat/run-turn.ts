@@ -9,6 +9,7 @@ import {
   type ModelContentBlock,
   type ModelMessage,
 } from '@/lib/agent/model-provider'
+import { MalformedModelToolCallError } from '@/lib/agent/model-provider/types'
 import { buildSystemPrompt } from './system-prompt'
 import { createLogger } from '@/lib/logger'
 import { swedishToday } from '@/lib/utils'
@@ -109,6 +110,7 @@ interface RunTurnArgs {
   firstName: string | null
   intent: AgentIntent
   conversationId: string
+  contextRef?: string | null
   userMessage: string
   // Whether to persist this user message + assistant turn to agent_messages.
   // Tests use false to keep the DB untouched.
@@ -126,6 +128,7 @@ interface RunTurnArgs {
 // Safety net: bound the tool-loop iterations so a misbehaving model can't
 // run away forever. Real conversations rarely use more than 5-6 round trips.
 const MAX_TOOL_ITERATIONS = 12
+const MAX_MALFORMED_TOOL_REPAIRS = 2
 
 // Bound a tool result before it enters the model context. Read tools — above
 // all gnubok_get_document_content, which returns full OCR/PDF text — can return
@@ -171,6 +174,7 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
     firstName,
     intent,
     conversationId,
+    contextRef,
     userMessage,
     persist,
     userMessageHidden,
@@ -197,6 +201,7 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
   })
 
   const tools = await collectIntentTools(intent)
+  const toolsByName = new Map(tools.map((tool) => [tool.name, tool]))
 
   // 3 — assemble provider-neutral messages: prior history + new user turn.
   const history = await loadConversationMessages(supabase, conversationId)
@@ -219,6 +224,7 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
     ...history,
     newUserMessage,
   ]
+  const expectedTransactionId = expectedTransactionIdForIntent(intent, contextRef, messages)
 
   const actor: AgentActorContext = {
     type: 'agent_chat',
@@ -231,6 +237,7 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
 
   let assistantText = ''
   let iterations = 0
+  let malformedToolRepairAttempts = 0
 
   // Extended thinking ("tänka längre"): when the intent opts in, every model
   // call in the loop gets a reasoning channel so the agent reasons BEFORE it
@@ -274,6 +281,31 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
         },
       })
     } catch (err) {
+      if (
+        err instanceof MalformedModelToolCallError &&
+        malformedToolRepairAttempts < MAX_MALFORMED_TOOL_REPAIRS
+      ) {
+        malformedToolRepairAttempts++
+        messages.push({
+          role: 'user',
+          content: [
+            {
+              kind: 'text',
+              text: buildToolCallRepairPrompt(err, malformedToolRepairAttempts),
+            },
+          ],
+        })
+        continue
+      }
+      if (err instanceof MalformedModelToolCallError) {
+        const message = manualReviewMessage()
+        assistantText += message
+        emit({ kind: 'text_delta', delta: message })
+        if (persist) {
+          await persistMessage(supabase, conversationId, 'assistant', message)
+        }
+        break
+      }
       // Surface as a chat error so the UI clears its streaming state. Re-throw
       // to let the route's outer try/catch persist the failure if needed.
       // Normalize Bedrock throttling/timeout/5xx into a friendly Swedish line.
@@ -322,20 +354,32 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
         })
       }
 
-      const tool = agentToolRegistry.get(tu.name)
+      const tool = toolsByName.get(tu.name)
       if (!tool) {
-        toolResultBlocks.push({
+        const content = `Verktyget ${tu.name} är inte tillåtet för intent ${intent.id}. Använd bara verktygen i tools-parametern.`
+        emit({
           kind: 'tool_result',
-          toolCallId: tu.id,
-          isError: true,
-          content: `Verktyget ${tu.name} är inte registrerat.`,
+          tool_use_id: tu.id,
+          result: { error: content },
         })
+        toolResultBlocks.push(toolErrorBlock(tu.id, content))
+        continue
+      }
+
+      const validation = validateToolCall(tu, tool, intent, expectedTransactionId)
+      if (!validation.ok) {
+        emit({
+          kind: 'tool_result',
+          tool_use_id: tu.id,
+          result: { error: validation.message },
+        })
+        toolResultBlocks.push(toolErrorBlock(tu.id, validation.message))
         continue
       }
 
       try {
         const result = await tool.execute(
-          tu.input as Record<string, unknown>,
+          validation.input,
           companyId,
           userId,
           supabase,
@@ -410,12 +454,7 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
           tool_use_id: tu.id,
           result: { error: message },
         })
-        toolResultBlocks.push({
-          kind: 'tool_result',
-          toolCallId: tu.id,
-          isError: true,
-          content: message,
-        })
+        toolResultBlocks.push(toolErrorBlock(tu.id, message))
       }
     }
 
@@ -600,6 +639,178 @@ async function stampAgentMetadata(
 
 async function collectIntentTools(intent: AgentIntent): Promise<AgentTool[]> {
   return agentToolRegistry.getMany(intent.tools)
+}
+
+function toolErrorBlock(toolCallId: string, message: string): ModelContentBlock {
+  return {
+    kind: 'tool_result',
+    toolCallId,
+    isError: true,
+    content: wrapToolResult(toolCallId, boundToolResultText(JSON.stringify({ error: message }))),
+  }
+}
+
+function buildToolCallRepairPrompt(err: MalformedModelToolCallError, attempt: number): string {
+  return [
+    'Ditt senaste verktygsanrop hade ogiltig JSON i arguments och kunde inte köras.',
+    `Fel: ${err.message}`,
+    `Reparationsförsök ${attempt}/${MAX_MALFORMED_TOOL_REPAIRS}.`,
+    'Svara nu med antingen ett kort vanligt svar eller exakt ett verktygsanrop med strikt giltig JSON.',
+    'Regler: inga kommentarer i JSON, inga markdown-block, dubbla citattecken runt alla strängar, bara fält som finns i verktygets schema, och category/vat_treatment måste vara exakta enum-värden.',
+  ].join('\n')
+}
+
+function manualReviewMessage(): string {
+  return 'Jag kan inte tolka modellens verktygsanrop säkert. Den här behöver manuell granskning.'
+}
+
+function validateToolCall(
+  toolCall: Extract<ModelContentBlock, { kind: 'tool_call' }>,
+  tool: AgentTool,
+  intent: AgentIntent,
+  expectedTransactionId: string | null,
+): { ok: true; input: Record<string, unknown> } | { ok: false; message: string } {
+  if (!isRecord(toolCall.input)) {
+    return { ok: false, message: `Verktyget ${tool.name} kräver ett JSON-objekt som input.` }
+  }
+
+  const schemaError = validateJsonSchemaObject(toolCall.input, tool.inputSchema, tool.name)
+  if (schemaError) return { ok: false, message: schemaError }
+
+  if (intent.id === 'transaction.categorization') {
+    const txId = toolCall.input.transaction_id
+    if (typeof txId === 'string' && expectedTransactionId && txId !== expectedTransactionId) {
+      return {
+        ok: false,
+        message:
+          `Fel transaction_id för ${tool.name}: fick ${txId}, men den här konversationen gäller ${expectedTransactionId}. ` +
+          'Använd bara transaktionen som öppnades i hjälpfönstret.',
+      }
+    }
+  }
+
+  return { ok: true, input: toolCall.input }
+}
+
+function validateJsonSchemaObject(
+  input: Record<string, unknown>,
+  schema: Record<string, unknown>,
+  toolName: string,
+): string | null {
+  const properties = isRecord(schema.properties) ? schema.properties : {}
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((value): value is string => typeof value === 'string')
+    : []
+  const hasUsefulShape = Object.keys(properties).length > 0 || required.length > 0
+  if (!hasUsefulShape) return null
+
+  if (schema.type && schema.type !== 'object') {
+    return `Verktyget ${toolName} har ett ogiltigt server-schema: root måste vara object.`
+  }
+
+  for (const key of required) {
+    if (!(key in input)) return `Ogiltigt anrop till ${toolName}: saknar obligatoriskt fält "${key}".`
+  }
+
+  if (schema.additionalProperties === false) {
+    const allowed = new Set(Object.keys(properties))
+    for (const key of Object.keys(input)) {
+      if (!allowed.has(key)) {
+        return `Ogiltigt anrop till ${toolName}: fältet "${key}" finns inte i verktygets schema.`
+      }
+    }
+  }
+
+  for (const [key, value] of Object.entries(input)) {
+    const propertySchema = properties[key]
+    if (!isRecord(propertySchema)) continue
+    const error = validateJsonSchemaValue(value, propertySchema, `${toolName}.${key}`)
+    if (error) return error
+  }
+
+  return null
+}
+
+function validateJsonSchemaValue(
+  value: unknown,
+  schema: Record<string, unknown>,
+  path: string,
+): string | null {
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
+    return `Ogiltigt värde för ${path}: "${String(value)}" finns inte i enum-listan.`
+  }
+
+  if (schema.type) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type]
+    const ok = types.some((type) => jsonTypeMatches(value, type))
+    if (!ok) return `Ogiltig typ för ${path}: väntade ${types.join(' eller ')}.`
+  }
+
+  if (typeof value === 'number') {
+    if (typeof schema.minimum === 'number' && value < schema.minimum) {
+      return `Ogiltigt värde för ${path}: måste vara minst ${schema.minimum}.`
+    }
+    if (typeof schema.exclusiveMinimum === 'number' && value <= schema.exclusiveMinimum) {
+      return `Ogiltigt värde för ${path}: måste vara större än ${schema.exclusiveMinimum}.`
+    }
+    if (typeof schema.maximum === 'number' && value > schema.maximum) {
+      return `Ogiltigt värde för ${path}: måste vara högst ${schema.maximum}.`
+    }
+  }
+
+  if (typeof value === 'string') {
+    if (typeof schema.minLength === 'number' && value.length < schema.minLength) {
+      return `Ogiltigt värde för ${path}: texten är för kort.`
+    }
+    if (typeof schema.maxLength === 'number' && value.length > schema.maxLength) {
+      return `Ogiltigt värde för ${path}: texten är för lång.`
+    }
+  }
+
+  if (Array.isArray(value) && isRecord(schema.items)) {
+    for (let i = 0; i < value.length; i++) {
+      const error = validateJsonSchemaValue(value[i], schema.items, `${path}[${i}]`)
+      if (error) return error
+    }
+  }
+
+  if (isRecord(value) && isRecord(schema.properties)) {
+    return validateJsonSchemaObject(value, schema, path)
+  }
+
+  return null
+}
+
+function jsonTypeMatches(value: unknown, type: unknown): boolean {
+  if (type === 'string') return typeof value === 'string'
+  if (type === 'number') return typeof value === 'number' && Number.isFinite(value)
+  if (type === 'integer') return typeof value === 'number' && Number.isInteger(value)
+  if (type === 'boolean') return typeof value === 'boolean'
+  if (type === 'array') return Array.isArray(value)
+  if (type === 'object') return isRecord(value)
+  if (type === 'null') return value === null
+  return true
+}
+
+function expectedTransactionIdForIntent(
+  intent: AgentIntent,
+  contextRef: string | null | undefined,
+  messages: ModelMessage[],
+): string | null {
+  if (intent.id !== 'transaction.categorization') return null
+  if (contextRef?.startsWith('transaction:')) {
+    const txId = contextRef.slice('transaction:'.length).trim()
+    if (txId) return txId
+  }
+
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.kind !== 'text') continue
+      const match = block.text.match(/\btransaction_id:\s*([0-9A-Za-z_-]+)/)
+      if (match?.[1]) return match[1]
+    }
+  }
+  return null
 }
 
 // Reasoning blocks stay in the in-memory `messages` array when a provider
