@@ -6141,7 +6141,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_upload_document',
     title: 'Upload Document to Inbox',
-    description: 'Upload a PDF/JPEG/PNG/HEIC/WebP (max 20 MB) to the inbox. Runs deterministic field extraction on text-based PDFs.',
+    description: 'Upload a PDF/JPEG/PNG/HEIC/WebP (max 20 MB) to the inbox. Runs AI field extraction (Bedrock OCR) — requires the AI capability.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

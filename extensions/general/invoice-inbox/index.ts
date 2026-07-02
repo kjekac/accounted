@@ -26,6 +26,8 @@ import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { CreateSupplierInvoiceSchema, BookInboxItemDirectlySchema, BulkBookInboxSchema } from '@/lib/api/schemas'
 import { bulkBookMatchedInboxItems } from '@/lib/transactions/categorize-core'
+import { hasCapability, capabilityBlockedResponse } from '@/lib/entitlements/has-capability'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { checkInboxUploadRateLimit } from '@/lib/rate-limits/inbox'
 import { simpleParser } from 'mailparser'
@@ -217,15 +219,23 @@ async function uploadAndExtract(
   const gatedByPageCount =
     pageCount != null && pageCount > MAX_PAGES_FOR_AUTO_EXTRACT
   const sandbox = await isSandboxCompany(supabase, companyId)
-  // Skip-reason priority: sandbox > page-count > client opt-out. Sandbox
-  // wins because it's a hard cost-control rule, not a heuristic.
-  const skipReason: 'too_many_pages' | 'client_opt_out' | 'sandbox' | null = sandbox
-    ? 'sandbox'
-    : gatedByPageCount
-      ? 'too_many_pages'
-      : opts.skipExtraction
-        ? 'client_opt_out'
-        : null
+  // Paid-tier gate: AI document OCR (Bedrock, via extractInvoiceFields) is the
+  // `ai` capability. A company without it (free/manual tier) must never trigger
+  // paid extraction — we seed an empty skeleton exactly like the sandbox / BYO-
+  // extraction path, so the document is still stored and can be filled in
+  // manually. Highest priority (a hard paywall rule, not a heuristic).
+  const hasAiEntitlement = await hasCapability(supabase, companyId, CAPABILITY.ai)
+  // Skip-reason priority: no-AI-entitlement > sandbox > page-count > client opt-out.
+  const skipReason: 'no_ai_entitlement' | 'too_many_pages' | 'client_opt_out' | 'sandbox' | null =
+    !hasAiEntitlement
+      ? 'no_ai_entitlement'
+      : sandbox
+        ? 'sandbox'
+        : gatedByPageCount
+          ? 'too_many_pages'
+          : opts.skipExtraction
+            ? 'client_opt_out'
+            : null
   const skipExtraction = skipReason !== null
 
   // Bring-your-own-extraction: skip the Bedrock call entirely and seed an
@@ -804,11 +814,18 @@ export const invoiceInboxExtension: Extension = {
           const gatedByPageCount =
             pageCount != null && pageCount > MAX_PAGES_FOR_AUTO_EXTRACT
           const sandbox = await isSandboxCompany(ctx.supabase, ctx.companyId)
-          const skipReason: 'too_many_pages' | 'sandbox' | null = sandbox
-            ? 'sandbox'
-            : gatedByPageCount
-              ? 'too_many_pages'
-              : null
+          // Paid-tier gate: no `ai` capability → no Bedrock OCR (seed empty
+          // skeleton; the attached document is still stored). Same paywall as
+          // the shared upload path above.
+          const hasAiEntitlement = await hasCapability(ctx.supabase, ctx.companyId, CAPABILITY.ai)
+          const skipReason: 'no_ai_entitlement' | 'too_many_pages' | 'sandbox' | null =
+            !hasAiEntitlement
+              ? 'no_ai_entitlement'
+              : sandbox
+                ? 'sandbox'
+                : gatedByPageCount
+                  ? 'too_many_pages'
+                  : null
           const skipExtraction = skipReason !== null
 
           const { data: extracted } = skipExtraction
@@ -1105,6 +1122,13 @@ export const invoiceInboxExtension: Extension = {
             { error: 'Ingen bilaga att tolka om.' },
             { status: 400 },
           )
+        }
+
+        // Paid-tier gate: retry is an explicit "run AI OCR now" action, so a
+        // company without the `ai` capability is hard-blocked (403) rather than
+        // silently emptied — there is nothing to retry without the entitlement.
+        if (!(await hasCapability(ctx.supabase, ctx.companyId, CAPABILITY.ai))) {
+          return capabilityBlockedResponse(CAPABILITY.ai)
         }
 
         if (await isSandboxCompany(ctx.supabase, ctx.companyId)) {

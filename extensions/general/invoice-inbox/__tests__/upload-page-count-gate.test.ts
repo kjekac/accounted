@@ -29,6 +29,14 @@ vi.mock('@/lib/processing-history/append', () => ({
   appendProcessingHistory: vi.fn().mockResolvedValue(undefined),
 }))
 
+// Paid AI OCR gate: hasCapability('ai') decides whether Bedrock runs. Default
+// to entitled (true) so these page-count tests exercise the page-count reason,
+// not the no-AI one; the no-AI path is covered in sandbox-skip-extraction.test.ts.
+vi.mock('@/lib/entitlements/has-capability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/entitlements/has-capability')>()
+  return { ...actual, hasCapability: vi.fn().mockResolvedValue(true) }
+})
+
 import { extractInvoiceFields, emptyResult } from '@/extensions/general/invoice-inbox/lib/extract-invoice-fields'
 
 function findRoute(method: string, path: string) {

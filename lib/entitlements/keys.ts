@@ -57,18 +57,23 @@ export const PAID_CAPABILITIES: readonly CapabilityKey[] = [
 /**
  * Paid MCP tools → required capability. The MCP/agent path is a paid chokepoint
  * just like the HTTP routes, so the dispatcher gates these the same way it gates
- * API-key scope (see mcp-server `tools/call`). Only external-service WRITE tools
+ * API-key scope (see mcp-server `tools/call`). External-service WRITE tools
  * appear here: send_invoice (email) and the two Skatteverket submissions. The
  * read/local SKV tools (generate_agi, vat_declaration_validate/status, agi_status)
  * stay free — the §4 carve-out forbids blocking a statutory filing obligation.
  *
- * No MCP tool invokes AI or triggers bank sync, so those PAID capabilities have
- * no entry here — they are reachable only via already-gated HTTP routes/handlers.
+ * gnubok_upload_document invokes AI (Bedrock document OCR via
+ * extractInvoiceFields), so it is gated on CAPABILITY.ai — the same paywall the
+ * HTTP inbox upload/attach/retry paths enforce. Without this entry a free-tier
+ * API key (incl. the claude.ai connector's minted gnubok_sk_ key) could trigger
+ * paid AI extraction. bank_sync has no MCP tool (bank sync is cron/HTTP only).
  */
 export const MCP_TOOL_CAPABILITY_MAP: Readonly<Partial<Record<string, CapabilityKey>>> = {
   gnubok_send_invoice: CAPABILITY.email_send,
   gnubok_vat_declaration_submit: CAPABILITY.skatteverket,
   gnubok_agi_submit: CAPABILITY.skatteverket,
+  // AI document OCR (Bedrock) — the inbox's paid extraction, reachable via MCP.
+  gnubok_upload_document: CAPABILITY.ai,
 } as const
 
 /**

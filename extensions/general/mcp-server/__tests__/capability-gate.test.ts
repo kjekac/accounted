@@ -40,9 +40,11 @@ vi.mock('@/lib/auth/api-keys', async (importOriginal) => {
     validateApiKey: vi.fn().mockResolvedValue({
       userId: 'user-1',
       companyId: '11111111-1111-4111-8111-111111111111',
-      // Holds the SCOPES for all three paid tools so the scope gate passes and
-      // the CAPABILITY gate is what we exercise.
-      scopes: ['invoices:write', 'skatteverket:write', 'reports:read'],
+      // Holds the SCOPES for every paid tool under test (send_invoice →
+      // invoices:write, agi_submit → skatteverket:write, upload_document →
+      // transactions:write) so the scope gate passes and the CAPABILITY gate is
+      // what we exercise.
+      scopes: ['invoices:write', 'skatteverket:write', 'reports:read', 'transactions:write'],
       apiKeyId: 'key-1',
       apiKeyName: 'Test Key',
     }),
@@ -127,6 +129,24 @@ describe('MCP capability gate', () => {
     expect(isError).toBe(true)
     expect((payload.error as Record<string, unknown>).capability).toBe('skatteverket')
     expect(mockHasCapability).toHaveBeenCalledWith(expect.anything(), '11111111-1111-4111-8111-111111111111', 'skatteverket')
+  })
+
+  it('blocks gnubok_upload_document when ai is not entitled — the paid Bedrock OCR path', async () => {
+    // gnubok_upload_document runs extractInvoiceFields (Bedrock OCR) inline in
+    // its handler, NOT through the entitlement-gated uploadAndExtract. The
+    // central dispatch map is therefore the ONLY paywall on this transport —
+    // this test locks it so a free-tier connector key can never reach OCR.
+    mockHasCapability.mockResolvedValue(false)
+
+    const response = await handleMcpRequest(
+      mcpToolCall('gnubok_upload_document', { file_name: 'faktura.pdf', file_content_base64: 'JVBERi0=' }),
+    )
+    const { isError, payload } = await parsedToolResult(response)
+
+    expect(isError).toBe(true)
+    expect((payload.error as Record<string, unknown>).capability_blocked).toBe(true)
+    expect((payload.error as Record<string, unknown>).capability).toBe('ai')
+    expect(mockHasCapability).toHaveBeenCalledWith(expect.anything(), '11111111-1111-4111-8111-111111111111', 'ai')
   })
 
   it('lets a free tool through without consulting the capability gate', async () => {
