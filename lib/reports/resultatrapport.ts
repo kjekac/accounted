@@ -32,7 +32,12 @@ export async function generateResultatrapport(
   supabase: SupabaseClient,
   companyId: string,
   fiscalPeriodId: string,
-  options?: { fromDate?: string; toDate?: string }
+  options?: {
+    fromDate?: string
+    toDate?: string
+    /** SIE dim → code filter ({"6":"P001"}). P&L-safe: see trial-balance.ts. */
+    dimensions?: Record<string, string>
+  }
 ): Promise<ResultatrapportReport> {
   const { data: period } = await supabase
     .from('fiscal_periods')
@@ -51,6 +56,7 @@ export async function generateResultatrapport(
   const currentTb = await generateTrialBalance(supabase, companyId, fiscalPeriodId, {
     fromDate: options?.fromDate,
     toDate: options?.toDate,
+    dimensions: options?.dimensions,
   })
   const currentRows = filterPnl(currentTb.rows)
 
@@ -58,9 +64,13 @@ export async function generateResultatrapport(
   // compared against a full prior year would be misleading; until we ship a
   // proper "same window, prior year" comparison the cleanest move is to
   // drop the prior column entirely when the user narrows the range.
+  // Same rule for a dimension filter: project codes are time-limited under
+  // K2/K3 (registry start/end dates), so "this code last year" may be a
+  // different project entirely — drop the column rather than compare
+  // unrelated activity (#862 review).
   let priorRows: TrialBalanceRow[] = []
   let priorPeriodInfo: { start: string; end: string } | null = null
-  const isFullPeriod = !options?.fromDate && !options?.toDate
+  const isFullPeriod = !options?.fromDate && !options?.toDate && !options?.dimensions
   if (isFullPeriod) {
     // Prefer the explicit continuity chain; fall back to the period that ends
     // immediately before this one. The fallback keeps the comparison working
