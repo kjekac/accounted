@@ -16,6 +16,7 @@ import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { Employee } from '@/types'
 import { EmployeeBenefitsPanel } from '@/components/salary/EmployeeBenefitsPanel'
 import EmployeeTaxCard, { type EmployeeTaxValue } from '@/components/salary/EmployeeTaxCard'
+import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
 
 const EMPLOYMENT_LABELS: Record<string, string> = {
   employee: 'Anställd',
@@ -39,6 +40,11 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
   const [salaryType, setSalaryType] = useState('monthly')
   const [vacationRule, setVacationRule] = useState('procentregeln')
   const [tax, setTax] = useState<EmployeeTaxValue | null>(null)
+  // Default dimensions bag ({sie_dim_no: object_code}) proposed on the
+  // employee's salary-cost lines at booking. The fields render only when
+  // company_settings.dimensions_enabled — same UI gate as the voucher form.
+  const [dimensionsEnabled, setDimensionsEnabled] = useState(false)
+  const [dimensions, setDimensions] = useState<Record<string, string>>({})
 
   useEffect(() => {
     async function load() {
@@ -49,11 +55,29 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
         setEmploymentType(data.employment_type)
         setSalaryType(data.salary_type || 'monthly')
         setVacationRule(data.vacation_rule || 'procentregeln')
+        setDimensions(data.default_dimensions ?? {})
       }
       setLoading(false)
     }
     load()
   }, [id])
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then(({ data }) => setDimensionsEnabled(data?.dimensions_enabled === true))
+      .catch(() => {/* keep the dimension fields hidden */})
+  }, [])
+
+  function setDimension(dimNo: string, code: string | null) {
+    setDimensions((prev) => {
+      const next = { ...prev }
+      const value = code?.trim()
+      if (value) next[dimNo] = value
+      else delete next[dimNo]
+      return next
+    })
+  }
 
   async function handleSave(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -82,6 +106,8 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
       bank_account_number: form.get('bank_account_number') as string || undefined,
       vacation_rule: vacationRule,
       vacation_days_per_year: parseInt(form.get('vacation_days_per_year') as string) || 25,
+      // Always sent — {} clears the employee's default dimensions.
+      default_dimensions: dimensions,
     }
 
     // Include salary field matching the current salary_type
@@ -287,6 +313,21 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
             </div>
           </CardContent>
         </Card>
+
+        {/* Default dimensions (kostnadsställe/projekt) */}
+        {dimensionsEnabled && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Kostnadsställe / Projekt (standard)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <LineDimensionFields dimensions={dimensions} onChange={setDimension} disabled={!canWrite} />
+              <p className="text-xs text-muted-foreground">
+                Föreslås på lönekostnadsrader vid bokföring av lönekörningar.
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Tax */}
         <EmployeeTaxCard

@@ -154,7 +154,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     // 3. Load run + employees + line items for the engine.
     const { data: employees, error: empErr } = await ctx.supabase
       .from('salary_run_employees')
-      .select('*, employee:employees(employment_type), line_items:salary_line_items(*)')
+      .select('*, employee:employees(employment_type, default_dimensions), line_items:salary_line_items(*)')
       .eq('salary_run_id', salaryRunId)
     if (empErr) {
       return v1ErrorResponse(empErr, ctx.log, { requestId: ctx.requestId })
@@ -200,7 +200,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     // 4. Engine call. Strict-mode: any throw aborts before status flip.
     type EmpRow = {
       employee_id: string
-      employee: { employment_type: string } | null
+      employee: { employment_type: string; default_dimensions?: Record<string, string> } | null
       gross_salary: number
       tax_withheld: number
       net_salary: number
@@ -242,6 +242,8 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
           avgifter_rate: sre.avgifter_rate,
           vacation_accrual: sre.vacation_accrual,
           vacation_accrual_avgifter: sre.vacation_accrual_avgifter,
+          // Dimensions PR8: read-at-book from the employee row.
+          default_dimensions: sre.employee?.default_dimensions ?? undefined,
           line_items: (sre.line_items || []).map((li) => ({
             item_type: li.item_type,
             amount: li.amount,

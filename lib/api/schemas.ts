@@ -1682,6 +1682,9 @@ const EmployeeSchemaBase = z.object({
   vaxa_stod_eligible: z.boolean().default(false),
   vaxa_stod_start: isoDate.optional(),
   vaxa_stod_end: isoDate.optional(),
+  // Dimensions PR8: bag applied to the employee's P&L cost lines when a
+  // salary run is booked. {} clears (the UI always sends the field).
+  default_dimensions: DimensionsBagSchema.optional(),
 })
 
 export const CreateEmployeeSchema = EmployeeSchemaBase.superRefine((data, ctx) => {

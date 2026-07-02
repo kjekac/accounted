@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,6 +12,7 @@ import { ArrowLeft, Save } from 'lucide-react'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import EmployeeTaxCard, { type EmployeeTaxValue } from '@/components/salary/EmployeeTaxCard'
+import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
 
 function RequiredMark() {
   return <span className="text-destructive ml-0.5">*</span>
@@ -25,6 +26,11 @@ export default function NewEmployeePage() {
   const [salaryType, setSalaryType] = useState('monthly')
   const [personnummer, setPersonnummer] = useState('')
   const [vacationRule, setVacationRule] = useState('procentregeln')
+  // Default dimensions bag ({sie_dim_no: object_code}) proposed on the
+  // employee's salary-cost lines at booking. The fields render only when
+  // company_settings.dimensions_enabled — same UI gate as the voucher form.
+  const [dimensionsEnabled, setDimensionsEnabled] = useState(false)
+  const [dimensions, setDimensions] = useState<Record<string, string>>({})
   const [tax, setTax] = useState<EmployeeTaxValue>({
     f_skatt_status: 'a_skatt',
     is_sidoinkomst: false,
@@ -32,6 +38,23 @@ export default function NewEmployeePage() {
     tax_column: 1,
     tax_municipality: '',
   })
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then(({ data }) => setDimensionsEnabled(data?.dimensions_enabled === true))
+      .catch(() => {/* keep the dimension fields hidden */})
+  }, [])
+
+  function setDimension(dimNo: string, code: string | null) {
+    setDimensions((prev) => {
+      const next = { ...prev }
+      const value = code?.trim()
+      if (value) next[dimNo] = value
+      else delete next[dimNo]
+      return next
+    })
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -63,6 +86,8 @@ export default function NewEmployeePage() {
       bank_account_number: form.get('bank_account_number') as string || undefined,
       vacation_rule: vacationRule,
       vacation_days_per_year: parseInt(form.get('vacation_days_per_year') as string) || 25,
+      // Always sent — {} means no default dimensions.
+      default_dimensions: dimensions,
     }
 
     const res = await fetch('/api/salary/employees', {
@@ -231,6 +256,21 @@ export default function NewEmployeePage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Default dimensions (kostnadsställe/projekt) */}
+        {dimensionsEnabled && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Kostnadsställe / Projekt (standard)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <LineDimensionFields dimensions={dimensions} onChange={setDimension} />
+              <p className="text-xs text-muted-foreground">
+                Föreslås på lönekostnadsrader vid bokföring av lönekörningar.
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Tax */}
         <EmployeeTaxCard personnummer={personnummer} onChange={setTax} />

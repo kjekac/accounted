@@ -61,13 +61,15 @@ const EmployeeDetail = z.object({
   vaxa_stod_eligible: z.boolean(),
   vaxa_stod_start: z.string().nullable(),
   vaxa_stod_end: z.string().nullable(),
+  // Dimensions PR8: bag applied to the employee's P&L cost lines at booking.
+  default_dimensions: z.record(z.string(), z.string()),
   is_active: z.boolean(),
   created_at: z.string(),
   updated_at: z.string(),
 })
 
 const EMPLOYEE_DETAIL_COLUMNS =
-  'id, first_name, last_name, personnummer, employment_type, employment_start, employment_end, employment_degree, salary_type, monthly_salary, hourly_rate, tax_table_number, tax_column, tax_municipality, is_sidoinkomst, f_skatt_status, clearing_number, bank_account_number, vacation_rule, vacation_days_per_year, semestertillagg_rate, email, phone, address_line1, postal_code, city, vaxa_stod_eligible, vaxa_stod_start, vaxa_stod_end, is_active, created_at, updated_at'
+  'id, first_name, last_name, personnummer, employment_type, employment_start, employment_end, employment_degree, salary_type, monthly_salary, hourly_rate, tax_table_number, tax_column, tax_municipality, is_sidoinkomst, f_skatt_status, clearing_number, bank_account_number, vacation_rule, vacation_days_per_year, semestertillagg_rate, email, phone, address_line1, postal_code, city, vaxa_stod_eligible, vaxa_stod_start, vaxa_stod_end, default_dimensions, is_active, created_at, updated_at'
 
 /**
  * Shape returned by PATCH (success + dry-run preview) and by no-change PATCH.

@@ -68,6 +68,9 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [addEmployeeKey, setAddEmployeeKey] = useState(0)
   const [preferredPaymentFormat, setPreferredPaymentFormat] = useState<'bg_lb' | 'pain001'>('bg_lb')
+  // Gates the default-dimensions chips on the employee rows — same
+  // company_settings.dimensions_enabled UI gate as the voucher form.
+  const [dimensionsEnabled, setDimensionsEnabled] = useState(false)
   const [taxPayment, setTaxPayment] = useState<{
     tax_payment_file_generated_at: string | null
     tax_paid_at: string | null
@@ -103,6 +106,7 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
         if (data?.preferred_payment_format === 'pain001' || data?.preferred_payment_format === 'bg_lb') {
           setPreferredPaymentFormat(data.preferred_payment_format)
         }
+        setDimensionsEnabled(data?.dimensions_enabled === true)
       }
       setLoading(false)
     }
@@ -509,10 +513,17 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
               </TableHeader>
               <TableBody>
                 {employees.map(sre => {
-                  const employee = (sre as SalaryRunEmployee & { employee?: { first_name: string; last_name: string; personnummer: string } }).employee
+                  const employee = (sre as SalaryRunEmployee & { employee?: { first_name: string; last_name: string; personnummer: string; default_dimensions?: Record<string, string> } }).employee
                   const name = employee
                     ? `${employee.first_name} ${employee.last_name}`
                     : `Anställd ${sre.employee_id.slice(0, 8)}...`
+                  // Compact default-dimensions bag ({sie_dim_no: object_code}),
+                  // dim-number order (kostnadsställe "1" before projekt "6").
+                  const dims = employee?.default_dimensions ?? {}
+                  const dimLabel = Object.keys(dims)
+                    .sort((a, b) => Number(a) - Number(b))
+                    .map(k => dims[k])
+                    .join(' · ')
                   const taxValue = sre.tax_withheld_override ?? sre.tax_withheld
                   const avgifterValue = sre.avgifter_amount_override ?? sre.avgifter_amount
                   // Monthly salary is editable per run while the run is a draft.
@@ -531,6 +542,9 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
                         >
                           {name}
                         </Link>
+                        {dimensionsEnabled && dimLabel && (
+                          <Badge variant="secondary" className="ml-2 align-middle">{dimLabel}</Badge>
+                        )}
                         <span className="md:hidden block text-xs text-muted-foreground font-normal mt-0.5 tabular-nums">
                           {run.status === 'draft'
                             ? `Månadslön ${formatCurrency(sre.monthly_salary)}`

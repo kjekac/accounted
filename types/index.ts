@@ -3302,6 +3302,10 @@ export interface Employee {
   vaxa_stod_eligible: boolean
   vaxa_stod_start: string | null
   vaxa_stod_end: string | null
+  // Dimensions PR8: bag ({sie_dim_no: code}) applied to this employee's P&L
+  // cost lines when a salary run is booked. jsonb DEFAULT '{}'. Optional in
+  // TS for pre-migration fixtures.
+  default_dimensions?: Record<string, string>
   is_active: boolean
   created_at: string
   updated_at: string

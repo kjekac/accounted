@@ -8205,7 +8205,7 @@ export const tools: McpTool[] = [
       const activeOnly = args.active_only !== false
       let query = supabase
         .from('employees')
-        .select('id, first_name, last_name, personnummer, personnummer_last4, employment_type, monthly_salary, hourly_rate, employment_degree, tax_table_number, tax_column, salary_type, is_active')
+        .select('id, first_name, last_name, personnummer, personnummer_last4, employment_type, monthly_salary, hourly_rate, employment_degree, tax_table_number, tax_column, salary_type, default_dimensions, is_active')
         .eq('company_id', companyId)
       if (activeOnly) query = query.eq('is_active', true)
       const { data, error } = await query.order('last_name')

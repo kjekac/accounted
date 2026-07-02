@@ -429,6 +429,8 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
         vaxa_stod_eligible: body.vaxa_stod_eligible,
         vaxa_stod_start: body.vaxa_stod_start ?? null,
         vaxa_stod_end: body.vaxa_stod_end ?? null,
+        // Dimensions PR8: bag for the employee's P&L cost lines at booking.
+        default_dimensions: body.default_dimensions ?? {},
       })
       .select(EMPLOYEE_RESPONSE_COLUMNS)
       .single()
