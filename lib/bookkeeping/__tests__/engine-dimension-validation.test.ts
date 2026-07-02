@@ -145,10 +145,11 @@ describe('createDraftEntry — dimension validation wiring', () => {
     // Toggle checked once, registry never consulted (free-text passthrough).
     expect(queriedTables().filter((t) => t === 'company_settings')).toHaveLength(1)
     expect(queriedTables()).not.toContain('dimensions')
-    // The free-text tag still lands on the inserted lines (bag + mirror).
+    // The free-text tag still lands on the inserted lines (bag only — the
+    // project mirror is GENERATED at the database since the PR9 cutover).
     const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
     expect(lineRows[0].dimensions).toEqual({ '6': 'FRITEXT-PROJEKT' })
-    expect(lineRows[0].project).toBe('FRITEXT-PROJEKT')
+    expect('project' in lineRows[0]).toBe(false)
   })
 
   it('rejects an unknown code before ANY row is inserted (toggle on)', async () => {
@@ -194,8 +195,10 @@ describe('createDraftEntry — dimension validation wiring', () => {
     expect(entry.id).toBe('entry-1')
     const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
     expect(lineRows[0].dimensions).toEqual({ '1': 'KS01', '6': 'P001' })
-    expect(lineRows[0].cost_center).toBe('KS01')
-    expect(lineRows[0].project).toBe('P001')
+    // PR9 cutover: the payload must NOT name the generated mirror columns —
+    // an explicit value would make Postgres reject the insert.
+    expect('cost_center' in lineRows[0]).toBe(false)
+    expect('project' in lineRows[0]).toBe(false)
   })
 })
 

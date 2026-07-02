@@ -7,7 +7,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { normalizeLineDimensions, lineDimensionColumns } from '@/lib/bookkeeping/dimension-resolver'
+import { normalizeLineDimensions } from '@/lib/bookkeeping/dimension-resolver'
 import { importDimensionRegistry } from './sie-dimensions'
 import { createJournalEntry, reverseEntry } from '@/lib/bookkeeping/engine'
 import type {
@@ -1345,8 +1345,6 @@ export async function importVouchers(
       line_description: string | null
       sort_order: number
       dimensions: Record<string, string>
-      cost_center: string | null
-      project: string | null
     }[] = []
 
     for (let i = 0; i < batch.length; i++) {
@@ -1372,7 +1370,6 @@ export async function importVouchers(
           line_description: line.line_description,
           sort_order: lineIndex,
           dimensions: dims,
-          ...lineDimensionColumns(dims),
         })
       })
 

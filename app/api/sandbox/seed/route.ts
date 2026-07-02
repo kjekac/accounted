@@ -7,7 +7,6 @@ import { createLogger } from '@/lib/logger'
 import { checkRateLimit } from '@/lib/auth/rate-limit-http'
 import { truncateIp } from '@/lib/api/v1/with-api-v1'
 import { ensureSandboxAgentProfile } from '@/lib/sandbox/ensure-agent'
-import { lineDimensionColumns } from '@/lib/bookkeeping/dimension-resolver'
 
 // Anonymous sign-in is enabled in all environments so visitors can try the
 // product; a per-/24 cap on the seed endpoint keeps a single network from
@@ -463,8 +462,8 @@ export async function POST(request: Request) {
     // 10. Create journal entry lines. The P&L line carries demo dimensions
     // ({"1":"BUTIK","6":"P001"}) so the register's "antal taggade rader",
     // voucher-detail badges, and the dimension P&L report light up in the
-    // sandbox. Mirror columns derived via lineDimensionColumns — never set
-    // independently of the dimensions map.
+    // sandbox. cost_center/project are GENERATED from the bag since the PR9
+    // cutover — writing them explicitly would error.
     const revenueDims = { '1': 'BUTIK', '6': 'P001' }
     const { error: jelError } = await supabase
       .from('journal_entry_lines')
@@ -491,7 +490,6 @@ export async function POST(request: Request) {
           credit_amount: 15000,
           sort_order: 1,
           dimensions: revenueDims,
-          ...lineDimensionColumns(revenueDims),
         },
         {
           journal_entry_id: je1.id,

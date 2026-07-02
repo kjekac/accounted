@@ -16,7 +16,6 @@ import {
 import { resolveDefaultSeriesForSource } from '@/lib/bookkeeping/voucher-series-resolver'
 import {
   normalizeLineDimensions,
-  lineDimensionColumns,
   validateEntryDimensions,
 } from '@/lib/bookkeeping/dimension-resolver'
 import { backfillStandardBASAccounts } from '@/lib/bookkeeping/account-backfill'
@@ -183,7 +182,7 @@ export async function findFiscalPeriod(
 
 /**
  * Build line insert objects from input lines, resolving account IDs and
- * including tax_code, cost_center, project dimensions
+ * including tax_code and the dimensions bag
  */
 function buildLineInserts(
   entryId: string,
@@ -191,8 +190,9 @@ function buildLineInserts(
   accountIdMap: Map<string, string>
 ) {
   return lines.map((line, index) => {
-    // dimensions JSONB is the source of truth; cost_center/project are
-    // derived mirrors (dual-write window — see lib/bookkeeping/dimension-resolver.ts)
+    // dimensions JSONB is the single source of truth; cost_center/project
+    // are GENERATED columns derived from keys '1'/'6' since the PR9 cutover
+    // (20260702230000) — writing them explicitly would error.
     const dimensions = normalizeLineDimensions(line)
     return {
       journal_entry_id: entryId,
@@ -206,7 +206,6 @@ function buildLineInserts(
       line_description: line.line_description || null,
       tax_code: line.tax_code || null,
       dimensions,
-      ...lineDimensionColumns(dimensions),
       sort_order: index,
     }
   })

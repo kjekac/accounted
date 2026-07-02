@@ -1,13 +1,12 @@
 /**
- * Dimension resolver — the single place line dimensions are normalized and
- * mirrored (dev_docs/dimensions_implementation_plan.md).
+ * Dimension resolver — the single place line dimensions are normalized
+ * (dev_docs/dimensions_implementation_plan.md).
  *
  * Storage model: journal_entry_lines.dimensions is a JSONB map keyed by SIE
  * dimension number ({"1":"KS01","6":"P001"}) and is the single source of
- * truth. The legacy cost_center/project TEXT columns are deterministic mirrors
- * of keys '1'/'6' during the dual-write window (they become GENERATED columns
- * in a later migration). Every journal_entry_lines writer MUST derive the
- * mirror columns via lineDimensionColumns() — never set them independently.
+ * truth. Since the PR9 cutover (20260702230000) the cost_center/project
+ * columns are GENERATED ALWAYS from keys '1'/'6' — writers set only the
+ * bag; writing the mirror columns explicitly errors at the database.
  */
 
 import { z } from 'zod'
@@ -134,20 +133,9 @@ export function dimensionsBagKey(dimensions?: LineDimensions): string {
   )
 }
 
-/**
- * Derive the legacy mirror columns from the canonical map. Pure function —
- * divergence between `dimensions` and cost_center/project is impossible as
- * long as every writer goes through this.
- */
-export function lineDimensionColumns(dimensions: LineDimensions): {
-  cost_center: string | null
-  project: string | null
-} {
-  return {
-    cost_center: dimensions[DIM_COST_CENTER] ?? null,
-    project: dimensions[DIM_PROJECT] ?? null,
-  }
-}
+// lineDimensionColumns() was removed in the PR9 cutover: the mirror columns
+// are GENERATED ALWAYS from the bag at the database, so there is nothing for
+// TypeScript writers to derive — they set only `dimensions`.
 
 /**
  * Soft registry validation of the dimensions referenced by a set of entry

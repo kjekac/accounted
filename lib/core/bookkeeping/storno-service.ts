@@ -6,7 +6,7 @@ import type {
   JournalEntryLine,
 } from '@/types'
 import { validateBalance, getNextVoucherNumber } from '@/lib/bookkeeping/engine'
-import { normalizeLineDimensions, lineDimensionColumns } from '@/lib/bookkeeping/dimension-resolver'
+import { normalizeLineDimensions } from '@/lib/bookkeeping/dimension-resolver'
 import { backfillStandardBASAccounts } from '@/lib/bookkeeping/account-backfill'
 import { resolvePeriodStatusForDate } from '@/lib/core/bookkeeping/period-service'
 import {
@@ -287,7 +287,6 @@ export async function correctEntry(
       line_description: `Storno: ${line.line_description || ''}`,
       tax_code: line.tax_code || null,
       dimensions,
-      ...lineDimensionColumns(dimensions),
       sort_order: index,
     }
   })
@@ -372,7 +371,6 @@ export async function correctEntry(
         line_description: line.line_description || null,
         tax_code: line.tax_code || null,
         dimensions,
-        ...lineDimensionColumns(dimensions),
         sort_order: index,
       }
     })

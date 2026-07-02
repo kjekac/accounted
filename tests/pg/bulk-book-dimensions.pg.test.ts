@@ -12,9 +12,9 @@ import { getPool, withUserContext } from '@/tests/pg/setup'
  * Covers 20260702201000_bulk_book_transactions_dimensions (dimensions PR7):
  *
  *   - p_new_entry lines may carry a dimensions bag {sie_dim_no: code}. The
- *     RPC stores it on journal_entry_lines.dimensions AND derives the
- *     dual-write mirror columns cost_center/project from keys '1'/'6'
- *     (lineDimensionColumns contract — mirrors never set independently).
+ *     RPC stores it on journal_entry_lines.dimensions; cost_center/project
+ *     derive from keys '1'/'6' (GENERATED columns since the PR9 cutover —
+ *     the mirror assertions below now exercise the generation expression).
  *   - Bag normalization mirrors DimensionsBagSchema: non-canonical keys
  *     (leading zeros, non-numeric) and blank values are dropped; values are
  *     trimmed.

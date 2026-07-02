@@ -41,10 +41,10 @@ async function insertPostedTaggedEntry(params: {
   const dims = params.dimensions ?? {}
   const { rows } = await getPool().query<{ id: string }>(
     `INSERT INTO public.journal_entry_lines
-       (journal_entry_id, account_number, debit_amount, credit_amount, dimensions, cost_center, project)
-     VALUES ($1, '5010', 1000, 0, $2::jsonb, $3, $4)
+       (journal_entry_id, account_number, debit_amount, credit_amount, dimensions)
+     VALUES ($1, '5010', 1000, 0, $2::jsonb)
      RETURNING id`,
-    [entryId, JSON.stringify(dims), dims['1'] ?? null, dims['6'] ?? null],
+    [entryId, JSON.stringify(dims)],
   )
   await getPool().query(
     `INSERT INTO public.journal_entry_lines
@@ -207,12 +207,13 @@ describe('dimension retag carve-out (PR6)', () => {
       ).rejects.toThrow(/Cannot UPDATE lines of a posted journal entry/)
       await client.query('ROLLBACK')
 
-      // A pure dimension diff IS admitted under the GUC (the RPC's write shape).
+      // A pure dimension diff IS admitted under the GUC (the RPC's write
+      // shape). PR9: the bag alone — the generated mirrors recompute.
       await client.query('BEGIN')
       await client.query(`SELECT set_config('gnubok.allow_dimension_retag', 'true', true)`)
       await client.query(
         `UPDATE public.journal_entry_lines
-            SET dimensions = '{"6":"P001"}'::jsonb, project = 'P001'
+            SET dimensions = '{"6":"P001"}'::jsonb
           WHERE id = $1`,
         [lineId],
       )

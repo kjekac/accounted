@@ -1,11 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   normalizeLineDimensions,
-  lineDimensionColumns,
   coerceDimensionsBag,
   validateEntryDimensions,
-  DIM_COST_CENTER,
-  DIM_PROJECT,
 } from '@/lib/bookkeeping/dimension-resolver'
 // Imported from errors.ts on purpose: proves the re-export surface every
 // server consumer uses (the class itself lives in dimension-errors.ts).
@@ -63,10 +60,11 @@ describe('normalizeLineDimensions', () => {
     ).toEqual({ '6': 'P001' })
   })
 
-  it("canonicalizes leading-zero keys ('01' -> '1') so mirrors are derived", () => {
+  it("canonicalizes leading-zero keys ('01' -> '1') so the generated mirrors derive", () => {
+    // The DB generates cost_center/project from keys '1'/'6' (PR9 cutover) —
+    // '01' must land on '1' or the generated mirror misses the value.
     const dims = normalizeLineDimensions({ dimensions: { '01': 'KS01', '06': 'P001' } })
     expect(dims).toEqual({ '1': 'KS01', '6': 'P001' })
-    expect(lineDimensionColumns(dims)).toEqual({ cost_center: 'KS01', project: 'P001' })
   })
 
   it("clearing via a leading-zero key ('01': '') also clears the alias-filled '1'", () => {
@@ -120,24 +118,9 @@ describe('coerceDimensionsBag (boundary validator for staged payloads)', () => {
   })
 })
 
-describe('lineDimensionColumns', () => {
-  it('derives both mirrors from the map', () => {
-    expect(lineDimensionColumns({ [DIM_COST_CENTER]: 'KS01', [DIM_PROJECT]: 'P001' })).toEqual({
-      cost_center: 'KS01',
-      project: 'P001',
-    })
-  })
-
-  it('returns nulls for missing keys', () => {
-    expect(lineDimensionColumns({})).toEqual({ cost_center: null, project: null })
-    expect(lineDimensionColumns({ '7': 'ANST-4' })).toEqual({ cost_center: null, project: null })
-  })
-
-  it('round-trips with normalizeLineDimensions (mirror consistency)', () => {
-    const dims = normalizeLineDimensions({ cost_center: 'KS01', dimensions: { '6': 'P001' } })
-    expect(lineDimensionColumns(dims)).toEqual({ cost_center: 'KS01', project: 'P001' })
-  })
-})
+// lineDimensionColumns() tests were removed with the function in the PR9
+// cutover — mirror derivation now lives in the database as GENERATED columns
+// and is covered by tests/pg/dimensions-generated-cutover.pg.test.ts.
 
 describe('validateEntryDimensions (soft registry validation, PR3)', () => {
   const enabledSettings = { data: { dimensions_enabled: true } }
