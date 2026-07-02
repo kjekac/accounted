@@ -122,6 +122,7 @@ export default function SendInvoiceDialog({
         exchange_rate: invoice.exchange_rate,
         vat_treatment: invoice.vat_treatment,
         items: invoice.items,
+        default_dimensions: invoice.default_dimensions,
       },
       entityType,
     })

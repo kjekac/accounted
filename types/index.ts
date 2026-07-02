@@ -701,6 +701,12 @@ export interface SupplierInvoice {
 
   notes: string | null
 
+  // Default dimensions bag ({sie_dim_no: code}, e.g. {"1":"KS01","6":"P001"})
+  // applied to every generated journal line; item-level `dimensions` merge on
+  // top of it for the expense lines (dimensions PR7). Stored as jsonb
+  // DEFAULT '{}'. Optional in TS for pre-migration fixtures.
+  default_dimensions?: Record<string, string>
+
   created_at: string
   updated_at: string
 
@@ -738,6 +744,10 @@ export interface SupplierInvoiceItem {
   accrual_period_start?: string | null
   accrual_period_end?: string | null
   accrual_balance_account?: string | null
+
+  // Per-item dimensions bag, merged over the invoice's default_dimensions on
+  // the expense line this item books to (dimensions PR7). jsonb DEFAULT '{}'.
+  dimensions?: Record<string, string>
 
   created_at: string
 }
@@ -872,6 +882,12 @@ export interface Invoice {
   deduction_personnummer_encrypted?: string | null
   deduction_personnummer_last4?: string | null
 
+  // Default dimensions bag ({sie_dim_no: code}) applied to every journal line
+  // generated from this invoice (issuance, payment, credit); item-level
+  // `dimensions` merge on top for the revenue lines (dimensions PR7).
+  // jsonb DEFAULT '{}'. Optional in TS for pre-migration fixtures.
+  default_dimensions?: Record<string, string>
+
   created_at: string
   updated_at: string
 
@@ -949,6 +965,10 @@ export interface InvoiceItem {
   housing_designation?: string | null
   /** Lägenhetsnummer. Optional, used for ROT in flerbostadshus. */
   apartment_number?: string | null
+
+  // Per-item dimensions bag, merged over the invoice's default_dimensions on
+  // the revenue line this item books to (dimensions PR7). jsonb DEFAULT '{}'.
+  dimensions?: Record<string, string>
 
   created_at: string
 }
@@ -1483,6 +1503,10 @@ export interface MappingResult {
   vat_lines: VatJournalLine[]
   all_lines_complete?: boolean  // when true, vat_lines contains ALL non-settlement lines
   description: string
+  // Dimensions bag applied to the business (expense/revenue) lines of the
+  // generated entry — from a counterparty template's line pattern or an
+  // explicit categorize param (dimensions PR7). Bank/VAT lines stay untagged.
+  dimensions?: Record<string, string>
 }
 
 // VAT journal line (auto-generated)
@@ -1491,6 +1515,9 @@ export interface VatJournalLine {
   debit_amount: number
   credit_amount: number
   description: string
+  // Set on business-type lines materialized from a LinePatternEntry that
+  // carries dimensions (dimensions PR7); VAT/tax lines stay untagged.
+  dimensions?: Record<string, string>
 }
 
 // Categorization template source
@@ -1503,6 +1530,10 @@ export interface LinePatternEntry {
   side: 'debit' | 'credit'
   ratio?: number      // proportion of NON-VAT amount (business + tax ratios sum to ~1.0)
   vat_rate?: number   // applied to FULL amount via rate/(1+rate) (vat type only)
+  // Dimensions bag ({sie_dim_no: code}) learned from the source vouchers'
+  // lines; applied to the materialized line on booking (dimensions PR7).
+  // Only preserved by learning when every occurrence agrees.
+  dimensions?: Record<string, string>
 }
 
 // Per-tenant counterparty-based categorization template

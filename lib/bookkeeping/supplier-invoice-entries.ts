@@ -7,6 +7,12 @@ import {
   isReverseChargeBasisAccount,
   resolveReverseChargeRate,
 } from './vat-entries'
+import {
+  coerceDimensionsBag,
+  dimensionsBagKey,
+  mergeDimensionBags,
+  type LineDimensions,
+} from './dimension-resolver'
 import { createLogger } from '@/lib/logger'
 import { roundOre } from '@/lib/money'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -31,6 +37,37 @@ function buildSupplierDescription(
     ? `${prefix} ${invoiceNumber}, ${supplierName}`
     : `${prefix} ${invoiceNumber}`
   return suffix ? `${base} ${suffix}` : base
+}
+
+/**
+ * Aggregate item amounts per (booking account, merged dimensions bag) —
+ * dimensions PR7. The merged bag (item.dimensions over the invoice's
+ * default_dimensions) is part of the aggregation identity so two items on the
+ * same account but different tags stay on separate journal lines instead of
+ * collapsing. Insertion order is first-seen, matching the old per-account map.
+ */
+interface ExpenseBucket {
+  account: string
+  dimensions?: LineDimensions
+  amount: number
+}
+
+function groupExpenseBuckets(
+  items: SupplierInvoiceItem[],
+  resolveAccount: (item: SupplierInvoiceItem) => string,
+  toSek: (item: SupplierInvoiceItem) => number,
+  defaultDimensions?: LineDimensions
+): ExpenseBucket[] {
+  const buckets = new Map<string, ExpenseBucket>()
+  for (const item of items) {
+    const account = resolveAccount(item)
+    const dimensions = mergeDimensionBags(defaultDimensions, item.dimensions)
+    const key = `${account}\u0000${dimensionsBagKey(dimensions)}`
+    const bucket = buckets.get(key) ?? { account, dimensions, amount: 0 }
+    bucket.amount += toSek(item)
+    buckets.set(key, bucket)
+  }
+  return [...buckets.values()]
 }
 
 /**
@@ -68,27 +105,30 @@ export async function createSupplierInvoiceRegistrationEntry(
   const lines: CreateJournalEntryLineInput[] = []
   const desc = buildSupplierDescription('Leverantörsfaktura', invoice.supplier_invoice_number, supplierName, `(ankomstnr ${invoice.arrival_number})`)
   const isForeign = invoice.currency !== 'SEK'
+  // Dimensions PR7: expense lines carry item bags merged over the invoice
+  // default; every other line (VAT, RC/basis, 2440) carries the default only.
+  const defaultDimensions = coerceDimensionsBag(invoice.default_dimensions)
 
-  // Aggregate expense amounts by account number and convert to SEK.
+  // Aggregate expense amounts by (account, dimensions) and convert to SEK.
   // Periodiserade lines book their net to the 17xx interim account instead
   // of the cost account (resolveBookingAccount); VAT and 2440 are untouched —
   // moms is never deferred (redovisas på fakturadatum).
-  const expenseByAccount = new Map<string, number>()
-  for (const item of items) {
-    const bookingAccount = resolveBookingAccount('expense', item, item.account_number)
-    const current = expenseByAccount.get(bookingAccount) || 0
-    const itemSek = resolveSekAmount(item.line_total, null, invoice.currency, invoice.exchange_rate)
-    expenseByAccount.set(bookingAccount, current + itemSek)
-  }
+  const expenseBuckets = groupExpenseBuckets(
+    items,
+    (item) => resolveBookingAccount('expense', item, item.account_number),
+    (item) => resolveSekAmount(item.line_total, null, invoice.currency, invoice.exchange_rate),
+    defaultDimensions
+  )
 
   // Debit: Expense accounts (in SEK)
   const debitLines: CreateJournalEntryLineInput[] = []
-  for (const [accountNumber, amount] of expenseByAccount) {
+  for (const bucket of expenseBuckets) {
     debitLines.push({
-      account_number: accountNumber,
-      debit_amount: Math.round(amount * 100) / 100,
+      account_number: bucket.account,
+      debit_amount: Math.round(bucket.amount * 100) / 100,
       credit_amount: 0,
       line_description: desc,
+      dimensions: bucket.dimensions,
     })
   }
   lines.push(...debitLines)
@@ -124,11 +164,11 @@ export async function createSupplierInvoiceRegistrationEntry(
     for (const [rate, baseAmount] of baseByRate) {
       if (rate > 0 && baseAmount > 0) {
         const rcLines = generateReverseChargeLines(baseAmount, rate, isDomesticRC)
-        lines.push(...rcLines)
+        lines.push(...rcLines.map((l) => ({ ...l, dimensions: defaultDimensions })))
         const nonBasisBase = nonBasisBaseByRate.get(rate) || 0
         if (nonBasisBase > 0) {
           const basisLines = generateReverseChargeBasisLines(nonBasisBase, rate, rcSupplierType)
-          lines.push(...basisLines)
+          lines.push(...basisLines.map((l) => ({ ...l, dimensions: defaultDimensions })))
         }
       }
     }
@@ -142,6 +182,7 @@ export async function createSupplierInvoiceRegistrationEntry(
           debit_amount: Math.round(amount * 100) / 100,
           credit_amount: 0,
           line_description: `Ingående moms ${Math.round(rate * 100)}% ${desc}`,
+          dimensions: defaultDimensions,
         })
       }
     }
@@ -156,6 +197,7 @@ export async function createSupplierInvoiceRegistrationEntry(
     debit_amount: 0,
     credit_amount: Math.round((totalDebits - totalCredits) * 100) / 100,
     line_description: desc,
+    dimensions: defaultDimensions,
     ...buildCurrencyMetadata(invoice.currency, isForeign ? invoice.total : undefined, invoice.exchange_rate),
   })
 
@@ -202,6 +244,9 @@ export async function createSupplierInvoicePaymentEntry(
 
   const desc = buildSupplierDescription('Utbetalning leverantörsfaktura', invoice.supplier_invoice_number, supplierName, `(ankomstnr ${invoice.arrival_number})`)
   const lines: CreateJournalEntryLineInput[] = []
+  // Dimensions PR7: the payment voucher re-propagates the linked invoice's
+  // default bag onto every leg (incl. FX result lines) — see the stamp below.
+  const defaultDimensions = coerceDimensionsBag(invoice.default_dimensions)
 
   if (exchangeRateDifference && exchangeRateDifference !== 0) {
     // Foreign currency with exchange rate difference
@@ -257,6 +302,12 @@ export async function createSupplierInvoicePaymentEntry(
       credit_amount: Math.round(paymentAmount * 100) / 100,
       line_description: desc,
     })
+  }
+
+  if (defaultDimensions) {
+    // Copy per line — a shared bag object would let one line's mutation
+    // leak into every other line (same contract as proposal stamping).
+    for (const line of lines) line.dimensions = { ...defaultDimensions }
   }
 
   const input: CreateJournalEntryInput = {
@@ -320,25 +371,29 @@ export async function createSupplierInvoiceCashEntry(
 
   const desc = buildSupplierDescription('Kontantbetalning leverantörsfaktura', invoice.supplier_invoice_number, supplierName)
   const lines: CreateJournalEntryLineInput[] = []
+  // Dimensions PR7: kontantmetoden books the expense at payment — same merge
+  // rules as the registration entry.
+  const defaultDimensions = coerceDimensionsBag(invoice.default_dimensions)
   // Expense debit lines tracked separately so a sub-öre translation residual
   // can be folded into the largest one (öresavrundning step below).
   const expenseLines: CreateJournalEntryLineInput[] = []
 
-  // Aggregate expense amounts by account number and convert to SEK
-  const expenseByAccount = new Map<string, number>()
-  for (const item of items) {
-    const current = expenseByAccount.get(item.account_number) || 0
-    const itemSek = resolveSekAmount(item.line_total, null, invoice.currency, effectiveRate)
-    expenseByAccount.set(item.account_number, current + itemSek)
-  }
+  // Aggregate expense amounts by (account, dimensions) and convert to SEK
+  const expenseBuckets = groupExpenseBuckets(
+    items,
+    (item) => item.account_number,
+    (item) => resolveSekAmount(item.line_total, null, invoice.currency, effectiveRate),
+    defaultDimensions
+  )
 
   // Debit: Expense accounts (in SEK)
-  for (const [accountNumber, amount] of expenseByAccount) {
+  for (const bucket of expenseBuckets) {
     const line: CreateJournalEntryLineInput = {
-      account_number: accountNumber,
-      debit_amount: Math.round(amount * 100) / 100,
+      account_number: bucket.account,
+      debit_amount: Math.round(bucket.amount * 100) / 100,
       credit_amount: 0,
       line_description: desc,
+      dimensions: bucket.dimensions,
     }
     lines.push(line)
     expenseLines.push(line)
@@ -367,11 +422,11 @@ export async function createSupplierInvoiceCashEntry(
     for (const [rate, baseAmount] of baseByRate) {
       if (rate > 0 && baseAmount > 0) {
         const rcLines = generateReverseChargeLines(baseAmount, rate, isDomesticRC)
-        lines.push(...rcLines)
+        lines.push(...rcLines.map((l) => ({ ...l, dimensions: defaultDimensions })))
         const nonBasisBase = nonBasisBaseByRate.get(rate) || 0
         if (nonBasisBase > 0) {
           const basisLines = generateReverseChargeBasisLines(nonBasisBase, rate, rcSupplierType)
-          lines.push(...basisLines)
+          lines.push(...basisLines.map((l) => ({ ...l, dimensions: defaultDimensions })))
         }
       }
     }
@@ -386,6 +441,7 @@ export async function createSupplierInvoiceCashEntry(
           debit_amount: Math.round(amount * 100) / 100,
           credit_amount: 0,
           line_description: `Ingående moms ${Math.round(rate * 100)}% ${desc}`,
+          dimensions: defaultDimensions,
         })
       }
     }
@@ -418,6 +474,7 @@ export async function createSupplierInvoiceCashEntry(
     debit_amount: 0,
     credit_amount: Math.round((totalDebits - totalCredits) * 100) / 100,
     line_description: desc,
+    dimensions: defaultDimensions,
   })
 
   const input: CreateJournalEntryInput = {
@@ -465,20 +522,24 @@ export async function createSupplierInvoicePrivatelyPaidEntry(
   const ownerAccount = entityType === 'aktiebolag' ? '2893' : '2018'
   const desc = buildSupplierDescription('Eget utlägg', invoice.supplier_invoice_number, supplierName, `(ankomstnr ${invoice.arrival_number})`)
   const lines: CreateJournalEntryLineInput[] = []
+  // Dimensions PR7: this IS the utlägg path — billable-expense-to-project
+  // tagging rides the same merge rules as the registration entry.
+  const defaultDimensions = coerceDimensionsBag(invoice.default_dimensions)
 
-  // Debit: Expense accounts (in SEK), aggregated per account
-  const expenseByAccount = new Map<string, number>()
-  for (const item of items) {
-    const current = expenseByAccount.get(item.account_number) || 0
-    const itemSek = resolveSekAmount(item.line_total, null, invoice.currency, invoice.exchange_rate)
-    expenseByAccount.set(item.account_number, current + itemSek)
-  }
-  for (const [accountNumber, amount] of expenseByAccount) {
+  // Debit: Expense accounts (in SEK), aggregated per (account, dimensions)
+  const expenseBuckets = groupExpenseBuckets(
+    items,
+    (item) => item.account_number,
+    (item) => resolveSekAmount(item.line_total, null, invoice.currency, invoice.exchange_rate),
+    defaultDimensions
+  )
+  for (const bucket of expenseBuckets) {
     lines.push({
-      account_number: accountNumber,
-      debit_amount: Math.round(amount * 100) / 100,
+      account_number: bucket.account,
+      debit_amount: Math.round(bucket.amount * 100) / 100,
       credit_amount: 0,
       line_description: desc,
+      dimensions: bucket.dimensions,
     })
   }
 
@@ -492,6 +553,7 @@ export async function createSupplierInvoicePrivatelyPaidEntry(
           debit_amount: Math.round(amount * 100) / 100,
           credit_amount: 0,
           line_description: `Ingående moms ${Math.round(rate * 100)}% ${desc}`,
+          dimensions: defaultDimensions,
         })
       }
     }
@@ -504,6 +566,7 @@ export async function createSupplierInvoicePrivatelyPaidEntry(
     debit_amount: 0,
     credit_amount: Math.round(totalDebits * 100) / 100,
     line_description: desc,
+    dimensions: defaultDimensions,
   })
 
   const input: CreateJournalEntryInput = {
@@ -542,26 +605,30 @@ export async function createSupplierCreditNoteEntry(
 
   const desc = buildSupplierDescription('Kreditfaktura leverantör', creditNote.supplier_invoice_number, supplierName, `(ankomstnr ${creditNote.arrival_number})`)
   const lines: CreateJournalEntryLineInput[] = []
+  // Dimensions PR7: items are the ORIGINAL invoice's (see below), so their
+  // bags reverse against the same dimension cells; the credit note's own
+  // default (copied from the original at credit time) rides the other legs.
+  const defaultDimensions = coerceDimensionsBag(creditNote.default_dimensions)
 
   // Credit: Expense accounts (reverse, in SEK). The caller passes the
   // ORIGINAL invoice's items so deferred lines reverse against the same 17xx
   // interim account they were registered on (the schedule's posted
   // dissolutions are stornoed separately by cancelSchedulesForSource).
   const creditLines: CreateJournalEntryLineInput[] = []
-  const expenseByAccount = new Map<string, number>()
-  for (const item of items) {
-    const bookingAccount = resolveBookingAccount('expense', item, item.account_number)
-    const current = expenseByAccount.get(bookingAccount) || 0
-    const itemSek = Math.abs(resolveSekAmount(item.line_total, null, creditNote.currency, creditNote.exchange_rate))
-    expenseByAccount.set(bookingAccount, current + itemSek)
-  }
+  const expenseBuckets = groupExpenseBuckets(
+    items,
+    (item) => resolveBookingAccount('expense', item, item.account_number),
+    (item) => Math.abs(resolveSekAmount(item.line_total, null, creditNote.currency, creditNote.exchange_rate)),
+    defaultDimensions
+  )
 
-  for (const [accountNumber, amount] of expenseByAccount) {
+  for (const bucket of expenseBuckets) {
     creditLines.push({
-      account_number: accountNumber,
+      account_number: bucket.account,
       debit_amount: 0,
-      credit_amount: Math.round(amount * 100) / 100,
+      credit_amount: Math.round(bucket.amount * 100) / 100,
       line_description: desc,
+      dimensions: bucket.dimensions,
     })
   }
 
@@ -595,12 +662,14 @@ export async function createSupplierCreditNoteEntry(
           debit_amount: 0,
           credit_amount: fiktivVat,
           line_description: `Omvänd fiktiv ingående moms ${Math.round(rate * 100)}% ${desc}`,
+          dimensions: defaultDimensions,
         })
         lines.push({
           account_number: outputAccount,
           debit_amount: fiktivVat,
           credit_amount: 0,
           line_description: `Omvänd fiktiv utgående moms ${Math.round(rate * 100)}% ${desc}`,
+          dimensions: defaultDimensions,
         })
         const nonBasisBase = nonBasisBaseByRate.get(rate) || 0
         if (nonBasisBase > 0) {
@@ -618,6 +687,7 @@ export async function createSupplierCreditNoteEntry(
               debit_amount: line.credit_amount,
               credit_amount: line.debit_amount,
               line_description: line.line_description,
+              dimensions: defaultDimensions,
             })
           }
         }
@@ -633,6 +703,7 @@ export async function createSupplierCreditNoteEntry(
           debit_amount: 0,
           credit_amount: amount,
           line_description: `Ingående moms ${Math.round(rate * 100)}% ${desc}`,
+          dimensions: defaultDimensions,
         })
       }
     }
@@ -648,6 +719,7 @@ export async function createSupplierCreditNoteEntry(
     debit_amount: Math.round((totalCredits - totalDebits) * 100) / 100,
     credit_amount: 0,
     line_description: desc,
+    dimensions: defaultDimensions,
   })
 
   const input: CreateJournalEntryInput = {

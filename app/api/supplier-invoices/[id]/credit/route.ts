@@ -59,6 +59,9 @@ export const POST = withRouteContext(
         remaining_amount: 0,
         is_credit_note: true,
         credited_invoice_id: id,
+        // Copy the original's dimension bag so the reversal nets against the
+        // same dimension cells in reports (dimensions PR7).
+        default_dimensions: original.default_dimensions ?? {},
       })
       .select()
       .single()
@@ -86,6 +89,9 @@ export const POST = withRouteContext(
       // Preserve the self-assessed RC rate so the credit-note verifikat
       // reverses fiktiv moms at the same rate the original was booked at.
       reverse_charge_rate: item.reverse_charge_rate,
+      // Dims copied for display parity; the journal reversal reads the
+      // ORIGINAL items below (dimensions PR7).
+      dimensions: item.dimensions ?? {},
     }))
 
     await supabase.from('supplier_invoice_items').insert(creditItems)

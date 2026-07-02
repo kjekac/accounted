@@ -59,6 +59,12 @@ export interface CategorizeMatchedTransactionOpts {
    * account, and the caller surfaces the skip.
    */
   allowDuplicate?: boolean
+  /**
+   * Dimensions PR7: bag applied to the business (expense/revenue) lines of the
+   * generated verifikat — bank/VAT lines stay untagged. Resolved against the
+   * registry at staging time (MCP) or picked in the UI.
+   */
+  dimensions?: Record<string, string>
 }
 
 // ── Helper: ensure a fiscal period covers the date ──────────────────
@@ -151,7 +157,7 @@ export async function categorizeMatchedTransaction(
    */
   exclude?: BookingDuplicateExclusions,
 ): Promise<CategorizeCoreResult> {
-  const { category, vatTreatment, vatAmount, notes, allowDuplicate } = opts
+  const { category, vatTreatment, vatAmount, notes, allowDuplicate, dimensions } = opts
 
   const { data: transaction, error: fetchError } = await supabase
     .from('transactions').select('*').eq('id', txId).eq('company_id', companyId).single()
@@ -243,6 +249,10 @@ export async function categorizeMatchedTransaction(
   const mappingResult = buildMappingResultFromCategory(
     category, transaction as Transaction, isBusiness, entityType, vatTreatment, vatAmount
   )
+  // Dimensions PR7: tag the business lines of the generated verifikat.
+  if (dimensions && Object.keys(dimensions).length > 0) {
+    mappingResult.dimensions = dimensions
+  }
 
   if (!mappingResult.debit_account || !mappingResult.credit_account) {
     return { error: `No account mapping for category "${category}" with entity type "${entityType}".`, status: 400 }

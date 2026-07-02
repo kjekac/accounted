@@ -26,9 +26,10 @@ import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import BankTransactionPicker from '@/components/transactions/BankTransactionPicker'
 import AccrualPeriodControl from '@/components/bookkeeping/AccrualPeriodControl'
+import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
 import { suggestBalanceAccount } from '@/lib/bookkeeping/accruals/account-suggestions'
 import { countCalendarMonths } from '@/lib/bookkeeping/accruals/compute'
-import { ArrowLeft, Plus, Trash2, ChevronDown, Loader2, Lock, AlertCircle, MessageCircle, Link2, CalendarClock } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, ChevronDown, Loader2, Lock, AlertCircle, MessageCircle, Link2, CalendarClock, Tags } from 'lucide-react'
 import type { Supplier, BASAccount, VatTreatment, EntityType, InvoiceExtractionResult, FiscalPeriod } from '@/types'
 
 interface LineItem {
@@ -44,6 +45,10 @@ interface LineItem {
   accrual_period_start?: string
   accrual_period_end?: string
   accrual_balance_account?: string
+  // Per-item dimensions bag ({sie_dim_no: code}, dimensions PR7). Defined
+  // (possibly empty) while the row's dimensions panel is open; the server
+  // merges it over the invoice's default_dimensions at booking time.
+  dimensions?: Record<string, string>
 }
 
 // The existing invoice surfaced on a duplicate-number conflict, used to drive
@@ -309,6 +314,12 @@ export default function NewSupplierInvoiceForm({
   // Öresavrundning is display-only; defaults to the company-wide setting and is
   // overridable per invoice via the toggle in the totals section.
   const [oreRounding, setOreRounding] = useState<boolean>(true)
+  // Dimension tagging (kostnadsställe/projekt). Affordances render only when
+  // company_settings.dimensions_enabled — the same UI-visibility gate as
+  // JournalEntryForm. defaultDims is the invoice-level default bag; per-item
+  // bags live on the form's items and merge over it server-side.
+  const [dimensionsEnabled, setDimensionsEnabled] = useState(false)
+  const [defaultDims, setDefaultDims] = useState<Record<string, string>>({})
   const [periods, setPeriods] = useState<FiscalPeriod[]>([])
   const [periodsLoaded, setPeriodsLoaded] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -661,8 +672,9 @@ export default function NewSupplierInvoiceForm({
         setAccountingMethod(data.accounting_method)
       }
       if (typeof data?.ore_rounding === 'boolean') setOreRounding(data.ore_rounding)
+      setDimensionsEnabled(data?.dimensions_enabled === true)
     } catch {
-      // Default to enskild_firma / accrual
+      // Default to enskild_firma / accrual, dimension affordances hidden
     }
   }
 
@@ -733,6 +745,68 @@ export default function NewSupplierInvoiceForm({
         { shouldDirty: true },
       )
     }
+  }
+
+  // --- Dimension tagging (kostnadsställe/projekt, dimensions PR7) ---
+  // Mirrors the accrual pattern: a defined (possibly empty) bag on the item
+  // means the row's panel is open; closing clears the bag entirely so the
+  // payload never carries a stale override.
+  function setDefaultDimension(dimNo: string, code: string | null) {
+    setDefaultDims((prev) => {
+      const next = { ...prev }
+      const trimmed = code?.trim()
+      if (trimmed) next[dimNo] = trimmed
+      else delete next[dimNo]
+      return next
+    })
+  }
+
+  function isDimOpen(index: number): boolean {
+    return watchedItems?.[index]?.dimensions != null
+  }
+
+  function toggleDimensions(index: number) {
+    if (isDimOpen(index)) {
+      setValue(`items.${index}.dimensions`, undefined, { shouldDirty: true })
+    } else {
+      setValue(`items.${index}.dimensions`, {}, { shouldDirty: true })
+    }
+  }
+
+  function updateItemDimension(index: number, dimNo: string, code: string | null) {
+    const current = { ...(getValues(`items.${index}.dimensions`) ?? {}) }
+    const trimmed = code?.trim()
+    if (trimmed) current[dimNo] = trimmed
+    else delete current[dimNo]
+    setValue(`items.${index}.dimensions`, current, { shouldDirty: true })
+  }
+
+  // Compact display of the invoice default, e.g. "KS01 · P001" (dim-number order).
+  const defaultDimsSummary = Object.entries(defaultDims)
+    .filter(([, v]) => v)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, v]) => v)
+    .join(' · ')
+
+  function renderDimensionsPanel(index: number) {
+    const item = watchedItems?.[index]
+    if (!item || item.dimensions == null) return null
+    return (
+      <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
+        <div className="max-w-md">
+          <LineDimensionFields
+            dimensions={item.dimensions}
+            onChange={(dimNo, code) => updateItemDimension(index, dimNo, code)}
+            inputClassName="h-8"
+          />
+        </div>
+        {defaultDimsSummary && (
+          <p className="text-xs text-muted-foreground">
+            {t('row_dimensions_inherit_hint', { dims: defaultDimsSummary })}
+          </p>
+        )}
+      </div>
+    )
   }
 
   function renderAccrualPanel(index: number, idPrefix: string) {
@@ -861,6 +935,9 @@ export default function NewSupplierInvoiceForm({
       notes: data.notes || undefined,
       paid_with_private_funds: data.paid_with_private_funds,
       ore_rounding: oreRounding,
+      // Invoice-level default dimensions (kostnadsställe/projekt) — only sent
+      // when the user actually picked something.
+      ...(Object.keys(defaultDims).length > 0 ? { default_dimensions: defaultDims } : {}),
       items: data.items.map((item) => ({
         description: item.description,
         amount: item.amount,
@@ -878,6 +955,11 @@ export default function NewSupplierInvoiceForm({
               accrual_period_end: item.accrual_period_end,
               accrual_balance_account: item.accrual_balance_account || undefined,
             }
+          : {}),
+        // Per-item dimensions override — only when the bag carries values
+        // (an open-but-empty panel means "inherit the invoice default").
+        ...(item.dimensions && Object.keys(item.dimensions).length > 0
+          ? { dimensions: item.dimensions }
           : {}),
       })),
     }
@@ -1437,6 +1519,22 @@ export default function NewSupplierInvoiceForm({
               )}
             </div>
 
+            {/* Invoice-level default dims (kostnadsställe/projekt) — applied to
+                every generated journal line; per-row bags in Kontering merge on
+                top. Renders only when dimensions are enabled for the company. */}
+            {dimensionsEnabled && (
+              <div className="space-y-1">
+                <div className="max-w-md">
+                  <LineDimensionFields
+                    dimensions={defaultDims}
+                    onChange={setDefaultDimension}
+                    inputClassName="h-9"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">{t('dimensions_default_hint')}</p>
+              </div>
+            )}
+
             {showNoPeriodWarning && (
               <div
                 role="alert"
@@ -1555,7 +1653,7 @@ export default function NewSupplierInvoiceForm({
                 <tbody>
                   {fields.map((field, index) => (
                     <Fragment key={field.id}>
-                    <tr className={cn('align-top', canUseAccrual && isAccrualOpen(index) ? 'border-0' : 'border-b last:border-0')}>
+                    <tr className={cn('align-top', (canUseAccrual && isAccrualOpen(index)) || (dimensionsEnabled && isDimOpen(index)) ? 'border-0' : 'border-b last:border-0')}>
                       <td className="py-2 pr-2">
                         <Controller
                           name={`items.${index}.account_number`}
@@ -1625,6 +1723,24 @@ export default function NewSupplierInvoiceForm({
                       </td>
                       <td className="py-2 pt-3">
                         <div className="flex items-center">
+                          {dimensionsEnabled && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => toggleDimensions(index)}
+                              aria-label={t('row_dimensions_aria', { index: index + 1 })}
+                              aria-pressed={isDimOpen(index)}
+                              title={t('row_dimensions_title')}
+                            >
+                              <Tags
+                                className={cn(
+                                  'h-4 w-4',
+                                  isDimOpen(index) ? 'text-foreground' : 'text-muted-foreground',
+                                )}
+                              />
+                            </Button>
+                          )}
                           {canUseAccrual && (
                             <Button
                               type="button"
@@ -1652,9 +1768,16 @@ export default function NewSupplierInvoiceForm({
                       </td>
                     </tr>
                     {canUseAccrual && isAccrualOpen(index) && (
-                      <tr className="border-b last:border-0">
+                      <tr className={cn(dimensionsEnabled && isDimOpen(index) ? 'border-0' : 'border-b last:border-0')}>
                         <td colSpan={6} className="pb-3">
                           {renderAccrualPanel(index, `accrual-desktop-${index}`)}
+                        </td>
+                      </tr>
+                    )}
+                    {dimensionsEnabled && isDimOpen(index) && (
+                      <tr className="border-b last:border-0">
+                        <td colSpan={6} className="pb-3">
+                          {renderDimensionsPanel(index)}
                         </td>
                       </tr>
                     )}
@@ -1671,6 +1794,24 @@ export default function NewSupplierInvoiceForm({
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-muted-foreground">{t('row_label', { index: index + 1 })}</span>
                     <div className="flex items-center">
+                      {dimensionsEnabled && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => toggleDimensions(index)}
+                          aria-label={t('row_dimensions_aria', { index: index + 1 })}
+                          aria-pressed={isDimOpen(index)}
+                          title={t('row_dimensions_title')}
+                        >
+                          <Tags
+                            className={cn(
+                              'h-4 w-4',
+                              isDimOpen(index) ? 'text-foreground' : 'text-muted-foreground',
+                            )}
+                          />
+                        </Button>
+                      )}
                       {canUseAccrual && (
                         <Button
                           type="button"
@@ -1770,6 +1911,7 @@ export default function NewSupplierInvoiceForm({
                   </div>
                   {canUseAccrual && isAccrualOpen(index) &&
                     renderAccrualPanel(index, `accrual-mobile-${index}`)}
+                  {dimensionsEnabled && isDimOpen(index) && renderDimensionsPanel(index)}
                 </div>
               ))}
             </div>

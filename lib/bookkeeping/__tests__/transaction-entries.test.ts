@@ -553,3 +553,134 @@ describe('buildDomesticExpenseLines', () => {
     }
   })
 })
+
+describe('createTransactionJournalEntry — dimensions propagation (PR7)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedFindFiscalPeriod.mockResolvedValue('period-1')
+  })
+
+  it('expense: tags ONLY the business debit line — bank and VAT lines stay untagged', async () => {
+    const tx = makeTransaction({ amount: -1250, description: 'Software license' })
+    const vatLines: VatJournalLine[] = [
+      { account_number: '2641', debit_amount: 250, credit_amount: 0, description: 'Ingående moms 25%' },
+    ]
+    const mapping = makeMappingResult({
+      debit_account: '5410',
+      credit_account: '1930',
+      vat_lines: vatLines,
+      dimensions: { '1': 'KS01', '6': 'P001' },
+    })
+
+    await createTransactionJournalEntry(null as never, 'company-1', 'user-1', tx, mapping)
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+
+    const debit5410 = input.lines.find(l => l.account_number === '5410')
+    expect(debit5410?.dimensions).toEqual({ '1': 'KS01', '6': 'P001' })
+
+    expect(input.lines.find(l => l.account_number === '2641')?.dimensions).toBeUndefined()
+    expect(input.lines.find(l => l.account_number === '1930')?.dimensions).toBeUndefined()
+  })
+
+  it('income: tags ONLY the revenue credit line — bank and output-VAT lines stay untagged', async () => {
+    const tx = makeTransaction({ amount: 12500, description: 'Sales income' })
+    const vatLines: VatJournalLine[] = [
+      { account_number: '2611', debit_amount: 0, credit_amount: 2500, description: 'Utgående moms 25%' },
+    ]
+    const mapping = makeMappingResult({
+      debit_account: '1930',
+      credit_account: '3001',
+      vat_lines: vatLines,
+      dimensions: { '6': 'P001' },
+    })
+
+    await createTransactionJournalEntry(null as never, 'company-1', 'user-1', tx, mapping)
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+
+    expect(input.lines.find(l => l.account_number === '3001')?.dimensions).toEqual({ '6': 'P001' })
+    expect(input.lines.find(l => l.account_number === '2611')?.dimensions).toBeUndefined()
+    expect(input.lines.find(l => l.account_number === '1930')?.dimensions).toBeUndefined()
+  })
+
+  it('all_lines_complete: each vat_lines[i].dimensions is used per line, with NO fallback to mappingResult.dimensions', async () => {
+    const tx = makeTransaction({ amount: -1250, description: 'Multi-line pattern' })
+    const vatLines: VatJournalLine[] = [
+      { account_number: '5410', debit_amount: 1000, credit_amount: 0, description: 'Kostnad', dimensions: { '6': 'P001' } },
+      // No dimensions on the VAT line — must NOT inherit the categorize-level bag.
+      { account_number: '2641', debit_amount: 250, credit_amount: 0, description: 'Ingående moms' },
+    ]
+    const mapping = makeMappingResult({
+      debit_account: '5410',
+      credit_account: '1930',
+      all_lines_complete: true,
+      vat_lines: vatLines,
+      // Would mis-tag the VAT line if any fallback existed.
+      dimensions: { '1': 'LEAK' },
+    })
+
+    await createTransactionJournalEntry(null as never, 'company-1', 'user-1', tx, mapping)
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    expect(input.lines).toHaveLength(3)
+
+    expect(input.lines.find(l => l.account_number === '5410')?.dimensions).toEqual({ '6': 'P001' })
+    expect(input.lines.find(l => l.account_number === '2641')?.dimensions).toBeUndefined()
+    // Settlement line stays untagged.
+    expect(input.lines.find(l => l.account_number === '1930')?.dimensions).toBeUndefined()
+
+    assertBalanced(input)
+  })
+
+  it('all_lines_complete income: per-line bags authoritative on the credit side too', async () => {
+    const tx = makeTransaction({ amount: 12500, description: 'Multi-line income' })
+    const vatLines: VatJournalLine[] = [
+      { account_number: '3001', debit_amount: 0, credit_amount: 10000, description: 'Försäljning', dimensions: { '1': 'KS01' } },
+      { account_number: '2611', debit_amount: 0, credit_amount: 2500, description: 'Utgående moms' },
+    ]
+    const mapping = makeMappingResult({
+      debit_account: '1930',
+      credit_account: '3001',
+      all_lines_complete: true,
+      vat_lines: vatLines,
+      dimensions: { '1': 'LEAK' },
+    })
+
+    await createTransactionJournalEntry(null as never, 'company-1', 'user-1', tx, mapping)
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    expect(input.lines.find(l => l.account_number === '3001')?.dimensions).toEqual({ '1': 'KS01' })
+    expect(input.lines.find(l => l.account_number === '2611')?.dimensions).toBeUndefined()
+    expect(input.lines.find(l => l.account_number === '1930')?.dimensions).toBeUndefined()
+  })
+
+  it('default_private path never tags — even when a bag is set on the mapping', async () => {
+    const tx = makeTransaction({ amount: -500, description: 'Lunch privat' })
+    const mapping = makeMappingResult({
+      debit_account: '2013',
+      credit_account: '1930',
+      default_private: true,
+      dimensions: { '1': 'KS01' },
+    })
+
+    await createTransactionJournalEntry(null as never, 'company-1', 'user-1', tx, mapping)
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    for (const line of input.lines) {
+      expect(line.dimensions).toBeUndefined()
+    }
+  })
+
+  it('no bag on the mapping → business line stays untagged', async () => {
+    const tx = makeTransaction({ amount: -299 })
+    const mapping = makeMappingResult({ debit_account: '5410', credit_account: '1930' })
+
+    await createTransactionJournalEntry(null as never, 'company-1', 'user-1', tx, mapping)
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    for (const line of input.lines) {
+      expect(line.dimensions).toBeUndefined()
+    }
+  })
+})

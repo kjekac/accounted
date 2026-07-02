@@ -23,6 +23,12 @@ export interface ProposeSendLinesInput {
     exchange_rate?: number | null
     vat_treatment: VatTreatment
     items?: InvoiceItem[]
+    /**
+     * Dimensions PR7: the invoice's default bag, stamped on every proposed
+     * line so the preview matches what createInvoiceJournalEntry books
+     * (display-only — the send routes book via the generator).
+     */
+    default_dimensions?: Record<string, string> | null
   }
   entityType: EntityType
 }
@@ -41,6 +47,25 @@ function toFormAmount(n: number): string {
  */
 export function proposeSendLines(input: ProposeSendLinesInput): FormLine[] {
   const { invoice, entityType } = input
+  const lines: FormLine[] = stampProposalDimensions(
+    buildSendLines(invoice, entityType),
+    invoice.default_dimensions
+  )
+  return lines
+}
+
+function stampProposalDimensions(
+  lines: FormLine[],
+  bag?: Record<string, string> | null
+): FormLine[] {
+  if (!bag || Object.keys(bag).length === 0) return lines
+  return lines.map((line) => ({ ...line, dimensions: { ...bag } }))
+}
+
+function buildSendLines(
+  invoice: ProposeSendLinesInput['invoice'],
+  entityType: EntityType
+): FormLine[] {
   const lines: FormLine[] = []
   const isForeign = invoice.currency !== 'SEK'
   const desc = invoice.invoice_number ? `Försäljning faktura ${invoice.invoice_number}` : 'Försäljning faktura'

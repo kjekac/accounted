@@ -49,6 +49,14 @@ function makeMock(opts: {
   supplierByOrg?: Record<string, unknown> | null
   supplierByName?: Record<string, unknown> | null
   pendingInsert?: Record<string, unknown>
+  /** When set, company_settings/dimensions/dimension_values serve this registry. */
+  dimensions?: {
+    enabled: boolean
+    registry?: Array<Record<string, unknown>>
+    values?: Array<Record<string, unknown>>
+  }
+  /** When provided, every pending_operations .insert(payload) is recorded here. */
+  inserts?: Array<Record<string, unknown>>
 }) {
   const inboxResult = { data: opts.inbox ?? null, error: opts.inbox ? null : { message: 'not found' } }
   const supplierByOrgResult = { data: opts.supplierByOrg ?? null, error: null }
@@ -96,9 +104,28 @@ function makeMock(opts: {
       {},
       {
         get(_t, prop) {
+          if (prop === 'insert') {
+            return (payload: Record<string, unknown>) => {
+              opts.inserts?.push(payload)
+              return pendingChain()
+            }
+          }
           if (prop === 'single') return () => Promise.resolve(insertResult)
           if (prop === 'then') return (resolve: (v: unknown) => void) => resolve(insertResult)
           return () => pendingChain()
+        },
+      },
+    )
+
+  // Static chains for the dims registry (resolveDimensionBags reads these).
+  const staticChain = (result: { data: unknown; error: unknown }): unknown =>
+    new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === 'single' || prop === 'maybeSingle') return () => Promise.resolve(result)
+          if (prop === 'then') return (resolve: (v: unknown) => void) => resolve(result)
+          return () => staticChain(result)
         },
       },
     )
@@ -108,8 +135,18 @@ function makeMock(opts: {
       if (table === 'invoice_inbox_items') return inboxChain()
       if (table === 'suppliers') return supplierChain()
       if (table === 'pending_operations') return pendingChain()
+      if (table === 'company_settings' && opts.dimensions) {
+        return staticChain({ data: { dimensions_enabled: opts.dimensions.enabled }, error: null })
+      }
+      if (table === 'dimensions' && opts.dimensions) {
+        return staticChain({ data: opts.dimensions.registry ?? [], error: null })
+      }
+      if (table === 'dimension_values' && opts.dimensions) {
+        return staticChain({ data: opts.dimensions.values ?? [], error: null })
+      }
       return inboxChain()
     }),
+    rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
   } as never
 }
 
@@ -265,6 +302,99 @@ describe('gnubok_create_supplier_invoice_from_inbox — execute', () => {
     const items = result.preview.items_preview
     expect(items[0].account_number).toBe('6550')  // untouched — extracted suggestion wins
     expect(items[1].account_number).toBe('6420')  // override wins over extracted suggestion
+  })
+
+  it('stages resolved default_dimensions top-level and per-line bags via line_overrides', async () => {
+    const extractedTwoLines = {
+      ...baseExtracted,
+      lineItems: [
+        { description: 'Line A', quantity: 1, unit_price: 400, line_total: 400, vat_rate: 25, vat_amount: 100 },
+        { description: 'Line B', quantity: 1, unit_price: 600, line_total: 600, vat_rate: 25, vat_amount: 150 },
+      ],
+    }
+    const inserts: Array<Record<string, unknown>> = []
+    const supabase = makeMock({
+      inbox: {
+        id: 'inbox-8',
+        status: 'received',
+        extracted_data: extractedTwoLines,
+        matched_supplier_id: 'supplier-1',
+        created_supplier_invoice_id: null,
+        document_id: 'doc-8',
+      },
+      dimensions: {
+        enabled: true,
+        registry: [
+          { id: 'dim-1', sie_dim_no: 1, name: 'Kostnadsställe', resets_annually: true, is_system: true, is_active: true, sort_order: 10 },
+          { id: 'dim-6', sie_dim_no: 6, name: 'Projekt', resets_annually: false, is_system: true, is_active: true, sort_order: 20 },
+        ],
+        values: [
+          { id: 'v1', dimension_id: 'dim-1', code: 'KS01', name: 'Stockholm', is_active: true, start_date: null, end_date: null },
+          { id: 'v2', dimension_id: 'dim-6', code: 'P001', name: 'Villa Almgren takrenovering', is_active: true, start_date: null, end_date: null },
+        ],
+      },
+      inserts,
+    })
+    const tool = tools.find((t) => t.name === 'gnubok_create_supplier_invoice_from_inbox')!
+    const result = (await tool.execute(
+      {
+        inbox_item_id: 'inbox-8',
+        default_dimensions: { '6': 'villa almgren tak' },
+        line_overrides: [{ line_number: 2, dimensions: { '1': 'KS01' } }],
+      },
+      'company-1', 'user-1', supabase,
+    )) as {
+      staged: boolean
+      preview: { dimension_resolutions?: Array<Record<string, unknown>> }
+    }
+
+    expect(result.staged).toBe(true)
+
+    // Contract: staged params carry `default_dimensions` top-level (resolved to
+    // codes) and each item its OWN resolved bag — the executor merges.
+    expect(inserts).toHaveLength(1)
+    const params = inserts[0].params as {
+      default_dimensions?: Record<string, string>
+      items: Array<{ dimensions?: Record<string, string> }>
+    }
+    expect(params.default_dimensions).toEqual({ '6': 'P001' })
+    expect(params.items[0].dimensions).toBeUndefined()
+    expect(params.items[1].dimensions).toEqual({ '1': 'KS01' })
+
+    // Non-exact name resolution is echoed in the preview.
+    expect(result.preview.dimension_resolutions).toHaveLength(1)
+    expect(result.preview.dimension_resolutions![0]).toMatchObject({
+      dimension: 6,
+      input: 'villa almgren tak',
+      resolved_code: 'P001',
+      resolved_name: 'Villa Almgren takrenovering',
+    })
+  })
+
+  it('stages no dims keys when nothing is tagged (backward compatible)', async () => {
+    const inserts: Array<Record<string, unknown>> = []
+    const supabase = makeMock({
+      inbox: {
+        id: 'inbox-9',
+        status: 'received',
+        extracted_data: baseExtracted,
+        matched_supplier_id: 'supplier-1',
+        created_supplier_invoice_id: null,
+        document_id: 'doc-9',
+      },
+      inserts,
+    })
+    const tool = tools.find((t) => t.name === 'gnubok_create_supplier_invoice_from_inbox')!
+    const result = (await tool.execute(
+      { inbox_item_id: 'inbox-9' },
+      'company-1', 'user-1', supabase,
+    )) as { staged: boolean; preview: Record<string, unknown> }
+
+    expect(result.staged).toBe(true)
+    expect(result.preview.dimension_resolutions).toBeUndefined()
+    const params = inserts[0].params as { default_dimensions?: unknown; items: Array<Record<string, unknown>> }
+    expect('default_dimensions' in params).toBe(false)
+    expect('dimensions' in params.items[0]).toBe(false)
   })
 
   it('throws when extracted_data is missing', async () => {

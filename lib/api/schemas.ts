@@ -291,6 +291,9 @@ export const CreateInvoiceItemSchema = z
     accrual_period_start: isoDate.nullable().optional(),
     accrual_period_end: isoDate.nullable().optional(),
     accrual_balance_account: deferredRevenueAccount.nullable().optional(),
+    // Dimensions PR7: per-item bag merged over the invoice's
+    // default_dimensions on the revenue line this item books to.
+    dimensions: DimensionsBagSchema.optional(),
   })
   .superRefine((item, ctx) => {
     validateAccrualPeriod(item, ctx)
@@ -359,6 +362,9 @@ export const CreateInvoiceSchema = z.object({
   // Per-invoice öresavrundning toggle (display-only). Omitted → stored as null,
   // which inherits company_settings.ore_rounding when rendering totals.
   ore_rounding: z.boolean().optional(),
+  // Dimensions PR7: invoice-level bag applied to every generated journal line;
+  // items[].dimensions merge over it per revenue line.
+  default_dimensions: DimensionsBagSchema.optional(),
   items: z.array(CreateInvoiceItemSchema).min(1, 'At least one item is required'),
 })
 
@@ -491,6 +497,9 @@ export const MarkInvoicePaidSchema = z.object({
     debit_amount: nonNegativeAmount.default(0),
     credit_amount: nonNegativeAmount.default(0),
     line_description: z.string().optional(),
+    // Dimensions PR7: user-edited payment lines keep their tags (the
+    // no-override path re-propagates the invoice's default_dimensions).
+    dimensions: DimensionsBagSchema.optional(),
   })).min(2).optional(),
   // Bypass the duplicate-payment guard. Set after the user reviews the
   // candidate list returned by INVOICE_PAID_LIKELY_DUPLICATE and confirms
@@ -591,6 +600,9 @@ export const CreateSupplierInvoiceItemSchema = z.object({
   accrual_period_start: isoDate.nullable().optional(),
   accrual_period_end: isoDate.nullable().optional(),
   accrual_balance_account: prepaidExpenseAccount.nullable().optional(),
+  // Dimensions PR7: per-item bag merged over the invoice's
+  // default_dimensions on the expense line this item books to.
+  dimensions: DimensionsBagSchema.optional(),
 }).refine(
   (item) => {
     if (item.vat_amount == null) return true
@@ -641,6 +653,9 @@ export const CreateSupplierInvoiceSchema = z.object({
   // For paid_with_private_funds: the date the owner paid out-of-pocket.
   // Defaults to invoice_date (common for kvitto where the two coincide).
   payment_date: isoDate.optional(),
+  // Dimensions PR7: invoice-level bag applied to every generated journal line;
+  // items[].dimensions merge over it per expense line.
+  default_dimensions: DimensionsBagSchema.optional(),
   items: z.array(CreateSupplierInvoiceItemSchema).min(1, 'At least one item is required'),
 })
 
@@ -662,6 +677,9 @@ export const MarkSupplierInvoicePaidSchema = z.object({
     debit_amount: nonNegativeAmount.default(0),
     credit_amount: nonNegativeAmount.default(0),
     line_description: z.string().optional(),
+    // Dimensions PR7: user-edited payment lines keep their tags (the
+    // no-override path re-propagates the invoice's default_dimensions).
+    dimensions: DimensionsBagSchema.optional(),
   })).min(2).optional(),
 })
 
@@ -1015,11 +1033,17 @@ export const BulkBookSchema = z
           credit_amount: nonNegativeAmount.max(99_999_999, 'Line amount exceeds maximum'),
           currency: z.string().min(3).max(3).default('SEK'),
           line_description: z.string().max(200).optional(),
+          // Dimensions PR7: per-line bag, wins over default_dimensions.
+          dimensions: DimensionsBagSchema.optional(),
         })
       )
       .min(2, 'A verifikat needs at least two lines')
       .max(200)
       .optional(),
+    // Dimensions PR7: header-level bag applied to every generated line in
+    // BOTH the template and manual paths (per-line bags win per key). The
+    // route merges before calling the RPC.
+    default_dimensions: DimensionsBagSchema.optional(),
   })
   .superRefine((data, ctx) => {
     const hasExisting = !!data.existing_journal_entry_id

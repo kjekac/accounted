@@ -152,6 +152,7 @@ export default function PaymentBookingDialog({
             exchange_rate: invoice.exchange_rate,
             vat_treatment: invoice.vat_treatment,
             items: invoice.items,
+            default_dimensions: invoice.default_dimensions,
           },
           accountingMethod,
           entityType,
@@ -245,6 +246,12 @@ export default function PaymentBookingDialog({
           debit_amount: parseFloat(l.debit_amount) || 0,
           credit_amount: parseFloat(l.credit_amount) || 0,
           line_description: l.line_description || undefined,
+          // Dimensions PR7: the proposal re-propagates the invoice default;
+          // whatever the grid holds is what gets booked.
+          dimensions:
+            l.dimensions && Object.keys(l.dimensions).length > 0
+              ? l.dimensions
+              : undefined,
         }))
 
       const response = await fetch(`/api/invoices/${invoice.id}/mark-paid`, {

@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -23,6 +24,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { applyTemplate } from '@/lib/bookkeeping/template-library'
 import { formatCurrency, formatDate, cn } from '@/lib/utils'
+import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
 import { Loader2, FileText, AlertTriangle, Check, Plus, Trash2, Paperclip } from 'lucide-react'
 import type { BookingTemplateLibrary, BookingTemplateLibraryLine } from '@/types'
 import type { TransactionWithInvoice } from './transaction-types'
@@ -88,6 +90,12 @@ export default function BulkBookDialog({
   const [description, setDescription] = useState('')
   const [manualLines, setManualLines] = useState<ManualLine[]>([])
   const [submitting, setSubmitting] = useState(false)
+  // Dimension tagging (kostnadsställe/projekt) — the pair renders only when
+  // company_settings.dimensions_enabled, same gate as JournalEntryForm. One
+  // header-level default bag applies to both tabs; the server tags the
+  // generated voucher's lines with it.
+  const [dimensionsEnabled, setDimensionsEnabled] = useState(false)
+  const [defaultDims, setDefaultDims] = useState<Record<string, string>>({})
 
   // Documents that will inherit onto the new verifikat. Computed from
   // transactions.document_id; the RPC reads these and updates each doc's
@@ -162,6 +170,22 @@ export default function BulkBookDialog({
     return () => { cancelled = true }
   }, [open])
 
+  // Company settings gate the dimension affordance (dimensions_enabled).
+  // Fetched once per open; on failure the pair simply stays hidden.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then(({ data }) => {
+        if (!cancelled) setDimensionsEnabled(data?.dimensions_enabled === true)
+      })
+      .catch(() => {
+        if (!cancelled) setDimensionsEnabled(false)
+      })
+    return () => { cancelled = true }
+  }, [open])
+
   // Reset state when dialog closes so the next open starts clean.
   useEffect(() => {
     if (!open) {
@@ -171,6 +195,7 @@ export default function BulkBookDialog({
       setDescription('')
       setManualLines([])
       setCashAccounts(null)
+      setDefaultDims({})
     } else if (sharedDate) {
       // Pre-fill description with a sensible default the user can edit.
       setDescription(t('default_description', { date: sharedDate }))
@@ -303,6 +328,23 @@ export default function BulkBookDialog({
     bankMatches &&
     allAccountsValid
 
+  function setDefaultDimension(dimNo: string, code: string | null) {
+    setDefaultDims((prev) => {
+      const next = { ...prev }
+      const trimmed = code?.trim()
+      if (trimmed) next[dimNo] = trimmed
+      else delete next[dimNo]
+      return next
+    })
+  }
+
+  // Compact display, e.g. "KS01 · P001" (dim-number order) for the preview badge.
+  const dimsSummary = Object.entries(defaultDims)
+    .filter(([, v]) => v)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, v]) => v)
+    .join(' · ')
+
   function updateManualLine(id: string, patch: Partial<Omit<ManualLine, 'id'>>) {
     setManualLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)))
   }
@@ -331,6 +373,12 @@ export default function BulkBookDialog({
       // Build the payload per the active tab. Template path uses the
       // existing schema branch (template_id + mode). Manual path sends
       // the user-edited lines directly.
+      // Header-level default dimensions ride as a top-level field on both
+      // branches; only sent when the user actually picked something.
+      const defaultDimensions =
+        dimensionsEnabled && Object.keys(defaultDims).length > 0
+          ? { default_dimensions: defaultDims }
+          : {}
       const payload =
         tab === 'manual'
           ? {
@@ -343,12 +391,14 @@ export default function BulkBookDialog({
                 currency: sharedCurrency,
                 line_description: l.line_description ?? undefined,
               })),
+              ...defaultDimensions,
             }
           : {
               tx_ids: transactions.map((tx) => tx.id),
               template_id: selectedTemplateId,
               mode,
               entry_description: description.trim(),
+              ...defaultDimensions,
             }
       const response = await fetch('/api/transactions/bulk-book', {
         method: 'POST',
@@ -625,6 +675,19 @@ export default function BulkBookDialog({
             </div>
           )}
 
+          {/* Header default dims (kostnadsställe/projekt) — one bag applied to
+              the whole verifikat, shared by both tabs. */}
+          {dimensionsEnabled && tabReady && (
+            <div className="space-y-1">
+              <LineDimensionFields
+                dimensions={defaultDims}
+                onChange={setDefaultDimension}
+                inputClassName="h-8"
+              />
+              <p className="text-xs text-muted-foreground">{t('dimensions_hint')}</p>
+            </div>
+          )}
+
           {/* Document inheritance hint — informs the user which receipts
               follow the txs onto the combined verifikat. Zero is fine
               (txs without docs don't break anything); we only render
@@ -639,9 +702,16 @@ export default function BulkBookDialog({
           {/* Live preview */}
           {tabReady && previewLines.length > 0 && (
             <div className="space-y-2">
-              <Label>
-                {t('preview_label', { count: previewLines.length })}
-              </Label>
+              <div className="flex items-center gap-2">
+                <Label>
+                  {t('preview_label', { count: previewLines.length })}
+                </Label>
+                {dimensionsEnabled && dimsSummary && (
+                  <Badge variant="secondary" className="font-mono tabular-nums">
+                    {dimsSummary}
+                  </Badge>
+                )}
+              </div>
               <div className="rounded-lg border bg-muted/30 overflow-hidden">
                 <table className="w-full text-xs tabular-nums">
                   <thead>

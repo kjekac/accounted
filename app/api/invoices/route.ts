@@ -315,6 +315,9 @@ async function createCreditNote(
       our_reference: originalInvoice.our_reference,
       notes: input.reason || `Krediterar faktura ${originalInvoice.invoice_number}`,
       credited_invoice_id: input.credited_invoice_id,
+      // Copy the original's dimension bag so the credit-note verifikat nets
+      // against the same dimension cells in reports (dimensions PR7).
+      default_dimensions: originalInvoice.default_dimensions ?? {},
       status: 'sent',
     })
     .select()
@@ -328,7 +331,7 @@ async function createCreditNote(
     })
   }
 
-  const creditNoteItems = (originalInvoice.items || []).map((item: { sort_order: number; line_type?: 'product' | 'text'; description: string; quantity: number; unit: string; unit_price: number; line_total: number; vat_rate?: number; vat_amount?: number; revenue_account?: string | null; article_id?: string | null; accrual_period_start?: string | null; accrual_period_end?: string | null; accrual_balance_account?: string | null }) => ({
+  const creditNoteItems = (originalInvoice.items || []).map((item: { sort_order: number; line_type?: 'product' | 'text'; description: string; quantity: number; unit: string; unit_price: number; line_total: number; vat_rate?: number; vat_amount?: number; revenue_account?: string | null; article_id?: string | null; accrual_period_start?: string | null; accrual_period_end?: string | null; accrual_balance_account?: string | null; dimensions?: Record<string, string> }) => ({
     invoice_id: creditNote.id,
     sort_order: item.sort_order,
     line_type: item.line_type ?? 'product',
@@ -353,6 +356,9 @@ async function createCreditNote(
     accrual_period_start: item.accrual_period_start ?? null,
     accrual_period_end: item.accrual_period_end ?? null,
     accrual_balance_account: item.accrual_balance_account ?? null,
+    // Same reasoning as revenue_account: the reversal must carry the exact
+    // per-item bag the original booked with (dimensions PR7).
+    dimensions: item.dimensions ?? {},
   }))
 
   const { error: itemsError } = await supabase.from('invoice_items').insert(creditNoteItems)

@@ -43,12 +43,24 @@ vi.mock('@/lib/bookkeeping/invoice-entries', async () => {
   }
 })
 
+vi.mock('@/lib/transactions/categorize-core', async () => {
+  const actual =
+    await vi.importActual<typeof import('@/lib/transactions/categorize-core')>(
+      '@/lib/transactions/categorize-core'
+    )
+  return {
+    ...actual,
+    categorizeMatchedTransaction: vi.fn(),
+  }
+})
+
 import { commitPendingOperation } from '../commit'
 import { unlockPeriod } from '@/lib/core/bookkeeping/period-service'
 import { parseSIEFile } from '@/lib/import/sie-parser'
 import { executeSIEImport } from '@/lib/import/sie-import'
 import { commitAnnualPostings } from '@/lib/bokslut/assets/depreciation-engine'
 import { createCreditNoteJournalEntry } from '@/lib/bookkeeping/invoice-entries'
+import { categorizeMatchedTransaction } from '@/lib/transactions/categorize-core'
 
 function makePendingOp(overrides: Partial<PendingOperation>): PendingOperation {
   return {
@@ -859,5 +871,85 @@ describe('commitPendingOperation: link_document_to_voucher', () => {
     )
     expect(result.status).toBe('rejected')
     expect(result.http_status).toBe(409)
+  })
+})
+
+// ─── categorize_transaction — dimensions propagation (PR7) ──────────
+
+describe('commitPendingOperation: categorize_transaction — dimensions propagation (PR7)', () => {
+  it('threads the staged dimensions bag into categorizeMatchedTransaction opts', async () => {
+    vi.mocked(categorizeMatchedTransaction).mockResolvedValueOnce({
+      data: { journal_entry_id: 'je-1' },
+    })
+
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // dispatcher's commit update
+
+    const op = makePendingOp({
+      operation_type: 'categorize_transaction',
+      params: {
+        transaction_id: 'tx-1',
+        category: 'office_supplies',
+        dimensions: { '1': 'KS01', '6': 'P001' },
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    expect(categorizeMatchedTransaction).toHaveBeenCalledTimes(1)
+    const call = vi.mocked(categorizeMatchedTransaction).mock.calls[0]
+    expect(call[1]).toBe('user-1')
+    expect(call[2]).toBe('company-1')
+    expect(call[3]).toBe('tx-1')
+    expect(call[4].dimensions).toEqual({ '1': 'KS01', '6': 'P001' })
+  })
+
+  it('coerces an INVALID staged bag to undefined (drift/tamper gate)', async () => {
+    vi.mocked(categorizeMatchedTransaction).mockResolvedValueOnce({
+      data: { journal_entry_id: 'je-1' },
+    })
+
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // dispatcher's commit update
+
+    const op = makePendingOp({
+      operation_type: 'categorize_transaction',
+      params: {
+        transaction_id: 'tx-1',
+        category: 'office_supplies',
+        // '0' is not a valid SIE dimension number — the whole bag is rejected
+        // and booking proceeds without dimensions.
+        dimensions: { '0': 'X' },
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    const opts = vi.mocked(categorizeMatchedTransaction).mock.calls[0][4]
+    expect(opts.dimensions).toBeUndefined()
+  })
+
+  it('passes no dimensions when nothing was staged', async () => {
+    vi.mocked(categorizeMatchedTransaction).mockResolvedValueOnce({
+      data: { journal_entry_id: 'je-1' },
+    })
+
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // dispatcher's commit update
+
+    const op = makePendingOp({
+      operation_type: 'categorize_transaction',
+      params: { transaction_id: 'tx-1', category: 'office_supplies' },
+    })
+
+    await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    const opts = vi.mocked(categorizeMatchedTransaction).mock.calls[0][4]
+    expect(opts.dimensions).toBeUndefined()
   })
 })

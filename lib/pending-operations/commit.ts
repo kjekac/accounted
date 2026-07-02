@@ -222,6 +222,8 @@ async function commitCategorizeTransaction(
     vatAmount,
     notes,
     allowDuplicate: params.allow_duplicate === true,
+    // Dimensions PR7: resolved at staging; coerce is the drift/tamper gate.
+    dimensions: coerceDimensionsBag(params.dimensions),
   })
 }
 
@@ -692,7 +694,11 @@ async function commitCreateInvoice(
     description: string; quantity: number; unit: string; unit_price: number; vat_rate?: number
     article_id?: string | null; revenue_account?: string | null
     line_type?: 'product' | 'text'
+    dimensions?: Record<string, string>
   }>
+  // Dimensions PR7: bags were resolved against the registry at staging time
+  // (resolveDimensionBags in the MCP tool); coerce is the drift/tamper gate.
+  const defaultDimensions = coerceDimensionsBag(params.default_dimensions)
 
   // Free-text rows carry no amounts and never book. The MCP staging tool does
   // not accept line_type today, but the totals math must stay identical to
@@ -794,6 +800,7 @@ async function commitCreateInvoice(
       our_reference: (params.our_reference as string) || null,
       your_reference: (params.your_reference as string) || null,
       notes: (params.notes as string) || null,
+      default_dimensions: defaultDimensions ?? {},
     })
     .select()
     .single()
@@ -818,6 +825,7 @@ async function commitCreateInvoice(
         vat_amount: 0,
         article_id: null,
         revenue_account: null,
+        dimensions: {},
       }
     }
     const itemRate = item.vat_rate !== undefined ? item.vat_rate : vatRules.rate
@@ -838,6 +846,7 @@ async function commitCreateInvoice(
       // account; null falls back to the VAT-treatment-derived account.
       article_id: item.article_id ?? null,
       revenue_account: item.revenue_account ?? null,
+      dimensions: coerceDimensionsBag(item.dimensions) ?? {},
     }
   })
 
@@ -2067,6 +2076,8 @@ async function commitCreateSupplierInvoiceFromInbox(
   const vatTreatment = (params.vat_treatment as string) || 'standard_25'
   const notes = (params.notes as string | null) ?? null
   const rawItems = (params.items as Array<Record<string, unknown>> | undefined) ?? []
+  // Dimensions PR7: resolved at staging time; coerce is the drift/tamper gate.
+  const defaultDimensions = coerceDimensionsBag(params.default_dimensions)
 
   if (!inboxItemId || !supplierId || !supplierInvoiceNumber || !invoiceDate || rawItems.length === 0) {
     return {
@@ -2171,6 +2182,7 @@ async function commitCreateSupplierInvoiceFromInbox(
       remaining_amount: totalRounded,
       document_id: documentId,
       notes,
+      default_dimensions: defaultDimensions ?? {},
     })
     .select()
     .single()
@@ -2227,6 +2239,7 @@ async function commitCreateSupplierInvoiceFromInbox(
       reverse_charge_rate: reverseCharge
         ? ([0.06, 0.12, 0.25].includes(Number(item.reverse_charge_rate)) ? Number(item.reverse_charge_rate) : null)
         : null,
+      dimensions: coerceDimensionsBag(item.dimensions) ?? {},
     }
   })
 
@@ -2434,6 +2447,8 @@ async function commitCreditSupplierInvoice(
       remaining_amount: 0,
       is_credit_note: true,
       credited_invoice_id: id,
+      // Dimensions PR7: copy so the reversal nets against the same cells.
+      default_dimensions: original.default_dimensions ?? {},
     })
     .select()
     .single()
@@ -2452,6 +2467,7 @@ async function commitCreditSupplierInvoice(
     vat_code: item.vat_code,
     vat_rate: item.vat_rate,
     vat_amount: item.vat_amount,
+    dimensions: item.dimensions ?? {},
   }))
   await supabase.from('supplier_invoice_items').insert(creditItems)
 
@@ -2559,6 +2575,8 @@ async function commitCreditInvoice(
       our_reference: original.our_reference,
       notes: reason || `Krediterar faktura ${original.invoice_number}`,
       credited_invoice_id: id,
+      // Dimensions PR7: copy so the reversal nets against the same cells.
+      default_dimensions: original.default_dimensions ?? {},
       status: 'sent',
     })
     .select()
@@ -2580,6 +2598,7 @@ async function commitCreditInvoice(
     vat_amount?: number
     revenue_account?: string | null
     article_id?: string | null
+    dimensions?: Record<string, string>
   }) => ({
     invoice_id: creditNote.id,
     sort_order: item.sort_order,
@@ -2595,6 +2614,8 @@ async function commitCreditInvoice(
     // VAT-derived 3001) so the override account doesn't keep a dangling balance.
     revenue_account: item.revenue_account ?? null,
     article_id: item.article_id ?? null,
+    // Same reasoning for the per-item bag (dimensions PR7).
+    dimensions: item.dimensions ?? {},
   }))
 
   const { error: itemsError } = await supabase
@@ -2722,6 +2743,8 @@ async function commitConvertInvoice(
       notes: proforma.notes,
       document_type: 'invoice',
       converted_from_id: id,
+      // Dimensions PR7: the converted invoice books with the proforma's bag.
+      default_dimensions: proforma.default_dimensions ?? {},
     })
     .select()
     .single()
@@ -2751,6 +2774,7 @@ async function commitConvertInvoice(
     vat_amount: item.vat_amount ?? 0,
     revenue_account: item.revenue_account ?? null,
     article_id: item.article_id ?? null,
+    dimensions: item.dimensions ?? {},
   }))
 
   if (items.length > 0) {

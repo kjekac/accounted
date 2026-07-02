@@ -2840,7 +2840,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_categorize_transaction',
     title: 'Categorize Bank Transaction',
-    description: 'Categorize a bank transaction. Stages the journal entry; commit via gnubok_approve_pending_operation. vat_amount overrides computed moms; reverse_charge is rejected when the underlag shows the seller charged VAT.',
+    description: 'Categorize a bank transaction. Stages the journal entry; commit via gnubok_approve_pending_operation. vat_amount overrides computed moms; reverse_charge is rejected when the underlag shows the seller charged VAT. Optional dimensions tag the business lines.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2850,6 +2850,11 @@ export const tools: McpTool[] = [
         vat_treatment: { type: 'string', description: 'VAT treatment override. Defaults to standard_25 for business expenses. Set reverse_charge ONLY when the underlag confirms the seller did NOT charge VAT (omvänd skattskyldighet). An invoice with foreign VAT already debited is NOT reverse charge.', enum: [...VALID_VAT_TREATMENTS] },
         vat_amount: { type: 'number', exclusiveMinimum: 0, description: 'The underlag\'s exact moms (> 0) when it differs from rate × belopp — e.g. dricks carries no VAT. Requires a rate-based vat_treatment. Swedish moms only — foreign VAT is never deductible. For a 0-moms document use vat_treatment="exempt".' },
         notes: { type: 'string', description: 'Audit-trail context appended to the verifikation description. For category=representation use this to record deltagare + syfte ("Anna Andersson (Acme AB), kundmöte om Y"). For project work, include the project ref. Keep under 200 chars; pure metadata, not a re-description of the transaction.' },
+        dimensions: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'Dims bag {sie_dim_no: kod eller namn}, e.g. {"1":"KS01","6":"P001"}. Tags the expense/business lines of the generated voucher — never the bank or VAT lines. Unknown values rejected, never auto-created.',
+        },
         allow_duplicate: { type: 'boolean', description: 'Override the duplicate-booking guard (default false). Set true ONLY after the user confirms this bank line is a genuinely separate event — the guard blocks a second verifikat for an event already booked (e.g. a paid invoice or a salary payout).' },
       },
       required: ['transaction_id', 'category'],
@@ -2865,6 +2870,10 @@ export const tools: McpTool[] = [
       const vatAmount = typeof args.vat_amount === 'number' && Number.isFinite(args.vat_amount)
         ? args.vat_amount
         : undefined
+
+      // MCP boundary gate — reject a malformed dims bag before the DB-heavy
+      // categorization preview runs. Resolution happens right before staging.
+      const inputDimensions = parseDimensionsArg(args.dimensions, 'dimensions')
 
       // Compute the preview (accounts, amounts, VAT lines)
       const result = await categorizeTransactionCore(
@@ -2919,6 +2928,18 @@ export const tools: McpTool[] = [
         ? `${tx.merchant_name || tx.description || 'Transaktion'} ${tx.amount} ${tx.currency}`
         : String(args.transaction_id)
 
+      // Resolve-don't-select: codes AND natural-language names resolve against
+      // the registry in one pass (zero queries when untagged; free-text
+      // passthrough while dimensions_enabled is off). The resolved bag lands on
+      // the expense/business lines only — the executor never tags bank/VAT lines.
+      const { bags: dimBags, resolutions: dimensionResolutions } = await resolveDimensionBags(
+        supabase,
+        companyId,
+        [inputDimensions],
+      )
+      const resolvedDimensions = dimBags[0]
+      const hasDimensions = Boolean(resolvedDimensions && Object.keys(resolvedDimensions).length > 0)
+
       // Stage for user approval
       return stagePendingOperation(supabase, companyId, userId, 'categorize_transaction',
         `Kategorisera: ${txDesc}`,
@@ -2930,6 +2951,7 @@ export const tools: McpTool[] = [
           notes: typeof args.notes === 'string' && args.notes.trim().length > 0
             ? (args.notes as string).trim()
             : null,
+          ...(hasDimensions ? { dimensions: resolvedDimensions } : {}),
           allow_duplicate: args.allow_duplicate === true,
         },
         {
@@ -2940,6 +2962,10 @@ export const tools: McpTool[] = [
           vat_lines: result.vat_lines || [],
           category: result.category,
           underlag: result.underlag ?? null,
+          ...(hasDimensions ? { dimensions: resolvedDimensions } : {}),
+          // Echoed for every non-exact dimension resolution (resolve-don't-
+          // select) so the agent can verify what a name attached to.
+          ...(dimensionResolutions.length > 0 ? { dimension_resolutions: dimensionResolutions } : {}),
         },
         actor,
         {
@@ -3366,7 +3392,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_create_invoice',
     title: 'Create Customer Invoice',
-    description: 'Stage a new invoice. Validates inputs, calculates VAT preview. Stages for user approval — invoice number assigned at approval.',
+    description: 'Stage a new invoice. Validates inputs, calculates VAT preview. Items accept dims bags. Stages for user approval — invoice number assigned at approval.',
     outputSchema: STAGED_OPERATION_SCHEMA,
     inputSchema: {
       type: 'object',
@@ -3383,10 +3409,20 @@ export const tools: McpTool[] = [
               unit: { type: 'string', description: 'st, tim, dag, mån' },
               unit_price: { type: 'number', description: 'Price per unit excl. VAT' },
               vat_rate: { type: 'number', description: 'VAT rate 0–100 (optional override)' },
+              dimensions: {
+                type: 'object',
+                additionalProperties: { type: 'string' },
+                description: 'Dims bag {sie_dim_no: kod eller namn}, e.g. {"6":"P001"}. Wins per key over default_dimensions.',
+              },
             },
             required: ['description', 'quantity', 'unit', 'unit_price'],
           },
           description: 'Invoice line items',
+        },
+        default_dimensions: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'Dims bag keyed by SIE dim no, value = code OR name, e.g. {"1":"KS01","6":"Villa Almgren"}. Applied to every item not setting the key. Unknown values rejected — never auto-created.',
         },
         invoice_date: { type: 'string', description: 'YYYY-MM-DD (default today)' },
         due_date: { type: 'string', description: 'YYYY-MM-DD (default from payment terms)' },
@@ -3411,6 +3447,7 @@ export const tools: McpTool[] = [
         unit: string
         unit_price: number
         vat_rate?: number
+        dimensions?: unknown
       }>
 
       if (!customerId) throw new Error('customer_id is required. Use gnubok_list_customers to find IDs.')
@@ -3422,6 +3459,25 @@ export const tools: McpTool[] = [
         if (!item.unit?.trim()) throw new Error(`Item ${i + 1}: unit is required (st, tim, dag)`)
         if (item.unit_price == null) throw new Error(`Item ${i + 1}: unit_price is required`)
       }
+
+      // Resolve-don't-select: parse the invoice-level default bag + each item's
+      // own bag, then resolve codes AND natural-language names against the
+      // registry in ONE pass (zero queries when nothing is tagged; free-text
+      // passthrough while dimensions_enabled is off). The resolved default is
+      // staged top-level; each item keeps only its own resolved bag — the
+      // executor merges item-over-default at commit time.
+      const defaultDimensions = parseDimensionsArg(args.default_dimensions, 'default_dimensions')
+      const { bags: resolvedDimBags, resolutions: dimensionResolutions } = await resolveDimensionBags(
+        supabase,
+        companyId,
+        [defaultDimensions, ...items.map((item, i) => parseDimensionsArg(item.dimensions, `items[${i}].dimensions`))],
+      )
+      const resolvedDefaultDimensions = resolvedDimBags[0]
+      const stagedItems = items.map((item, i) => {
+        const { dimensions: _rawDimensions, ...rest } = item
+        const bag = resolvedDimBags[i + 1]
+        return bag && Object.keys(bag).length > 0 ? { ...rest, dimensions: bag } : rest
+      })
 
       const today = new Date().toISOString().split('T')[0]
       const currency = ((args.currency as string) || 'SEK') as Currency
@@ -3473,7 +3529,10 @@ export const tools: McpTool[] = [
         `Ny faktura: ${customer.name} ${Math.round(total * 100) / 100} ${currency}`,
         {
           customer_id: customerId,
-          items,
+          items: stagedItems,
+          ...(resolvedDefaultDimensions && Object.keys(resolvedDefaultDimensions).length > 0
+            ? { default_dimensions: resolvedDefaultDimensions }
+            : {}),
           invoice_date: invoiceDate,
           due_date: dueDate,
           currency,
@@ -3484,7 +3543,7 @@ export const tools: McpTool[] = [
         {
           customer_name: customer.name,
           customer_type: customer.customer_type,
-          items: items.map(item => ({
+          items: stagedItems.map(item => ({
             ...item,
             line_total: item.quantity * item.unit_price,
             vat_rate: item.vat_rate ?? vatRules.rate,
@@ -3496,6 +3555,9 @@ export const tools: McpTool[] = [
           vat_treatment: vatRules.treatment,
           invoice_date: invoiceDate,
           due_date: dueDate,
+          // Echoed for every non-exact dimension resolution (resolve-don't-
+          // select) so the agent can verify what a name attached to.
+          ...(dimensionResolutions.length > 0 ? { dimension_resolutions: dimensionResolutions } : {}),
         },
         actor,
         {
@@ -6213,7 +6275,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_bulk_book_transactions',
     title: 'Bulk-Book Transactions',
-    description: 'Bulk-book N bank txs on the same date into 1 samlingsverifikat (BFL 5 kap 6§). Either link N txs to an existing posted verifikat, or create a new verifikat from caller lines. All txs share date + direction. Stages.',
+    description: 'Bulk-book N bank txs on the same date into 1 samlingsverifikat (BFL 5 kap 6§). Either link N txs to an existing posted verifikat, or create a new verifikat from caller lines (accept dims bags). All txs share date + direction. Stages.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -6238,12 +6300,22 @@ export const tools: McpTool[] = [
                   credit_amount: { type: 'number', minimum: 0 },
                   currency: { type: 'string', minLength: 3, maxLength: 3 },
                   line_description: { type: 'string', maxLength: 200 },
+                  dimensions: {
+                    type: 'object',
+                    additionalProperties: { type: 'string' },
+                    description: 'Dims bag {sie_dim_no: kod eller namn}, e.g. {"6":"P001"}. Wins per key over default_dimensions.',
+                  },
                 },
                 required: ['account_number', 'debit_amount', 'credit_amount', 'currency'],
               },
             },
           },
           required: ['description', 'lines'],
+        },
+        default_dimensions: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'Dims bag keyed by SIE dim no, value = code OR name. Applied to every new_entry line not setting the key. Only valid with new_entry — a posted verifikat is immutable.',
         },
       },
       required: ['tx_ids'],
@@ -6298,6 +6370,43 @@ export const tools: McpTool[] = [
             )
           }
         }
+      }
+
+      // Resolve-don't-select: merge the batch-level default_dimensions under
+      // each caller line's own bag, then resolve codes AND natural-language
+      // names against the registry in ONE pass (zero queries when nothing is
+      // tagged; free-text passthrough while dimensions_enabled is off). The
+      // resolved bags are written back onto the staged new_entry lines — the
+      // executor's RPC reads per-line dims only, so the merged default is
+      // never staged top-level.
+      const defaultDimensions = parseDimensionsArg(args.default_dimensions, 'default_dimensions')
+      let dimensionResolutions: DimensionResolution[] = []
+      let stagedNewEntry = newEntry
+      if (newEntry) {
+        const rawLines = newEntry.lines as Array<Record<string, unknown>>
+        const { bags, resolutions } = await resolveDimensionBags(
+          supabase,
+          companyId,
+          rawLines.map((l, i) =>
+            mergeLineDimensions(
+              { dimensions: parseDimensionsArg(l.dimensions, `new_entry.lines[${i}].dimensions`) },
+              defaultDimensions,
+            ),
+          ),
+        )
+        dimensionResolutions = resolutions
+        stagedNewEntry = {
+          ...newEntry,
+          lines: rawLines.map((l, i) => {
+            const { dimensions: _rawDimensions, ...rest } = l
+            const bag = bags[i]
+            return bag && Object.keys(bag).length > 0 ? { ...rest, dimensions: bag } : rest
+          }),
+        }
+      } else if (defaultDimensions) {
+        throw new Error(
+          'default_dimensions only applies when creating a new verifikat (new_entry) — a posted verifikat is immutable, so link-existing mode cannot be tagged.'
+        )
       }
 
       const { data: txs, error: txError } = await supabase
@@ -6372,7 +6481,7 @@ export const tools: McpTool[] = [
         {
           tx_ids: txIds,
           existing_journal_entry_id: existingJeId,
-          new_entry: newEntry,
+          new_entry: stagedNewEntry,
         },
         // GDPR Art.25: preview_data carries only aggregate counts + the
         // shared date/direction — no per-tx descriptions, no per-line
@@ -6386,6 +6495,9 @@ export const tools: McpTool[] = [
           tx_sum: txSum,
           direction,
           mode: existingJeId ? 'link_existing' : 'create_new',
+          // Echoed for every non-exact dimension resolution (resolve-don't-
+          // select) so the agent can verify what a name attached to.
+          ...(dimensionResolutions.length > 0 ? { dimension_resolutions: dimensionResolutions } : {}),
         },
         actor,
         {
@@ -7371,7 +7483,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_create_supplier_invoice_from_inbox',
     title: 'Create Supplier Invoice from Inbox',
-    description: "Atomic: turn an OCR'd inbox item into a staged supplier invoice. Resolves supplier, builds lines from extracted_data, applies VAT + FX, attaches the document. Stages for human review; honors dry_run.",
+    description: "Atomic: turn an OCR'd inbox item into a staged supplier invoice. Resolves supplier, builds lines from extracted_data, applies VAT + FX + dimension tags, attaches the document. Stages for human review; honors dry_run.",
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -7382,16 +7494,26 @@ export const tools: McpTool[] = [
         due_date_override: { type: 'string', description: 'Override extracted due date (YYYY-MM-DD)' },
         line_overrides: {
           type: 'array',
-          description: 'Per-line account overrides (1-based line_number). Wins over accountSuggestion and supplier default.',
+          description: 'Per-line overrides (1-based line_number): account_number wins over accountSuggestion and supplier default; dimensions tags that line.',
           items: {
             type: 'object',
             additionalProperties: false,
             properties: {
               line_number: { type: 'number', description: '1-based index matching items_preview' },
               account_number: { type: 'string', description: 'BAS account number for this line (e.g. "6420")' },
+              dimensions: {
+                type: 'object',
+                additionalProperties: { type: 'string' },
+                description: 'Dims bag {sie_dim_no: kod eller namn}, e.g. {"6":"P001"}, for this line. Wins per key over default_dimensions.',
+              },
             },
-            required: ['line_number', 'account_number'],
+            required: ['line_number'],
           },
+        },
+        default_dimensions: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'Dims bag keyed by SIE dim no, value = code OR name, e.g. {"1":"KS01","6":"Villa Almgren"}. Applied to every line not setting the key. Unknown values rejected — never auto-created.',
         },
         notes: { type: 'string', description: 'Optional notes appended to the supplier invoice' },
         dry_run: { type: 'boolean', description: 'If true, return the assembled payload without staging (default false)' },
@@ -7512,14 +7634,34 @@ export const tools: McpTool[] = [
         }
       }
 
-      // Build a lookup for per-line account overrides keyed by 1-based line number.
-      const rawLineOverrides = (args.line_overrides as Array<{ line_number: number; account_number: string }> | undefined) ?? []
-      const lineOverrideMap = new Map(rawLineOverrides.map((o) => [o.line_number, o.account_number]))
+      // Build lookups for per-line overrides keyed by 1-based line number.
+      const rawLineOverrides = (args.line_overrides as Array<{ line_number: number; account_number?: string; dimensions?: unknown }> | undefined) ?? []
+      const lineOverrideMap = new Map(
+        rawLineOverrides.filter((o) => o.account_number).map((o) => [o.line_number, o.account_number as string]),
+      )
+      const lineDimensionsMap = new Map(
+        rawLineOverrides.map((o, i) => [o.line_number, parseDimensionsArg(o.dimensions, `line_overrides[${i}].dimensions`)]),
+      )
+
+      // Resolve-don't-select: parse the invoice-level default bag + each line's
+      // own bag, then resolve codes AND natural-language names against the
+      // registry in ONE pass (zero queries when nothing is tagged; free-text
+      // passthrough while dimensions_enabled is off). The resolved default is
+      // staged top-level; each item keeps only its own resolved bag — the
+      // executor merges item-over-default at commit time.
+      const defaultDimensions = parseDimensionsArg(args.default_dimensions, 'default_dimensions')
+      const { bags: resolvedDimBags, resolutions: dimensionResolutions } = await resolveDimensionBags(
+        supabase,
+        companyId,
+        [defaultDimensions, ...lineItemsExt.map((_li, idx) => lineDimensionsMap.get(idx + 1))],
+      )
+      const resolvedDefaultDimensions = resolvedDimBags[0]
 
       // Translate extracted line items into the supplier_invoice_items shape.
       // Priority: line_overrides → per-line accountSuggestion → supplier.default_expense_account → 4000.
       const lineItems = lineItemsExt.map((li, idx) => {
         const lineNumber = idx + 1
+        const dimensions = resolvedDimBags[idx + 1]
         return {
           line_number: lineNumber,
           description: (li.description as string) ?? `Position ${lineNumber}`,
@@ -7530,6 +7672,7 @@ export const tools: McpTool[] = [
           account_number: lineOverrideMap.get(lineNumber) ?? (li.accountSuggestion as string | null) ?? supplierDefaultExpenseAccount ?? '4000',
           vat_rate: Number(li.vat_rate ?? li.vatRate) || 0,
           vat_amount: Number(li.vat_amount ?? li.vatAmount) || 0,
+          ...(dimensions && Object.keys(dimensions).length > 0 ? { dimensions } : {}),
         }
       })
 
@@ -7548,6 +7691,9 @@ export const tools: McpTool[] = [
         total: Math.round(total * 100) / 100,
         notes: (args.notes as string | undefined) ?? null,
         items: lineItems,
+        ...(resolvedDefaultDimensions && Object.keys(resolvedDefaultDimensions).length > 0
+          ? { default_dimensions: resolvedDefaultDimensions }
+          : {}),
       }
 
       const previewData = {
@@ -7568,6 +7714,9 @@ export const tools: McpTool[] = [
         total: params.total,
         line_count: lineItems.length,
         items_preview: lineItems.slice(0, 5),
+        // Echoed for every non-exact dimension resolution (resolve-don't-
+        // select) so the agent can verify what a name attached to.
+        ...(dimensionResolutions.length > 0 ? { dimension_resolutions: dimensionResolutions } : {}),
         will: 'register supplier invoice (status=registered), attach the inbox document, post a registration journal entry on confirm — leverantörsskuld (2440) credited and the cost/VAT split debited per the per-line VAT rules',
       }
 

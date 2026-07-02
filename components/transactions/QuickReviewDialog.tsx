@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
@@ -171,6 +172,20 @@ export default function QuickReviewDialog({
   const isForeign = !!(tx.currency && tx.currency !== 'SEK')
   const sekConversionMissing = isForeign && (tx.amount_sek == null || tx.exchange_rate == null)
 
+  // Dimensions carried by the counterparty template's line pattern (dimensions
+  // PR7). Business lines may each carry a {sie_dim_no: code} bag — merge them
+  // into one compact display label ("KS01 · P001", dim-number order). This is
+  // display-only: booking applies the pattern's bags server-side.
+  const patternDims: Record<string, string> = {}
+  for (const line of counterpartyLinePattern ?? []) {
+    if (line.dimensions) Object.assign(patternDims, line.dimensions)
+  }
+  const patternDimsLabel = Object.entries(patternDims)
+    .filter(([, code]) => code)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, code]) => code)
+    .join(' · ')
+
   async function handleConfirm() {
     if (!category || !transaction) return
 
@@ -311,6 +326,11 @@ export default function QuickReviewDialog({
             <span className="text-sm font-medium text-foreground">
               {template ? template.name_sv : categoryLabel}
             </span>
+            {patternDimsLabel && (
+              <Badge variant="secondary" className="font-mono tabular-nums">
+                {patternDimsLabel}
+              </Badge>
+            )}
             {onChangeTemplate && !isCounterpartyTemplate && (
               <button
                 type="button"

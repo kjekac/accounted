@@ -24,7 +24,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { formatCurrency } from '@/lib/utils'
 import { getVatRules, getAvailableVatRates } from '@/lib/invoices/vat-rules'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
-import { Loader2, Plus, Trash2, ArrowLeft, Send, Eye, Landmark, Lock, AlertTriangle, MoreVertical, CalendarClock } from 'lucide-react'
+import { Loader2, Plus, Trash2, ArrowLeft, Send, Eye, Landmark, Lock, AlertTriangle, MoreVertical, CalendarClock, Tags } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -54,6 +54,7 @@ import {
 } from '@/lib/invoices/rot-rut-rules'
 import AccrualPeriodControl from '@/components/bookkeeping/AccrualPeriodControl'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
+import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
 import { DEFAULT_DEFERRED_REVENUE_ACCOUNT } from '@/lib/bookkeeping/accruals/account-suggestions'
 import { countCalendarMonths } from '@/lib/bookkeeping/accruals/compute'
 import type { Customer, Currency, CreateInvoiceInput, CreateCustomerInput, InvoiceDocumentType, Article, Invoice, InvoiceItem, BASAccount } from '@/types'
@@ -83,6 +84,20 @@ type ArticleOption = Pick<
 
 function RequiredMark() {
   return <span className="text-destructive ml-0.5" aria-hidden="true">*</span>
+}
+
+// True when a dimensions bag ({sie_dim_no: code}) carries at least one value.
+function hasDimensionValues(dims: Record<string, string> | null | undefined): boolean {
+  return !!dims && Object.keys(dims).length > 0
+}
+
+// Compact display of a dimensions bag, e.g. "KS01 · P001" (dim-number order).
+function compactDims(dims: Record<string, string>): string {
+  return Object.entries(dims)
+    .filter(([, v]) => v)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, v]) => v)
+    .join(' · ')
 }
 
 export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'create' }) {
@@ -128,6 +143,10 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       accrual_period_start: z.string().nullable().optional(),
       accrual_period_end: z.string().nullable().optional(),
       accrual_balance_account: z.string().nullable().optional(),
+      // Per-item dimensions bag ({sie_dim_no: code}, dimensions PR7). Stored
+      // as-is; the server merges it over the invoice's default_dimensions on
+      // the item's revenue line at booking time.
+      dimensions: z.record(z.string(), z.string()).nullable().optional(),
     }).superRefine((item, ctx) => {
       if (item.accrual_balance_account != null) {
         const start = item.accrual_period_start
@@ -221,6 +240,17 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
   // override, plus which rows currently show that picker.
   const [revenueAccounts, setRevenueAccounts] = useState<BASAccount[]>([])
   const [accountOverrideRows, setAccountOverrideRows] = useState<Set<number>>(new Set())
+  // Dimension tagging (kostnadsställe/projekt, dimensions PR7). Affordances
+  // render only when company_settings.dimensions_enabled — a UI-visibility
+  // gate; a draft that already carries bags still round-trips untouched when
+  // the toggle is off. defaultDims is the invoice-level default; per-item
+  // overrides live on the form items and open via the row ⋮ menu (same
+  // open/close bookkeeping as accountOverrideRows).
+  const [dimensionsEnabled, setDimensionsEnabled] = useState(false)
+  const [defaultDims, setDefaultDims] = useState<Record<string, string>>(
+    initial?.default_dimensions ?? {},
+  )
+  const [dimensionOverrideRows, setDimensionOverrideRows] = useState<Set<number>>(new Set())
   // True only when the user had zero invoices when this page loaded. The
   // post-create flow uses this to offer a one-shot "upload a logo?" prompt
   // — issue #520. Self-limits: once count > 0 it stays false.
@@ -279,6 +309,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             accrual_period_start: item.accrual_period_start ?? null,
             accrual_period_end: item.accrual_period_end ?? null,
             accrual_balance_account: item.accrual_balance_account ?? null,
+            dimensions: hasDimensionValues(item.dimensions) ? item.dimensions ?? null : null,
           })),
         }
       : {
@@ -306,6 +337,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             accrual_period_start: null,
             accrual_period_end: null,
             accrual_balance_account: null,
+            dimensions: null,
           }],
         },
   })
@@ -452,7 +484,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     if (!company?.id) return
     const { data } = await supabase
       .from('company_settings')
-      .select('invoice_default_notes, default_our_reference, clearing_number, account_number, bankgiro, accounting_method, ore_rounding, logo_url, vat_registered')
+      .select('invoice_default_notes, default_our_reference, clearing_number, account_number, bankgiro, accounting_method, ore_rounding, logo_url, vat_registered, dimensions_enabled')
       .eq('company_id', company.id)
       .single()
     if (data?.invoice_default_notes) {
@@ -479,6 +511,8 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     if (typeof data?.vat_registered === 'boolean') {
       setVatRegistered(data.vat_registered)
     }
+    // Gates the dimension affordances (header default + per-row override).
+    setDimensionsEnabled(data?.dimensions_enabled === true)
   }
 
   // First-invoice detection (issue #520): captured at page load so the
@@ -711,6 +745,57 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     }
   }
 
+  // Open/close the optional per-item dimensions override (⋮ menu). Closing
+  // clears the bag so the row falls back to the invoice's default_dimensions.
+  function toggleItemDimensions(index: number) {
+    const isOpen = dimensionOverrideRows.has(index) || hasDimensionValues(watchItems[index]?.dimensions)
+    if (isOpen) {
+      setValue(`items.${index}.dimensions`, null, { shouldDirty: true })
+      setDimensionOverrideRows((prev) => {
+        const next = new Set(prev)
+        next.delete(index)
+        return next
+      })
+    } else {
+      setDimensionOverrideRows((prev) => new Set(prev).add(index))
+    }
+  }
+
+  function updateItemDimension(index: number, dimNo: string, code: string | null) {
+    const current = { ...(watchItems[index]?.dimensions ?? {}) }
+    const trimmed = code?.trim()
+    if (trimmed) current[dimNo] = trimmed
+    else delete current[dimNo]
+    setValue(
+      `items.${index}.dimensions`,
+      Object.keys(current).length > 0 ? current : null,
+      { shouldDirty: true },
+    )
+    // Keep the sub-row open after the user clears the last value — it closes
+    // only via the ⋮ menu (same lifecycle as the account override).
+    setDimensionOverrideRows((prev) => (prev.has(index) ? prev : new Set(prev).add(index)))
+  }
+
+  function setDefaultDimension(dimNo: string, code: string | null) {
+    setDefaultDims((prev) => {
+      const next = { ...prev }
+      const trimmed = code?.trim()
+      if (trimmed) next[dimNo] = trimmed
+      else delete next[dimNo]
+      return next
+    })
+  }
+
+  // Per-item bags ride the payload only when they carry values — the server
+  // treats an absent bag as "inherit the invoice's default_dimensions".
+  function pruneItemDimensions<T extends { dimensions?: Record<string, string> | null }>(
+    items: T[],
+  ): T[] {
+    return items.map((item) =>
+      hasDimensionValues(item.dimensions) ? item : { ...item, dimensions: undefined },
+    )
+  }
+
   // Self-billing path: no review dialog, no PDF, no send — it arrives already
   // booked. POST straight to the dedicated endpoint and open the verifikat.
   async function handleSelfBilledSubmit(data: FormData) {
@@ -834,7 +919,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     // null in the form state, but null personal-data fields shouldn't ride
     // along on every regular invoice.
     const anyDeduction = pendingData.items.some((i) => i.deduction_type)
-    const sanitizedItems = pendingData.items.map((item) => {
+    const sanitizedItems = pruneItemDimensions(pendingData.items).map((item) => {
       if (item.deduction_type) return item
       const {
         deduction_type: _dt,
@@ -846,9 +931,12 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       } = item
       return rest
     })
-    const sanitizedPayload: CreateInvoiceInput = {
+    const sanitizedPayload: CreateInvoiceInput & { default_dimensions: Record<string, string> } = {
       ...(pendingData as CreateInvoiceInput),
       ore_rounding: oreRounding,
+      // Invoice-level default dims — always sent so an edited draft can clear
+      // them; {} means "no defaults".
+      default_dimensions: defaultDims,
       items: sanitizedItems as CreateInvoiceInput['items'],
       ...(anyDeduction
         ? {}
@@ -907,7 +995,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     setIsSavingDraft(true)
 
     const anyDeduction = data.items.some((i) => i.deduction_type)
-    const sanitizedItems = data.items.map((item) => {
+    const sanitizedItems = pruneItemDimensions(data.items).map((item) => {
       if (item.deduction_type) return item
       const {
         deduction_type: _dt,
@@ -919,10 +1007,11 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       } = item
       return rest
     })
-    const payload: CreateInvoiceInput = {
+    const payload: CreateInvoiceInput & { default_dimensions: Record<string, string> } = {
       ...(data as CreateInvoiceInput),
       save_as_draft: true,
       ore_rounding: oreRounding,
+      default_dimensions: defaultDims,
       items: sanitizedItems as CreateInvoiceInput['items'],
       ...(anyDeduction
         ? {}
@@ -964,7 +1053,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     setIsSubmitting(true)
 
     const anyDeduction = data.items.some((i) => i.deduction_type)
-    const sanitizedItems = data.items.map((item) => {
+    const sanitizedItems = pruneItemDimensions(data.items).map((item) => {
       if (item.deduction_type) return item
       const {
         deduction_type: _dt,
@@ -976,9 +1065,10 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       } = item
       return rest
     })
-    const payload: CreateInvoiceInput = {
+    const payload: CreateInvoiceInput & { default_dimensions: Record<string, string> } = {
       ...(data as CreateInvoiceInput),
       ore_rounding: oreRounding,
+      default_dimensions: defaultDims,
       items: sanitizedItems as CreateInvoiceInput['items'],
       ...(anyDeduction
         ? {}
@@ -1343,6 +1433,17 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                               </DropdownMenuItem>
                             </>
                           )}
+                          {dimensionsEnabled && watchItems[index]?.line_type !== 'text' && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onSelect={() => toggleItemDimensions(index)} className="py-2">
+                                <Tags className="h-4 w-4" />
+                                {(dimensionOverrideRows.has(index) || hasDimensionValues(watchItems[index]?.dimensions))
+                                  ? t('row_menu_remove_dimensions')
+                                  : t('row_menu_set_dimensions')}
+                              </DropdownMenuItem>
+                            </>
+                          )}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="py-2 text-destructive focus:text-destructive"
@@ -1662,6 +1763,28 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                         </div>
                       )}
 
+                      {/* Per-item dimensions override (dimensions PR7) — opened
+                          via the row's ⋮ menu. The bag is stored as-is; the
+                          server merges it over the invoice's default_dimensions
+                          for this item's revenue line at booking time. */}
+                      {dimensionsEnabled && isInvoiceDoc && watchItems[index]?.line_type !== 'text' &&
+                        (dimensionOverrideRows.has(index) || hasDimensionValues(watchItems[index]?.dimensions)) && (
+                        <div className="md:col-span-12 mt-2 md:mt-3">
+                          <div className="max-w-md">
+                            <LineDimensionFields
+                              dimensions={watchItems[index]?.dimensions ?? undefined}
+                              onChange={(dimNo, code) => updateItemDimension(index, dimNo, code)}
+                              inputClassName="h-8"
+                            />
+                          </div>
+                          {hasDimensionValues(defaultDims) && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {t('row_dimensions_inherit_hint', { dims: compactDims(defaultDims) })}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {/* Mobile summary row */}
                       <div className="flex justify-between text-sm pt-1 border-t border-border/40 md:hidden">
                         <span className="text-muted-foreground">{t('row_label', { index: index + 1 })}</span>
@@ -1696,6 +1819,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                         accrual_period_start: null,
                         accrual_period_end: null,
                         accrual_balance_account: null,
+                        dimensions: null,
                       })
                     }
                   >
@@ -1731,6 +1855,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                           accrual_period_start: null,
                           accrual_period_end: null,
                           accrual_balance_account: null,
+                          dimensions: null,
                         })
                       }
                     >
@@ -1922,6 +2047,26 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                       )}
                     />
                   </div>
+
+                  {/* Invoice-level default dims (kostnadsställe/projekt) —
+                      written to every generated journal line; per-item bags
+                      (row ⋮ menu) merge on top. Renders only when dimensions
+                      are enabled for the company and the doc actually books. */}
+                  {dimensionsEnabled && isInvoiceDoc && (
+                    <>
+                      <Separator />
+                      <div className="space-y-1">
+                        <LineDimensionFields
+                          dimensions={defaultDims}
+                          onChange={setDefaultDimension}
+                          inputClassName="h-9"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          {t('dimensions_default_hint')}
+                        </p>
+                      </div>
+                    </>
+                  )}
                 </>
               )}
             </CardContent>

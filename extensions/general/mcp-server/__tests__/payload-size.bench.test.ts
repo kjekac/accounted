@@ -78,9 +78,16 @@ describe('tools/list payload size guard', () => {
     //     group_by/group_by_dimension + totals_scope + groups on
     //     gnubok_query_journal. Descriptions trimmed first (~100 tokens
     //     recovered); the ~55-token remainder is schema structure.
+    //   * 43K → 44K with dimensions PR7 producers: default_dimensions + per-item/
+    //     per-line dims bags on gnubok_create_invoice, gnubok_create_supplier_
+    //     invoice_from_inbox, gnubok_categorize_transaction and
+    //     gnubok_bulk_book_transactions (8 new object properties). Descriptions
+    //     already use the compact "Dims bag" form (~90 tokens trimmed first);
+    //     the remainder is schema structure the resolve-don't-select contract
+    //     depends on, not trimmable prose.
     // Long-term answer to growth is leaning harder on gnubok_search_tools — if this
     // fires again, prefer trimming descriptions or making a tool opt-in via search
     // before bumping further.
-    expect(approxTokens).toBeLessThan(43_000)
+    expect(approxTokens).toBeLessThan(44_000)
   })
 })

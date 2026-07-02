@@ -23,6 +23,14 @@ export interface ProposePaymentLinesInput {
     exchange_rate?: number | null
     vat_treatment: VatTreatment
     items?: InvoiceItem[]
+    /**
+     * Dimensions PR7: the invoice's default bag. Stamped on every proposed
+     * line — the payment dialog always submits its (editable) lines, so the
+     * preview IS the booked entry and must re-propagate the tag like the
+     * no-override generator path does. Per-item bags are not split out here
+     * (the preview groups per rate); users can retag lines in the grid.
+     */
+    default_dimensions?: Record<string, string> | null
   }
   accountingMethod: 'accrual' | 'cash'
   entityType: EntityType
@@ -65,10 +73,17 @@ export function proposePaymentLines(input: ProposePaymentLinesInput): FormLine[]
   const paymentAccount = input.paymentAccount || '1930'
   const desc = invoice.invoice_number ? `Betalning faktura ${invoice.invoice_number}` : 'Betalning faktura'
 
-  if (accountingMethod === 'accrual') {
-    return proposeAccrualLines(invoice, paymentAccount, desc, exchangeRateDifference)
+  const lines = accountingMethod === 'accrual'
+    ? proposeAccrualLines(invoice, paymentAccount, desc, exchangeRateDifference)
+    : proposeCashLines(invoice, paymentAccount, desc, entityType)
+
+  // Dimensions PR7: re-propagate the invoice default onto every proposed leg
+  // (matches createInvoicePaymentJournalEntry/createInvoiceCashEntry).
+  const bag = invoice.default_dimensions
+  if (bag && Object.keys(bag).length > 0) {
+    return lines.map((line) => ({ ...line, dimensions: { ...bag } }))
   }
-  return proposeCashLines(invoice, paymentAccount, desc, entityType)
+  return lines
 }
 
 function proposeAccrualLines(

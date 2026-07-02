@@ -98,6 +98,43 @@ export function coerceDimensionsBag(raw: unknown): LineDimensions | undefined {
 }
 
 /**
+ * Merge a line/item-level dimensions bag over a document-level default
+ * (producers, PR7: invoice default_dimensions under item.dimensions). The
+ * override wins per key; an explicit empty-string override clears the key —
+ * the same clear-semantics as normalizeLineDimensions, which does the final
+ * cleanup. Returns undefined when the merged bag is empty so callers can
+ * assign it to an optional field without writing `{}` noise.
+ */
+export function mergeDimensionBags(
+  base?: LineDimensions | null,
+  override?: LineDimensions | null
+): LineDimensions | undefined {
+  if (!base && !override) return undefined
+  const merged = normalizeLineDimensions({
+    dimensions: { ...(base ?? {}), ...(override ?? {}) },
+  })
+  return Object.keys(merged).length > 0 ? merged : undefined
+}
+
+/**
+ * Stable serialization of a dimensions bag for grouping keys, so generators
+ * that aggregate amounts per account can keep items with different dimension
+ * tags on separate journal lines (account + bag = the aggregation identity).
+ * Key order is canonicalized; '' means "no dimensions". Callers must pass a
+ * NORMALIZED bag (mergeDimensionBags/normalizeLineDimensions output) — an
+ * unnormalized bag ('01' vs '1', untrimmed values) would key differently
+ * from its normalized twin.
+ */
+export function dimensionsBagKey(dimensions?: LineDimensions): string {
+  if (!dimensions) return ''
+  return JSON.stringify(
+    Object.keys(dimensions)
+      .sort()
+      .map((key) => [key, dimensions[key]])
+  )
+}
+
+/**
  * Derive the legacy mirror columns from the canonical map. Pure function —
  * divergence between `dimensions` and cost_center/project is impossible as
  * long as every writer goes through this.

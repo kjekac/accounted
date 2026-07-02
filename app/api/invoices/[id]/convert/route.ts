@@ -90,6 +90,8 @@ export async function POST(
       notes: proforma.notes,
       document_type: 'invoice',
       converted_from_id: id,
+      // Dimensions PR7: the converted invoice books with the proforma's bag.
+      default_dimensions: proforma.default_dimensions ?? {},
     })
     .select()
     .single()
@@ -98,7 +100,7 @@ export async function POST(
     return NextResponse.json({ error: invoiceError.message }, { status: 500 })
   }
 
-  const items = (proforma.items || []).map((item: { sort_order: number; line_type?: 'product' | 'text'; description: string; quantity: number; unit: string; unit_price: number; line_total: number }) => ({
+  const items = (proforma.items || []).map((item: { sort_order: number; line_type?: 'product' | 'text'; description: string; quantity: number; unit: string; unit_price: number; line_total: number; dimensions?: Record<string, string> }) => ({
     invoice_id: invoice.id,
     sort_order: item.sort_order,
     line_type: item.line_type ?? 'product',
@@ -107,6 +109,7 @@ export async function POST(
     unit: item.unit,
     unit_price: item.unit_price,
     line_total: item.line_total,
+    dimensions: item.dimensions ?? {},
   }))
 
   if (items.length > 0) {

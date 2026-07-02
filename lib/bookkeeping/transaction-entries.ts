@@ -1,5 +1,6 @@
 import { createJournalEntry, findFiscalPeriod } from './engine'
 import { resolveSekAmount, buildCurrencyMetadata } from './currency-utils'
+import { coerceDimensionsBag } from './dimension-resolver'
 import { extractNetAmount, extractVatAmount } from './vat-entries'
 import { InvalidMappingResultError } from '@/lib/bookkeeping/errors'
 import { createLogger } from '@/lib/logger'
@@ -74,6 +75,11 @@ export async function createTransactionJournalEntry(
     transaction.exchange_rate
   )
   const lines: CreateJournalEntryLineInput[] = []
+  // Dimensions PR7: the bag tags the business (expense/revenue) lines only —
+  // bank/settlement and VAT lines stay untagged. In the multi-line template
+  // path each pattern line carries its own bag instead (LinePatternEntry).
+  // The private path books to a balance account (2013/2893) — never tagged.
+  const businessDimensions = coerceDimensionsBag(mappingResult.dimensions)
 
   if (mappingResult.default_private) {
     // Private expense — use entity-specific account from mappingResult
@@ -99,13 +105,16 @@ export async function createTransactionJournalEntry(
       : (mappingResult.debit_account || '1930')
 
     if (isExpense) {
-      // All non-settlement lines (business, VAT, tax, rounding)
+      // All non-settlement lines (business, VAT, tax, rounding). Per-line bags
+      // are authoritative here — the pattern marks business lines only, so no
+      // fallback to the categorize-level bag (it would mis-tag VAT/tax lines).
       for (const line of mappingResult.vat_lines) {
         lines.push({
           account_number: line.account_number,
           debit_amount: line.debit_amount,
           credit_amount: line.credit_amount,
           line_description: line.description || transaction.description,
+          dimensions: coerceDimensionsBag(line.dimensions),
         })
       }
       // Credit bank for full amount
@@ -125,13 +134,14 @@ export async function createTransactionJournalEntry(
         line_description: transaction.description,
         ...(isForeign ? currencyMeta : {}),
       })
-      // All non-settlement lines
+      // All non-settlement lines — per-line bags authoritative (see above).
       for (const line of mappingResult.vat_lines) {
         lines.push({
           account_number: line.account_number,
           debit_amount: line.debit_amount,
           credit_amount: line.credit_amount,
           line_description: line.description || transaction.description,
+          dimensions: coerceDimensionsBag(line.dimensions),
         })
       }
     }
@@ -163,6 +173,7 @@ export async function createTransactionJournalEntry(
         debit_amount: netAmount,
         credit_amount: 0,
         line_description: transaction.description,
+        dimensions: businessDimensions,
       })
     } else {
       // No VAT handling - debit full amount to expense account
@@ -171,6 +182,7 @@ export async function createTransactionJournalEntry(
         debit_amount: absAmount,
         credit_amount: 0,
         line_description: transaction.description,
+        dimensions: businessDimensions,
       })
     }
 
@@ -208,6 +220,7 @@ export async function createTransactionJournalEntry(
         debit_amount: 0,
         credit_amount: netAmount,
         line_description: transaction.description,
+        dimensions: businessDimensions,
       })
       // Credit output VAT
       for (const vatLine of mappingResult.vat_lines) {

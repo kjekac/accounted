@@ -182,3 +182,86 @@ describe('commitPendingOperation: create_invoice', () => {
     })
   })
 })
+
+describe('commitPendingOperation: create_invoice — dimensions propagation (PR7)', () => {
+  it('staged default_dimensions lands on the invoices row and item bags on invoice_items rows', async () => {
+    const { supabase, inserts } = createCapturingSupabase(queueFor({ vat_registered: true }))
+
+    const op = makePendingOp({
+      params: {
+        customer_id: 'cust-1',
+        default_dimensions: { '1': 'KS01' },
+        items: [
+          {
+            description: 'Konsulttimmar',
+            quantity: 1,
+            unit: 'tim',
+            unit_price: 1000,
+            vat_rate: 25,
+            dimensions: { '6': 'P001' },
+          },
+          { line_type: 'text', description: 'Avser vecka 23', quantity: 0, unit: '', unit_price: 0, vat_rate: 0 },
+        ],
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    expect(inserts['invoices'][0]).toMatchObject({ default_dimensions: { '1': 'KS01' } })
+
+    const itemRows = inserts['invoice_items'][0] as Array<Record<string, unknown>>
+    expect(itemRows).toHaveLength(2)
+    expect(itemRows[0]).toMatchObject({ line_type: 'product', dimensions: { '6': 'P001' } })
+    // Text rows never carry a bag.
+    expect(itemRows[1]).toMatchObject({ line_type: 'text', dimensions: {} })
+  })
+
+  it('defaults to {} when no bags are staged', async () => {
+    const { supabase, inserts } = createCapturingSupabase(queueFor({ vat_registered: true }))
+
+    const op = makePendingOp({
+      params: {
+        customer_id: 'cust-1',
+        items: [{ description: 'Konsulttimmar', quantity: 1, unit: 'tim', unit_price: 1000, vat_rate: 25 }],
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    expect(inserts['invoices'][0]).toMatchObject({ default_dimensions: {} })
+    const itemRows = inserts['invoice_items'][0] as Array<Record<string, unknown>>
+    expect(itemRows[0]).toMatchObject({ dimensions: {} })
+  })
+
+  it('coerces an INVALID staged bag away — the insert gets {} (drift/tamper gate)', async () => {
+    const { supabase, inserts } = createCapturingSupabase(queueFor({ vat_registered: true }))
+
+    const op = makePendingOp({
+      params: {
+        customer_id: 'cust-1',
+        // '0' is not a valid SIE dimension number — the whole bag is rejected.
+        default_dimensions: { '0': 'X' },
+        items: [
+          {
+            description: 'Konsulttimmar',
+            quantity: 1,
+            unit: 'tim',
+            unit_price: 1000,
+            vat_rate: 25,
+            // Empty code fails the schema — the whole bag is rejected.
+            dimensions: { '1': '' },
+          },
+        ],
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    expect(inserts['invoices'][0]).toMatchObject({ default_dimensions: {} })
+    const itemRows = inserts['invoice_items'][0] as Array<Record<string, unknown>>
+    expect(itemRows[0]).toMatchObject({ dimensions: {} })
+  })
+})

@@ -182,6 +182,9 @@ export const POST = withRouteContext(
           ? (item.accrual_balance_account ??
             suggestBalanceAccount('expense', item.account_number))
           : null,
+        // Dimensions PR7: per-item bag, merged over default_dimensions on the
+        // expense line at booking (supplier-invoice-entries.ts).
+        dimensions: item.dimensions ?? {},
       }
     })
 
@@ -250,6 +253,8 @@ export const POST = withRouteContext(
         notes: body.notes || null,
         // Display-only öresavrundning override; null = off (no retroactive rounding).
         ore_rounding: body.ore_rounding ?? null,
+        // Dimensions PR7: invoice-level bag; generators apply it to every line.
+        default_dimensions: body.default_dimensions ?? {},
       })
       .select()
       .single()

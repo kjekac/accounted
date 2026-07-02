@@ -4,6 +4,7 @@ import { validateBody } from '@/lib/api/validate'
 import { BulkBookSchema } from '@/lib/api/schemas'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { applyTemplate } from '@/lib/bookkeeping/template-library'
+import { mergeDimensionBags } from '@/lib/bookkeeping/dimension-resolver'
 import { eventBus } from '@/lib/events/bus'
 import { ensureInitialized } from '@/lib/init'
 import type { BookingTemplateLibraryLine, Transaction } from '@/types'
@@ -34,6 +35,9 @@ interface ComputedLine {
   currency: string
   line_description?: string
   sort_order?: number
+  // Dimensions PR7: bag persisted by the RPC onto journal_entry_lines
+  // (with cost_center/project mirrors derived server-side).
+  dimensions?: Record<string, string>
 }
 
 function round2(n: number): number {
@@ -120,6 +124,8 @@ export const POST = withRouteContext(
           currency: l.currency,
           line_description: l.line_description,
           sort_order: i,
+          // Dimensions PR7: per-line bag wins over the header default.
+          dimensions: mergeDimensionBags(body.default_dimensions, l.dimensions),
         })),
       }
     } else if (body.template_id && body.mode && body.entry_description) {
@@ -199,6 +205,8 @@ export const POST = withRouteContext(
             currency,
             line_description: formLine.line_description || undefined,
             sort_order: sortOrder++,
+            // Dimensions PR7: header default applies to all template lines.
+            dimensions: body.default_dimensions,
           })
         }
       } else {
@@ -221,6 +229,8 @@ export const POST = withRouteContext(
                 ? `${formLine.line_description ?? ''} – ${txTag}`.trim()
                 : formLine.line_description || undefined,
               sort_order: sortOrder++,
+              // Dimensions PR7: header default applies to all template lines.
+              dimensions: body.default_dimensions,
             })
           }
         }
