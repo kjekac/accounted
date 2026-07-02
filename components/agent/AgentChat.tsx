@@ -924,9 +924,16 @@ export function normalizeStoredMessages(
     if (!Array.isArray(content)) continue
     let text = ''
     const toolCalls: { tool_use_id: string; name: string; completed?: boolean }[] = []
-    for (const block of content as { type: string; text?: string; id?: string; name?: string }[]) {
-      if (block.type === 'text' && block.text) text += block.text
-      else if (block.type === 'tool_use' && block.id && block.name) {
+    for (const block of content as {
+      kind?: string
+      type?: string
+      text?: string
+      id?: string
+      name?: string
+    }[]) {
+      const kind = block.kind ?? block.type
+      if (kind === 'text' && block.text) text += block.text
+      else if ((kind === 'tool_call' || kind === 'tool_use') && block.id && block.name) {
         // Hydrated rows are historical — the tool already finished by
         // definition (otherwise the assistant content wouldn't have been
         // persisted). Mark every chip as completed so the rendered state

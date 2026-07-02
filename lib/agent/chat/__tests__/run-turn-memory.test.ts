@@ -2,26 +2,27 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AgentIntent } from '@/lib/agent/intents/types'
 import type { AgentTool } from '@/lib/agent/tools/types'
 import type { StreamEvent } from '../run-turn'
+import type { ModelProvider, StreamWithToolsInput } from '@/lib/agent/model-provider'
 
-// Anthropic client mock — returns a single round trip: one tool_use turn,
-// then a final text-only turn (so the loop terminates). run-turn now uses
-// `messages.stream()` for token-level streaming, so we expose a stream
-// adapter that delegates `finalMessage()` to the same queued mock.
-const messagesCreate = vi.fn()
-vi.mock('@/lib/agent/composer/client', () => ({
-  getAnthropic: () => ({
-    messages: {
-      create: messagesCreate,
-      stream: (args: unknown) => {
-        const stream = {
-          on: () => stream,
-          finalMessage: () => messagesCreate(args),
-        }
-        return stream
-      },
-    },
-  }),
-  SONNET_MODEL: 'claude-sonnet-4-6',
+const streamWithToolsMock = vi.fn(async (args: StreamWithToolsInput) => {
+  const response = await modelResponseQueue()
+  for (const block of response.content) {
+    if (block.kind === 'text') args.onEvent?.({ kind: 'text_delta', delta: block.text })
+    if (block.kind === 'tool_call') {
+      args.onEvent?.({ kind: 'tool_call', id: block.id, name: block.name, input: block.input })
+    }
+  }
+  return response
+})
+const modelResponseQueue = vi.fn()
+const fakeProvider: ModelProvider = {
+  name: 'disabled',
+  generateText: vi.fn(),
+  generateStructured: vi.fn(),
+  streamWithTools: streamWithToolsMock,
+}
+vi.mock('@/lib/agent/model-provider', () => ({
+  getModelProvider: () => fakeProvider,
 }))
 
 // system-prompt builder — return a minimal valid shape.
@@ -80,21 +81,21 @@ describe('runChatTurn — memory_captured emission', () => {
   it('emits memory_captured after a successful remember_fact tool call', async () => {
     // First response: model issues a remember_fact tool_use.
     // Second response: model finishes with text (no more tools → loop ends).
-    messagesCreate
+    modelResponseQueue
       .mockResolvedValueOnce({
         content: [
           {
-            type: 'tool_use',
+            kind: 'tool_call',
             id: 'tu_1',
             name: 'gnubok_remember_fact',
             input: { content: 'Hyresfaktura kommer 25:e varje månad', kind: 'pattern' },
           },
         ],
-        stop_reason: 'tool_use',
+        stopReason: 'tool_call',
       })
       .mockResolvedValueOnce({
-        content: [{ type: 'text', text: 'Klart.' }],
-        stop_reason: 'end_turn',
+        content: [{ kind: 'text', text: 'Klart.' }],
+        stopReason: 'end_turn',
       })
 
     const rememberTool: AgentTool = {
@@ -141,21 +142,21 @@ describe('runChatTurn — memory_captured emission', () => {
   })
 
   it('emits memory_captured with action=forgotten for forget_fact', async () => {
-    messagesCreate
+    modelResponseQueue
       .mockResolvedValueOnce({
         content: [
           {
-            type: 'tool_use',
+            kind: 'tool_call',
             id: 'tu_2',
             name: 'gnubok_forget_fact',
             input: { id: 'mem-old', is_active: false },
           },
         ],
-        stop_reason: 'tool_use',
+        stopReason: 'tool_call',
       })
       .mockResolvedValueOnce({
-        content: [{ type: 'text', text: 'Glömt.' }],
-        stop_reason: 'end_turn',
+        content: [{ kind: 'text', text: 'Glömt.' }],
+        stopReason: 'end_turn',
       })
 
     const forgetTool: AgentTool = {
@@ -194,9 +195,9 @@ describe('runChatTurn — memory_captured emission', () => {
 
   it('bumps last_accessed_at for the memories included in the turn', async () => {
     // Single-shot text response — no tool use, simplest path.
-    messagesCreate.mockResolvedValueOnce({
-      content: [{ type: 'text', text: 'OK.' }],
-      stop_reason: 'end_turn',
+    modelResponseQueue.mockResolvedValueOnce({
+      content: [{ kind: 'text', text: 'OK.' }],
+      stopReason: 'end_turn',
     })
     getManyMock.mockResolvedValue([])
 
@@ -274,21 +275,21 @@ describe('runChatTurn — memory_captured emission', () => {
   })
 
   it('does NOT emit memory_captured for unrelated tools', async () => {
-    messagesCreate
+    modelResponseQueue
       .mockResolvedValueOnce({
         content: [
           {
-            type: 'tool_use',
+            kind: 'tool_call',
             id: 'tu_3',
             name: 'gnubok_list_uncategorized_transactions',
             input: {},
           },
         ],
-        stop_reason: 'tool_use',
+        stopReason: 'tool_call',
       })
       .mockResolvedValueOnce({
-        content: [{ type: 'text', text: 'Done.' }],
-        stop_reason: 'end_turn',
+        content: [{ kind: 'text', text: 'Done.' }],
+        stopReason: 'end_turn',
       })
 
     const listTool: AgentTool = {

@@ -11,21 +11,17 @@
 import { config } from 'dotenv'
 config({ path: '.env.local' })
 
-import { getAnthropic, OPUS_MODEL, SONNET_MODEL } from '../lib/agent/composer/client'
+import { OPUS_MODEL, SONNET_MODEL } from '../lib/agent/composer/client'
+import { bedrockAnthropicProvider, textMessage } from '../lib/agent/model-provider'
 
 async function ping(model: string): Promise<void> {
-  const client = getAnthropic()
   const start = Date.now()
   try {
-    const resp = await client.messages.create({
+    const text = await bedrockAnthropicProvider.generateText({
       model,
-      max_tokens: 10,
-      messages: [{ role: 'user', content: 'Säg "hej" på svenska.' }],
+      maxTokens: 10,
+      messages: [textMessage('user', 'Säg "hej" på svenska.')],
     })
-    const text = resp.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as { type: 'text'; text: string }).text)
-      .join('')
     console.log(`  ✓ ${model} — ${Date.now() - start}ms — "${text.trim()}"`)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

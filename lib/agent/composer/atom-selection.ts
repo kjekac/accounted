@@ -1,4 +1,5 @@
-import { getAnthropic, OPUS_MODEL } from './client'
+import { getModelProvider, textMessage } from '@/lib/agent/model-provider'
+import { OPUS_MODEL } from './client'
 import { AtomSelectionSchema, ATOM_SELECTION_TOOL_SCHEMA, type AtomSelection } from './schemas'
 import type { ComposerInputs } from './inputs'
 
@@ -50,33 +51,20 @@ Stil i all text du skriver (verifieringsfrågor och notes): använd ALDRIG tanks
 Använd verktyget compose_agent_profile för att svara. Använd aldrig fritext.`
 
 export async function selectAtoms(inputs: ComposerInputs): Promise<AtomSelection> {
-  const anthropic = getAnthropic()
-
   const userPrompt = buildUserPrompt(inputs)
 
-  const response = await anthropic.messages.create({
+  const structured = await getModelProvider().generateStructured<unknown>({
     model: OPUS_MODEL,
-    max_tokens: 2048,
+    maxTokens: 2048,
     system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: userPrompt }],
-    tools: [
-      {
-        name: 'compose_agent_profile',
-        description: 'Spara den valda atomuppsättningen för företaget.',
-        input_schema: ATOM_SELECTION_TOOL_SCHEMA,
-      },
-    ],
-    tool_choice: { type: 'tool', name: 'compose_agent_profile' },
+    messages: [textMessage('user', userPrompt)],
+  }, {
+    name: 'compose_agent_profile',
+    description: 'Spara den valda atomuppsättningen för företaget.',
+    schema: ATOM_SELECTION_TOOL_SCHEMA,
   })
 
-  // Forced tool_use guarantees exactly one tool_use block. We still validate
-  // defensively in case the API ever returns something unexpected.
-  const toolUse = response.content.find((b) => b.type === 'tool_use')
-  if (!toolUse || toolUse.type !== 'tool_use') {
-    throw new Error('Opus did not return a tool_use block')
-  }
-
-  const parsed = AtomSelectionSchema.safeParse(toolUse.input)
+  const parsed = AtomSelectionSchema.safeParse(structured)
   if (!parsed.success) {
     throw new Error(`Atom selection failed Zod validation: ${parsed.error.message}`)
   }

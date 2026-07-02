@@ -23,9 +23,9 @@ describe('AI provider guardrails', () => {
       },
     }))
 
-    const { getAnthropic } = await import('@/lib/agent/composer/client')
+    const { getModelProvider } = await import('@/lib/agent/model-provider')
 
-    expect(() => getAnthropic()).toThrow(/AI_PROVIDER=none forbids constructing bedrock/i)
+    expect(getModelProvider().name).toBe('disabled')
     expect(constructor).not.toHaveBeenCalled()
   })
 
@@ -44,9 +44,9 @@ describe('AI provider guardrails', () => {
       },
     }))
 
-    const { getAnthropic } = await import('@/lib/agent/composer/client')
+    const { getModelProvider } = await import('@/lib/agent/model-provider')
 
-    expect(() => getAnthropic()).toThrow(/AI_PROVIDER=local forbids constructing bedrock/i)
+    expect(getModelProvider().name).toBe('local-openai-compatible')
     expect(constructor).not.toHaveBeenCalled()
   })
 
@@ -65,9 +65,15 @@ describe('AI provider guardrails', () => {
       },
     }))
 
-    const { getAnthropic } = await import('@/lib/agent/composer/client')
+    const { getModelProvider } = await import('@/lib/agent/model-provider')
 
-    expect(() => getAnthropic()).toThrow(/LOCAL_ONLY=true forbids constructing bedrock/i)
+    await expect(
+      getModelProvider().generateText({
+        model: 'test',
+        maxTokens: 1,
+        messages: [{ role: 'user', content: [{ kind: 'text', text: 'hej' }] }],
+      }),
+    ).rejects.toThrow(/LOCAL_ONLY=true forbids constructing bedrock/i)
     expect(constructor).not.toHaveBeenCalled()
   })
 })

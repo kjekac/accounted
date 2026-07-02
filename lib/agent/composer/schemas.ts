@@ -1,8 +1,7 @@
 import { z } from 'zod'
 
-// Atom selection output. The Opus call returns this via tool_use forcing —
-// the model is forced to invoke `compose_agent_profile(...)` once, which
-// gives us Zod-validatable structured output instead of free-text JSON.
+// Atom selection output. The model provider returns this as structured output,
+// which gives us Zod-validatable data instead of free-text JSON.
 export const AtomSelectionSchema = z.object({
   horizontal_atoms: z
     .array(z.string())
@@ -32,11 +31,9 @@ export const AtomSelectionSchema = z.object({
 
 export type AtomSelection = z.infer<typeof AtomSelectionSchema>
 
-// JSON-Schema for the tool_use forcing. Anthropic's API requires the tool
-// schema in plain JSON Schema (not Zod). Kept in sync with AtomSelectionSchema
-// by convention; the response is re-validated through Zod after parsing.
-// Typed as the SDK's InputSchema shape (mutable) so it satisfies the
-// Tool.input_schema parameter.
+// JSON-Schema for structured output. Providers need plain JSON Schema (not
+// Zod). Kept in sync with AtomSelectionSchema by convention; the response is
+// re-validated through Zod after parsing.
 export const ATOM_SELECTION_TOOL_SCHEMA: {
   type: 'object'
   properties: Record<string, unknown>

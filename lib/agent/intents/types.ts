@@ -32,8 +32,8 @@ export interface AgentIntent<Args = Record<string, unknown>, Captured = unknown>
   // exposed list.
   tools: string[]
 
-  // Anthropic model id. Most intents use Sonnet; heavy reasoning intents
-  // override to Opus.
+  // Internal model id. Bedrock uses the Claude model id directly; local
+  // providers may remap this to LOCAL_AI_MODEL.
   model: string
 
   // Extended-thinking budget. When set, run-turn enables a reasoning channel

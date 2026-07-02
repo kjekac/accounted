@@ -1,9 +1,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { getAnthropic, SONNET_MODEL } from '@/lib/agent/composer/client'
+import { SONNET_MODEL } from '@/lib/agent/composer/client'
 import type { AgentIntent } from '@/lib/agent/intents/types'
 import { agentToolRegistry } from '@/lib/agent/tools/registry'
 import type { AgentTool, AgentActorContext, StagedOperationResult } from '@/lib/agent/tools/types'
 import { isStagedOperation } from '@/lib/agent/tools/types'
+import {
+  getModelProvider,
+  type ModelContentBlock,
+  type ModelMessage,
+} from '@/lib/agent/model-provider'
 import { buildSystemPrompt } from './system-prompt'
 import { createLogger } from '@/lib/logger'
 import { swedishToday } from '@/lib/utils'
@@ -157,14 +162,6 @@ export function wrapToolResult(toolUseId: string, raw: string): string {
   return `<tool_output id="${toolUseId}">\n${safe}\n</tool_output>`
 }
 
-// Anthropic content block types ------------------------------------------------
-// We don't import the SDK type — accept any to keep this file decoupled from
-// SDK version churn. The shapes we read are stable: text blocks have `text`,
-// tool_use blocks have `id`, `name`, `input`.
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ContentBlock = any
-
 export async function runChatTurn(args: RunTurnArgs): Promise<void> {
   const {
     supabase,
@@ -201,9 +198,12 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
 
   const tools = await collectIntentTools(intent)
 
-  // 3 — assemble Anthropic messages: prior history + new user turn.
+  // 3 — assemble provider-neutral messages: prior history + new user turn.
   const history = await loadConversationMessages(supabase, conversationId)
-  const newUserMessage = { role: 'user' as const, content: userMessage }
+  const newUserMessage: ModelMessage = {
+    role: 'user',
+    content: [{ kind: 'text', text: userMessage }],
+  }
 
   if (persist) {
     await persistMessage(
@@ -215,7 +215,7 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
     )
   }
 
-  const messages: { role: 'user' | 'assistant'; content: ContentBlock }[] = [
+  const messages: ModelMessage[] = [
     ...history,
     newUserMessage,
   ]
@@ -226,7 +226,7 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
     label: 'In-app chat',
   }
 
-  const anthropic = getAnthropic()
+  const provider = getModelProvider()
   const model = intent.model || SONNET_MODEL
 
   let assistantText = ''
@@ -238,107 +238,78 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
   // visible reply. budget_tokens must be ≥ 1024 and strictly below max_tokens,
   // so the normal 4096 output budget is added on top. The reasoning streams to
   // the client as reasoning_delta and renders in a collapsible "Tänkte…" block.
-  const thinking = intent.thinking
-    ? { type: 'enabled' as const, budget_tokens: intent.thinking.budgetTokens }
-    : undefined
   const maxTokens = (intent.thinking?.budgetTokens ?? 0) + 4096
 
   // 4 + 5 + 6 — iterate until the model stops requesting tools.
   while (iterations < MAX_TOOL_ITERATIONS) {
     iterations++
 
-    // Token-by-token streaming. The Anthropic SDK's MessageStream emits a
-    // `text` event for every text delta as Bedrock pushes them, so the user
-    // sees Anna's reply appear word-by-word instead of waiting 1–5 s for
-    // the full block to land. We still collect the final assembled message
-    // for tool detection, persistence and stop-reason control flow.
-    const stream = anthropic.messages.stream({
-      model,
-      max_tokens: maxTokens,
-      system: systemPrompt.blocks,
-      messages,
-      tools: tools.length > 0 ? tools.map(toAnthropicTool) : undefined,
-      ...(thinking ? { thinking } : {}),
-    })
-
-    stream.on('text', (delta) => {
-      assistantText += delta
-      emit({ kind: 'text_delta', delta })
-    })
-
-    // Track which tool_use ids have already been announced to the client so
-    // the dispatch loop below doesn't re-emit them. Eager-emitting on
-    // `content_block_start` shaves the perceived lag for tool chips: the
-    // chip appears the moment the LLM commits to a tool call, instead of
-    // after the entire response is buffered.
+    // Track which tool_call ids have already been announced to the client so
+    // the dispatch loop below doesn't re-emit them.
     const eagerToolIds = new Set<string>()
-    stream.on('streamEvent', (ev) => {
-      // The raw stream event shape depends on the SDK; we care about
-      // content_block_start with a tool_use block, and content_block_delta
-      // carrying extended-thinking text.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const e = ev as any
-      if (
-        e?.type === 'content_block_delta' &&
-        e?.delta?.type === 'thinking_delta' &&
-        typeof e.delta.thinking === 'string'
-      ) {
-        emit({ kind: 'reasoning_delta', delta: e.delta.thinking })
-        return
-      }
-      if (e?.type === 'content_block_start' && e?.content_block?.type === 'tool_use') {
-        const block = e.content_block
-        if (typeof block.id === 'string' && typeof block.name === 'string') {
-          eagerToolIds.add(block.id)
-          emit({
-            kind: 'tool_use',
-            tool_use_id: block.id,
-            name: block.name,
-            // Input is still being streamed at this point; the chip only
-            // displays the tool name so empty input is fine.
-            input: {},
-          })
-        }
-      }
-    })
-
     let response
     try {
-      response = await stream.finalMessage()
+      response = await provider.streamWithTools({
+        model,
+        maxTokens,
+        system: systemPrompt.blocks,
+        messages,
+        tools,
+        thinkingBudgetTokens: intent.thinking?.budgetTokens,
+        onEvent: (event) => {
+          if (event.kind === 'text_delta') {
+            assistantText += event.delta
+            emit({ kind: 'text_delta', delta: event.delta })
+          } else if (event.kind === 'reasoning_delta') {
+            emit({ kind: 'reasoning_delta', delta: event.delta })
+          } else if (event.kind === 'tool_call') {
+            eagerToolIds.add(event.id)
+            emit({
+              kind: 'tool_use',
+              tool_use_id: event.id,
+              name: event.name,
+              input: event.input,
+            })
+          }
+        },
+      })
     } catch (err) {
       // Surface as a chat error so the UI clears its streaming state. Re-throw
       // to let the route's outer try/catch persist the failure if needed.
       // Normalize Bedrock throttling/timeout/5xx into a friendly Swedish line.
-      log.error('Bedrock stream failed', err, {
+      log.error('Model stream failed', err, {
         conversationId,
         companyId,
         model,
+        provider: provider.name,
         iterations,
       })
       emit({ kind: 'error', message: friendlyModelError(err) })
       throw err
     }
 
-    const assistantContent: ContentBlock[] = response.content
+    const assistantContent = response.content
 
-    // Persist the assistant turn (text + tool_use blocks). Thinking blocks are
+    // Persist the assistant turn (text + tool_call blocks). Reasoning blocks are
     // stripped for storage but kept in `messages` below for the in-turn loop.
     if (persist) {
-      await persistMessage(supabase, conversationId, 'assistant', stripThinking(assistantContent))
+      await persistMessage(supabase, conversationId, 'assistant', stripReasoning(assistantContent))
     }
     messages.push({ role: 'assistant', content: assistantContent })
 
     // If the model didn't request any tool, we're done.
-    const toolUses = assistantContent.filter((b: ContentBlock) => b.type === 'tool_use')
-    if (toolUses.length === 0 || response.stop_reason !== 'tool_use') {
+    const toolCalls = assistantContent.filter(
+      (b): b is Extract<ModelContentBlock, { kind: 'tool_call' }> => b.kind === 'tool_call',
+    )
+    if (toolCalls.length === 0 || response.stopReason !== 'tool_call') {
       break
     }
 
-    // 7 — dispatch each tool_use sequentially. Anthropic accepts parallel
-    // tool_results within a single user turn, so we collect them and emit
+    // 7 — dispatch each tool call sequentially. Providers accept parallel
+    // tool results within a single user turn, so we collect them and emit
     // one combined user message.
-    const toolResultBlocks: ContentBlock[] = []
-    for (const tu of toolUses) {
+    const toolResultBlocks: ModelContentBlock[] = []
+    for (const tu of toolCalls) {
       // The chip was already announced via the streamEvent listener above;
       // skip re-emitting unless we missed the early signal (defensive — the
       // dispatch loop should never run faster than the stream events).
@@ -354,9 +325,9 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
       const tool = agentToolRegistry.get(tu.name)
       if (!tool) {
         toolResultBlocks.push({
-          type: 'tool_result',
-          tool_use_id: tu.id,
-          is_error: true,
+          kind: 'tool_result',
+          toolCallId: tu.id,
+          isError: true,
           content: `Verktyget ${tu.name} är inte registrerat.`,
         })
         continue
@@ -428,8 +399,8 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
         // OTROSTAD DATA").
         emit({ kind: 'tool_result', tool_use_id: tu.id, result })
         toolResultBlocks.push({
-          type: 'tool_result',
-          tool_use_id: tu.id,
+          kind: 'tool_result',
+          toolCallId: tu.id,
           content: wrapToolResult(tu.id, boundToolResultText(JSON.stringify(result))),
         })
       } catch (err) {
@@ -440,9 +411,9 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
           result: { error: message },
         })
         toolResultBlocks.push({
-          type: 'tool_result',
-          tool_use_id: tu.id,
-          is_error: true,
+          kind: 'tool_result',
+          toolCallId: tu.id,
+          isError: true,
           content: message,
         })
       }
@@ -574,7 +545,7 @@ async function bumpMemoryAccess(
 async function loadConversationMessages(
   supabase: SupabaseClient,
   conversationId: string,
-): Promise<{ role: 'user' | 'assistant'; content: ContentBlock }[]> {
+): Promise<ModelMessage[]> {
   const { data } = await supabase
     .from('agent_messages')
     .select('role, content')
@@ -582,11 +553,11 @@ async function loadConversationMessages(
     .order('created_at', { ascending: true })
 
   // role='tool' messages were written as user messages on the Anthropic side.
-  return (data ?? []).map((m: { role: string; content: ContentBlock }) => {
+  return (data ?? []).map((m: { role: string; content: unknown }) => {
     if (m.role === 'assistant') {
-      return { role: 'assistant', content: m.content as ContentBlock }
+      return { role: 'assistant', content: normalizeModelContent(m.content) }
     }
-    return { role: 'user', content: m.content as ContentBlock }
+    return { role: 'user', content: normalizeModelContent(m.content) }
   })
 }
 
@@ -597,13 +568,13 @@ async function persistMessage(
   content: unknown,
   hidden: boolean = false,
 ): Promise<void> {
-  // For text-only user/assistant messages we store the string; otherwise we
-  // store the full Anthropic content array. This shape matches what
-  // loadConversationMessages expects on read.
+  // For text-only user/assistant messages we store a provider-neutral content
+  // array. loadConversationMessages also understands legacy Anthropic-shaped
+  // rows for existing conversations.
   await supabase.from('agent_messages').insert({
     conversation_id: conversationId,
     role,
-    content: typeof content === 'string' ? [{ type: 'text', text: content }] : content,
+    content: typeof content === 'string' ? [{ kind: 'text', text: content }] : content,
     hidden,
   })
 }
@@ -625,29 +596,107 @@ async function stampAgentMetadata(
     .eq('id', operationId)
 }
 
-// ── Tool conversion ────────────────────────────────────────────────────────
+// ── Tool helpers ───────────────────────────────────────────────────────────
 
 async function collectIntentTools(intent: AgentIntent): Promise<AgentTool[]> {
   return agentToolRegistry.getMany(intent.tools)
 }
 
-// Thinking blocks stay in the in-memory `messages` array — Anthropic requires
-// the preceding assistant turn's thinking block to be present when you return
-// tool_results within the same turn — but we strip them before persistence:
-// they hold the raw chain of thought (storage bloat), and replaying past-turn
-// thinking on resume is neither required nor used by the model. The chat
-// surface shows reasoning live via reasoning_delta; it is not hydrated.
-export function stripThinking(content: ContentBlock[]): ContentBlock[] {
+// Reasoning blocks stay in the in-memory `messages` array when a provider
+// requires that for tool-result continuation, but we strip them before
+// persistence: they hold raw reasoning, and replaying past-turn reasoning on
+// resume is neither required nor shown. The chat surface shows reasoning live
+// via reasoning_delta; it is not hydrated.
+export function stripReasoning(content: ModelContentBlock[]): ModelContentBlock[] {
   if (!Array.isArray(content)) return content
   return content.filter(
-    (b: ContentBlock) => b?.type !== 'thinking' && b?.type !== 'redacted_thinking',
+    (b) => b?.kind !== 'reasoning' && b?.kind !== 'redacted_reasoning',
   )
 }
 
-function toAnthropicTool(t: AgentTool) {
-  return {
-    name: t.name,
-    description: t.description,
-    input_schema: t.inputSchema as { type: 'object' } & Record<string, unknown>,
+export const stripThinking = stripReasoning
+
+function normalizeModelContent(content: unknown): ModelContentBlock[] {
+  if (typeof content === 'string') return [{ kind: 'text', text: content }]
+  if (!Array.isArray(content)) return []
+  return content.flatMap((block) => normalizeModelContentBlock(block))
+}
+
+function normalizeModelContentBlock(block: unknown): ModelContentBlock[] {
+  const b = block as Record<string, unknown> | null
+  if (!b || typeof b !== 'object') return []
+
+  if (b.kind === 'text' && typeof b.text === 'string') return [{ kind: 'text', text: b.text }]
+  if (b.kind === 'tool_call' && typeof b.id === 'string' && typeof b.name === 'string') {
+    return [
+      {
+        kind: 'tool_call',
+        id: b.id,
+        name: b.name,
+        input: isRecord(b.input) ? b.input : {},
+      },
+    ]
   }
+  if (b.kind === 'tool_result' && typeof b.toolCallId === 'string') {
+    return [
+      {
+        kind: 'tool_result',
+        toolCallId: b.toolCallId,
+        content: typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? ''),
+        isError: b.isError === true,
+      },
+    ]
+  }
+  if (b.kind === 'reasoning') {
+    return [
+      {
+        kind: 'reasoning',
+        text: typeof b.text === 'string' ? b.text : '',
+        providerMetadata: b.providerMetadata,
+      },
+    ]
+  }
+  if (b.kind === 'redacted_reasoning') {
+    return [{ kind: 'redacted_reasoning', providerMetadata: b.providerMetadata }]
+  }
+
+  // Backward compatibility for persisted Anthropic-shaped content.
+  if (b.type === 'text' && typeof b.text === 'string') return [{ kind: 'text', text: b.text }]
+  if (b.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') {
+    return [
+      {
+        kind: 'tool_call',
+        id: b.id,
+        name: b.name,
+        input: isRecord(b.input) ? b.input : {},
+      },
+    ]
+  }
+  if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+    return [
+      {
+        kind: 'tool_result',
+        toolCallId: b.tool_use_id,
+        content: typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? ''),
+        isError: b.is_error === true,
+      },
+    ]
+  }
+  if (b.type === 'thinking') {
+    return [
+      {
+        kind: 'reasoning',
+        text: typeof b.thinking === 'string' ? b.thinking : '',
+        providerMetadata: b,
+      },
+    ]
+  }
+  if (b.type === 'redacted_thinking') {
+    return [{ kind: 'redacted_reasoning', providerMetadata: b }]
+  }
+  return []
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
 }

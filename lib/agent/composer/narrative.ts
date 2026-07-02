@@ -1,4 +1,5 @@
-import { getAnthropic, SONNET_MODEL } from './client'
+import { getModelProvider, textMessage } from '@/lib/agent/model-provider'
+import { SONNET_MODEL } from './client'
 import type { AtomSelection } from './schemas'
 import type { ComposerInputs } from './inputs'
 
@@ -34,27 +35,14 @@ export async function writeNarrative(
   inputs: ComposerInputs,
   selection: AtomSelection,
 ): Promise<string> {
-  const anthropic = getAnthropic()
-
-  const response = await anthropic.messages.create({
+  const text = await getModelProvider().generateText({
     model: SONNET_MODEL,
-    max_tokens: 400,
+    maxTokens: 400,
     system: systemPromptFor(inputs.userIsConfirmedDirector),
-    messages: [
-      {
-        role: 'user',
-        content: buildUserPrompt(inputs, selection),
-      },
-    ],
+    messages: [textMessage('user', buildUserPrompt(inputs, selection))],
   })
 
-  const text = response.content
-    .filter((b) => b.type === 'text')
-    .map((b) => (b as { type: 'text'; text: string }).text)
-    .join('')
-    .trim()
-
-  return text
+  return text.trim()
 }
 
 function buildUserPrompt(inputs: ComposerInputs, selection: AtomSelection): string {

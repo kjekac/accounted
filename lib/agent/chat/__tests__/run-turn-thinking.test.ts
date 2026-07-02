@@ -1,24 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AgentIntent } from '@/lib/agent/intents/types'
+import type { ModelProvider, StreamWithToolsInput } from '@/lib/agent/model-provider'
 
 // Verifies the extended-thinking ("tänka längre") wiring: an opted-in intent
-// gets a thinking config + bumped max_tokens on the model call, an intent
-// without it gets neither; and thinking blocks are stripped before persistence.
-//
-// The Anthropic client mock mirrors run-turn-memory.test.ts: stream().on() is a
-// chainable no-op and finalMessage() delegates to a queued mock that records
-// the args the stream was called with.
-const messagesCreate = vi.fn()
-vi.mock('@/lib/agent/composer/client', () => ({
-  getAnthropic: () => ({
-    messages: {
-      stream: (args: unknown) => {
-        const stream = { on: () => stream, finalMessage: () => messagesCreate(args) }
-        return stream
-      },
-    },
-  }),
-  SONNET_MODEL: 'claude-sonnet-4-6',
+// gets a provider thinking budget + bumped maxTokens on the model call, an
+// intent without it gets neither; and reasoning blocks are stripped before
+// persistence.
+const streamWithToolsMock = vi.fn(async (args: StreamWithToolsInput) => {
+  const response = await modelResponseQueue()
+  for (const block of response.content) {
+    if (block.kind === 'text') args.onEvent?.({ kind: 'text_delta', delta: block.text })
+  }
+  return response
+})
+const modelResponseQueue = vi.fn()
+const fakeProvider: ModelProvider = {
+  name: 'disabled',
+  generateText: vi.fn(),
+  generateStructured: vi.fn(),
+  streamWithTools: streamWithToolsMock,
+}
+vi.mock('@/lib/agent/model-provider', () => ({
+  getModelProvider: () => fakeProvider,
 }))
 
 vi.mock('../system-prompt', () => ({
@@ -37,7 +40,7 @@ vi.mock('@/lib/agent/tools/registry', () => ({
   },
 }))
 
-import { runChatTurn, stripThinking } from '../run-turn'
+import { runChatTurn, stripReasoning } from '../run-turn'
 
 function fakeSupabase() {
   const passthrough: Record<string, unknown> = {}
@@ -66,9 +69,9 @@ function baseIntent(): AgentIntent {
 }
 
 async function runWith(intent: AgentIntent) {
-  messagesCreate.mockResolvedValueOnce({
-    content: [{ type: 'text', text: 'ok' }],
-    stop_reason: 'end_turn',
+  modelResponseQueue.mockResolvedValueOnce({
+    content: [{ kind: 'text', text: 'ok' }],
+    stopReason: 'end_turn',
   })
   getManyMock.mockResolvedValue([])
   await runChatTurn({
@@ -83,8 +86,7 @@ async function runWith(intent: AgentIntent) {
     persist: false,
     emit: () => true,
   })
-  // The args object the stream was invoked with.
-  return messagesCreate.mock.calls[0][0] as { thinking?: unknown; max_tokens?: number }
+  return streamWithToolsMock.mock.calls[0][0]
 }
 
 beforeEach(() => {
@@ -94,34 +96,34 @@ beforeEach(() => {
 describe('runChatTurn — extended thinking wiring', () => {
   it('passes a thinking config and bumps max_tokens when the intent opts in', async () => {
     const args = await runWith({ ...baseIntent(), thinking: { budgetTokens: 2000 } })
-    expect(args.thinking).toEqual({ type: 'enabled', budget_tokens: 2000 })
+    expect(args.thinkingBudgetTokens).toBe(2000)
     // budget must be strictly below max_tokens — we add the normal output budget.
-    expect(args.max_tokens).toBe(2000 + 4096)
+    expect(args.maxTokens).toBe(2000 + 4096)
   })
 
   it('omits thinking and keeps the default budget when the intent does not opt in', async () => {
     const args = await runWith(baseIntent())
-    expect(args.thinking).toBeUndefined()
-    expect(args.max_tokens).toBe(4096)
+    expect(args.thinkingBudgetTokens).toBeUndefined()
+    expect(args.maxTokens).toBe(4096)
   })
 })
 
-describe('stripThinking', () => {
-  it('drops thinking and redacted_thinking blocks but keeps text and tool_use', () => {
+describe('stripReasoning', () => {
+  it('drops reasoning and redacted_reasoning blocks but keeps text and tool_call', () => {
     const blocks = [
-      { type: 'thinking', thinking: 'raw chain of thought', signature: 'sig' },
-      { type: 'redacted_thinking', data: 'xxx' },
-      { type: 'text', text: 'svar' },
-      { type: 'tool_use', id: 't1', name: 'gnubok_load_skill', input: {} },
+      { kind: 'reasoning', text: 'raw chain of thought', providerMetadata: { signature: 'sig' } },
+      { kind: 'redacted_reasoning', providerMetadata: { data: 'xxx' } },
+      { kind: 'text', text: 'svar' },
+      { kind: 'tool_call', id: 't1', name: 'gnubok_load_skill', input: {} },
     ]
-    expect(stripThinking(blocks)).toEqual([
-      { type: 'text', text: 'svar' },
-      { type: 'tool_use', id: 't1', name: 'gnubok_load_skill', input: {} },
+    expect(stripReasoning(blocks)).toEqual([
+      { kind: 'text', text: 'svar' },
+      { kind: 'tool_call', id: 't1', name: 'gnubok_load_skill', input: {} },
     ])
   })
 
   it('is a no-op when there are no thinking blocks', () => {
-    const blocks = [{ type: 'text', text: 'x' }]
-    expect(stripThinking(blocks)).toEqual(blocks)
+    const blocks = [{ kind: 'text', text: 'x' }]
+    expect(stripReasoning(blocks)).toEqual(blocks)
   })
 })

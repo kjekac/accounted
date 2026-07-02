@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createHash } from 'node:crypto'
 import type { AgentIntent } from '../intents/types'
+import type { ModelSystemBlock } from '@/lib/agent/model-provider'
 
 // Builds the system prompt the chat loop sends to Anthropic.
 //
@@ -17,9 +18,9 @@ import type { AgentIntent } from '../intents/types'
 // Anthropic's 4-breakpoint hard limit.
 
 export interface PromptBlocks {
-  // Anthropic SDK content-block array suitable for the `system` parameter.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  blocks: any[]
+  // Provider-neutral system content. Providers decide whether cache hints are
+  // supported and how to encode them.
+  blocks: ModelSystemBlock[]
   // SHA-256 hex of the canonical block content. Stamped on
   // pending_operations.agent_metadata.prompt_hash so a future BFL audit can
   // reconstruct what the model was looking at when it staged a write.
@@ -52,22 +53,18 @@ export async function buildSystemPrompt(args: BuildArgs): Promise<PromptBlocks> 
   // cannot be set for empty text blocks"). Skip Block 1 entirely when no atom
   // bodies resolved — e.g. declarative intent with no atoms, or dev DB before
   // the seed migration has populated bodies.
-  const blocks: Array<{
-    type: 'text'
-    text: string
-    cache_control: { type: 'ephemeral'; ttl: '1h' }
-  }> = []
+  const blocks: ModelSystemBlock[] = []
   if (block1.body.trim().length > 0) {
     blocks.push({
-      type: 'text',
+      kind: 'text',
       text: block1.body,
-      cache_control: { type: 'ephemeral', ttl: '1h' },
+      cache: { type: 'ephemeral', ttl: '1h' },
     })
   }
   blocks.push({
-    type: 'text',
+    kind: 'text',
     text: block2,
-    cache_control: { type: 'ephemeral', ttl: '1h' },
+    cache: { type: 'ephemeral', ttl: '1h' },
   })
 
   const hash = createHash('sha256')
