@@ -1,5 +1,6 @@
 import { getModelProvider, textMessage } from '@/lib/agent/model-provider'
 import { OPUS_MODEL } from './client'
+import { fallbackAtomSelection } from './fallback'
 import { AtomSelectionSchema, ATOM_SELECTION_TOOL_SCHEMA, type AtomSelection } from './schemas'
 import type { ComposerInputs } from './inputs'
 
@@ -99,6 +100,17 @@ export async function selectAtoms(inputs: ComposerInputs): Promise<AtomSelection
   )
 
   return parsed.data
+}
+
+export async function selectAtomsWithFallback(inputs: ComposerInputs): Promise<{
+  selection: AtomSelection
+  usedFallback: boolean
+}> {
+  try {
+    return { selection: await selectAtoms(inputs), usedFallback: false }
+  } catch {
+    return { selection: fallbackAtomSelection(inputs), usedFallback: true }
+  }
 }
 
 // Drops questions whose answer is already settled in company_settings or
