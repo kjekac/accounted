@@ -23,7 +23,8 @@
     "check:guards": "node scripts/checks/no-new-antipatterns.mjs",
     "check:lint": "node scripts/checks/no-new-lint-errors.mjs",
     "test": "vitest run --project unit",
-    "test:pg": "vitest run --project pg-real"
+    "test:pg": "vitest run --project pg-real",
+    "eval:local-ai": "tsx scripts/evals/local-ai.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.29.1",
