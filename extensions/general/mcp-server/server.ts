@@ -56,6 +56,7 @@ import {
   IdempotencyKeyReuseError,
 } from '@/lib/api/idempotency'
 import { toToolError, type NextActionHint } from './tool-result'
+import { findSupplierCandidates } from './supplier-candidates'
 import { generateBalanceSheet } from '@/lib/reports/balance-sheet'
 import { generateGeneralLedger } from '@/lib/reports/general-ledger'
 import { decryptPersonnummer, maskPersonnummer } from '@/lib/salary/personnummer'
@@ -7463,7 +7464,7 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_create_supplier_invoice_from_inbox',
     title: 'Create Supplier Invoice from Inbox',
-    description: "Atomic: turn an OCR'd inbox item into a staged supplier invoice. Resolves supplier, builds lines from extracted_data, applies VAT + FX + dimension tags, attaches the document. Stages for human review; honors dry_run.",
+    description: "Atomic: turn an OCR'd inbox item into a staged supplier invoice. Resolves supplier, builds lines from extracted_data, applies VAT + FX + dimension tags, attaches the document. Stages for human review; honors dry_run. Unresolved supplier → staged:false + candidates + next.",
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -7571,20 +7572,87 @@ export const tools: McpTool[] = [
       }
 
       if (!supplierId) {
-        throw new Error(
-          `Cannot resolve supplier from extracted data. Pass supplier_id_override, or create the supplier first (extracted name: ${supplierExt?.name ?? 'unknown'}, org: ${supplierExt?.organizationNumber ?? 'unknown'}).`
+        // Structured resolution failure instead of a dead end (P1-4,
+        // dev_docs/mcp_optimization_plan.md): a thrown error here stops the
+        // whole inbox pipeline for small ad hoc vendors. Return staged:false
+        // with near-miss candidates the agent can pass as supplier_id_override,
+        // or a create-supplier next hint when nothing is close. Fuzzy scores
+        // never auto-resolve — the agent/human confirms against the underlag.
+        const extractedName = (supplierExt?.name as string | undefined) ?? null
+        const extractedOrg = (supplierExt?.organizationNumber as string | undefined) ?? null
+
+        const CANDIDATE_POOL_CAP = 500
+        const { data: companySuppliers } = await supabase
+          .from('suppliers')
+          .select('id, name, org_number')
+          .eq('company_id', companyId)
+          .limit(CANDIDATE_POOL_CAP)
+
+        const candidates = findSupplierCandidates(
+          (companySuppliers ?? []) as { id: string; name: string; org_number: string | null }[],
+          extractedName,
+          extractedOrg,
         )
+        const best = candidates[0]
+        // No silent caps: past the pool cap the right supplier may exist yet
+        // be absent from candidates — say so instead of implying full coverage.
+        const poolTruncated = (companySuppliers?.length ?? 0) >= CANDIDATE_POOL_CAP
+
+        return {
+          staged: false,
+          risk_level: getRiskLevel('create_supplier_invoice_from_inbox'),
+          actor: actor ?? { type: 'user' },
+          message: (best
+            ? `Could not resolve supplier "${extractedName ?? 'unknown'}" exactly — ${candidates.length} near-miss candidate(s) in preview.candidates. Verify against the underlag, then retry with supplier_id_override; or create the supplier first.`
+            : `Could not resolve supplier "${extractedName ?? 'unknown'}" (org: ${extractedOrg ?? 'unknown'}) and no similar supplier exists. Create it with gnubok_create_supplier, then retry with supplier_id_override.`)
+            + (poolTruncated ? ` Note: candidate search covered only the first ${CANDIDATE_POOL_CAP} suppliers — the pool was truncated.` : ''),
+          preview: {
+            supplier_resolution: 'unresolved',
+            unresolved_supplier: {
+              extracted_name: extractedName,
+              extracted_org_number: extractedOrg,
+            },
+            candidates,
+            candidate_pool_truncated: poolTruncated,
+          },
+          next: best
+            ? {
+                description: `Closest existing supplier: "${best.name}" (score ${best.score}). If it matches the underlag, retry with this supplier_id_override.`,
+                tool: 'gnubok_create_supplier_invoice_from_inbox',
+                args: { inbox_item_id: inboxItemId, supplier_id_override: best.supplier_id },
+              }
+            : {
+                description:
+                  'Create the supplier, approve it, then retry this tool with supplier_id_override set to the new supplier id.',
+                tool: 'gnubok_create_supplier',
+                args: {
+                  ...(extractedName ? { name: extractedName } : {}),
+                  ...(extractedOrg ? { org_number: extractedOrg } : {}),
+                },
+              },
+        }
       }
 
       // Fetch supplier defaults so line items can inherit default_expense_account
       // when neither the extraction nor the agent provided an accountSuggestion.
+      // Doubles as existence/tenancy validation: every resolution path — and
+      // especially supplier_id_override, which the unresolved next-hint now
+      // actively promotes — must point at a supplier in THIS company, or the
+      // staged operation would fail opaquely at commit time instead.
       const { data: resolvedSupplier } = await supabase
         .from('suppliers')
-        .select('default_expense_account')
+        .select('id, default_expense_account')
         .eq('id', supplierId)
         .eq('company_id', companyId)
         .single()
-      const supplierDefaultExpenseAccount = resolvedSupplier?.default_expense_account ?? null
+      if (!resolvedSupplier) {
+        throw new Error(
+          supplierResolution === 'override'
+            ? `supplier_id_override ${supplierId} does not match any supplier in this company. Use a supplier_id from preview.candidates or gnubok_list_suppliers.`
+            : `Resolved supplier ${supplierId} no longer exists in this company — re-run extraction or pass supplier_id_override.`,
+        )
+      }
+      const supplierDefaultExpenseAccount = resolvedSupplier.default_expense_account ?? null
 
       // Assemble core invoice fields
       const currency = (invoiceExt?.currency as string) || 'SEK'
