@@ -174,3 +174,37 @@ export function assertMandatoryDimensions(
     throw new MandatoryDimensionMissingError([...violations.values()])
   }
 }
+
+/**
+ * Source types EXEMPT from dimension rules — system-generated and
+ * correction-instrument entries where policy must never bite:
+ *
+ *   - historical/derived data (SIE import, opening balances) must land
+ *     verbatim — injecting defaults or refusing untagged history would
+ *     falsify the record (BFL 5 kap)
+ *   - year-end and revaluation are system bokslut mechanics; a rule on a
+ *     result account must not be able to block closing the year
+ *   - storno/correction/credit notes are HOW history gets fixed — blocking
+ *     them on entries that pre-date a rule would make old mistakes
+ *     permanent (same argument as the commitEntry bypass for reversals)
+ *   - accrual dissolutions replay a schedule created before the rule
+ *
+ * Operational sources (manual, bank_transaction, invoice_*, supplier_*
+ * registrations/payments, salary_payment) stay enforced — those are the
+ * new business events the policy exists for.
+ */
+export const DIMENSION_RULE_EXEMPT_SOURCE_TYPES: ReadonlySet<string> = new Set([
+  'opening_balance',
+  'import',
+  'year_end',
+  'storno',
+  'correction',
+  'credit_note',
+  'supplier_credit_note',
+  'currency_revaluation',
+  'system',
+])
+
+export function isDimensionRuleExemptSource(sourceType: string | null | undefined): boolean {
+  return sourceType != null && DIMENSION_RULE_EXEMPT_SOURCE_TYPES.has(sourceType)
+}

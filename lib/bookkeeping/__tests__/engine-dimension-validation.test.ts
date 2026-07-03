@@ -390,4 +390,63 @@ describe('commitEntry — mandatory dimension enforcement (PR10)', () => {
 
     expect(queriedTables()).not.toContain('journal_entry_lines')
   })
+
+  it('exempts system source types — an untagged SIE-import entry commits despite a required rule', async () => {
+    const { supabase } = buildSupabase({
+      ...BASE_TABLES,
+      account_dimension_rules: { data: [requiredRule] },
+      journal_entry_lines: {
+        data: [
+          // Post-cutover line fetch carries the parent source_type via join.
+          { account_number: '4010', dimensions: {}, journal_entries: { source_type: 'import' } },
+          { account_number: '1930', dimensions: {}, journal_entries: { source_type: 'import' } },
+        ],
+      },
+    })
+
+    const entry = await commitEntry(supabase as never, 'company-1', 'user-1', 'entry-1')
+
+    expect(entry.id).toBe('entry-1')
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      'commit_journal_entry',
+      expect.objectContaining({ p_entry_id: 'entry-1' })
+    )
+  })
+
+  it('still enforces on operational source types carried by the join', async () => {
+    const { supabase } = buildSupabase({
+      ...BASE_TABLES,
+      account_dimension_rules: { data: [requiredRule] },
+      journal_entry_lines: {
+        data: [
+          { account_number: '4010', dimensions: {}, journal_entries: { source_type: 'manual' } },
+        ],
+      },
+    })
+
+    await expect(
+      commitEntry(supabase as never, 'company-1', 'user-1', 'entry-1')
+    ).rejects.toBeInstanceOf(MandatoryDimensionMissingError)
+  })
+})
+
+describe('createDraftEntry — system-source exemption (PR10)', () => {
+  it('never applies default/fixed rules onto an opening-balance entry (no injection into derived history)', async () => {
+    const { supabase, inserts, queriedTables } = buildSupabase({
+      ...BASE_TABLES,
+      account_dimension_rules: {
+        data: [makeRuleRow({ rule_type: 'fixed', dimension_values: { code: 'PLOCK' } })],
+      },
+    })
+
+    const input = { ...makeInput(), source_type: 'opening_balance' as const }
+    const entry = await createDraftEntry(supabase as never, 'company-1', 'user-1', input)
+
+    expect(entry.id).toBe('entry-1')
+    // Exempt source: the rules table is never even consulted…
+    expect(queriedTables()).not.toContain('account_dimension_rules')
+    // …and the inserted bags stay exactly as the import provided them.
+    const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
+    expect(lineRows[0].dimensions).toEqual({})
+  })
 })

@@ -22,6 +22,7 @@ import {
   applyDimensionRules,
   assertMandatoryDimensions,
   fetchActiveDimensionRules,
+  isDimensionRuleExemptSource,
 } from '@/lib/bookkeeping/dimension-rules'
 import { backfillStandardBASAccounts } from '@/lib/bookkeeping/account-backfill'
 import { syncInvoiceStatusFromPaymentEntry, isPaymentSourceType } from '@/lib/bookkeeping/payment-sync'
@@ -235,8 +236,11 @@ export async function createDraftEntry(
   // Account dimension rules (dimensions PR10): apply 'default'/'fixed'
   // values onto the line bags before validation + insert. Zero rules —
   // every company by default — returns the input untouched; a failed rule
-  // fetch fails open like the soft validation below.
-  const rules = await fetchActiveDimensionRules(supabase, companyId)
+  // fetch fails open like the soft validation below. System-generated and
+  // correction sources are exempt — policy governs new business events,
+  // never imported history or bokslut mechanics.
+  const ruleExempt = isDimensionRuleExemptSource(input.source_type)
+  const rules = ruleExempt ? [] : await fetchActiveDimensionRules(supabase, companyId)
   if (rules === null) {
     log.warn('dimension rule fetch failed — defaults/fixed skipped (fail-open)', { companyId })
   }
@@ -424,8 +428,13 @@ export async function updateDraftEntry(
 
   // Same soft dimension validation as createDraftEntry — before any write, so
   // a rejection leaves both the header and the existing lines untouched.
-  // Account dimension rules (PR10) apply first — same as create.
-  const rules = await fetchActiveDimensionRules(supabase, companyId)
+  // Account dimension rules (PR10) apply first — same as create. Gate on
+  // the STORED source_type (updates preserve it; the input's copy is not
+  // authoritative here).
+  const ruleExempt = isDimensionRuleExemptSource(
+    (existing as { source_type?: string }).source_type
+  )
+  const rules = ruleExempt ? [] : await fetchActiveDimensionRules(supabase, companyId)
   if (rules === null) {
     log.warn('dimension rule fetch failed — defaults/fixed skipped (fail-open)', { companyId })
   }
@@ -567,7 +576,7 @@ export async function commitEntry(
   } else if (rules.some((r) => r.rule_type === 'required')) {
     const { data: ruleLines, error: ruleLinesError } = await supabase
       .from('journal_entry_lines')
-      .select('account_number, dimensions')
+      .select('account_number, dimensions, journal_entries!inner(source_type)')
       .eq('journal_entry_id', entryId)
     if (ruleLinesError || !ruleLines) {
       log.warn('line fetch for mandatory dimension check failed — enforcement skipped (fail-open)', {
@@ -575,10 +584,17 @@ export async function commitEntry(
         entityId: entryId,
       })
     } else {
-      assertMandatoryDimensions(
-        ruleLines as Array<{ account_number: string; dimensions: Record<string, string> }>,
-        rules
-      )
+      const typedLines = ruleLines as unknown as Array<{
+        account_number: string
+        dimensions: Record<string, string>
+        journal_entries: { source_type: string }
+      }>
+      // System/correction sources are exempt — see
+      // DIMENSION_RULE_EXEMPT_SOURCE_TYPES (imported history, bokslut
+      // mechanics and credit instruments must never be blocked by policy).
+      if (!isDimensionRuleExemptSource(typedLines[0]?.journal_entries?.source_type)) {
+        assertMandatoryDimensions(typedLines, rules)
+      }
     }
   }
 
