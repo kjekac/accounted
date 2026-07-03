@@ -18,6 +18,11 @@ import {
   normalizeLineDimensions,
   validateEntryDimensions,
 } from '@/lib/bookkeeping/dimension-resolver'
+import {
+  applyDimensionRules,
+  assertMandatoryDimensions,
+  fetchActiveDimensionRules,
+} from '@/lib/bookkeeping/dimension-rules'
 import { backfillStandardBASAccounts } from '@/lib/bookkeeping/account-backfill'
 import { syncInvoiceStatusFromPaymentEntry, isPaymentSourceType } from '@/lib/bookkeeping/payment-sync'
 import { getActor } from '@/lib/bookkeeping/actor-context'
@@ -227,12 +232,22 @@ export async function createDraftEntry(
     throw new JournalEntryNotBalancedError(balance.totalDebit, balance.totalCredit, 'draft')
   }
 
+  // Account dimension rules (dimensions PR10): apply 'default'/'fixed'
+  // values onto the line bags before validation + insert. Zero rules —
+  // every company by default — returns the input untouched; a failed rule
+  // fetch fails open like the soft validation below.
+  const rules = await fetchActiveDimensionRules(supabase, companyId)
+  if (rules === null) {
+    log.warn('dimension rule fetch failed — defaults/fixed skipped (fail-open)', { companyId })
+  }
+  const lines = rules ? applyDimensionRules(input.lines, rules) : input.lines
+
   // Soft dimension validation (dimensions plan PR3): free for untagged
   // entries; free-text passthrough unless company_settings.dimensions_enabled;
   // enabled companies get registry validation with a typed Swedish rejection.
   // Runs before any insert so a rejection leaves no orphan rows. Reversal/
   // storno/correction paths bypass this — they copy posted data verbatim.
-  await validateEntryDimensions(supabase, companyId, input.lines)
+  await validateEntryDimensions(supabase, companyId, lines)
 
   // Validate that entry_date falls within the selected fiscal period
   const { data: period, error: periodError } = await supabase
@@ -319,7 +334,7 @@ export async function createDraftEntry(
   }
 
   // Insert journal entry lines with dimensions
-  const lineInserts = buildLineInserts(entry.id, input.lines, accountIdMap)
+  const lineInserts = buildLineInserts(entry.id, lines, accountIdMap)
 
   const { error: linesError } = await supabase
     .from('journal_entry_lines')
@@ -409,7 +424,13 @@ export async function updateDraftEntry(
 
   // Same soft dimension validation as createDraftEntry — before any write, so
   // a rejection leaves both the header and the existing lines untouched.
-  await validateEntryDimensions(supabase, companyId, input.lines)
+  // Account dimension rules (PR10) apply first — same as create.
+  const rules = await fetchActiveDimensionRules(supabase, companyId)
+  if (rules === null) {
+    log.warn('dimension rule fetch failed — defaults/fixed skipped (fail-open)', { companyId })
+  }
+  const lines = rules ? applyDimensionRules(input.lines, rules) : input.lines
+  await validateEntryDimensions(supabase, companyId, lines)
 
   // Entry date must fall within the selected fiscal period.
   const { data: period, error: periodError } = await supabase
@@ -479,7 +500,7 @@ export async function updateDraftEntry(
     throw new BookkeepingDatabaseError('create_entry_lines', deleteError.message)
   }
 
-  const lineInserts = buildLineInserts(entryId, input.lines, accountIdMap)
+  const lineInserts = buildLineInserts(entryId, lines, accountIdMap)
   const { error: linesError } = await supabase
     .from('journal_entry_lines')
     .insert(lineInserts)
@@ -527,6 +548,39 @@ export async function commitEntry(
   rubricVersion?: string
 ): Promise<JournalEntry> {
   const actor = getActor()
+
+  // Mandatory dimension rules (dimensions PR10): 'required' rules bite when
+  // the verifikat is about to become immutable — drafts may be incomplete,
+  // posting may not. Zero active rules (the default) skips the line fetch
+  // entirely; a failed rule fetch fails open (transient DB errors must not
+  // block bookkeeping). Reversal/correction paths never pass through
+  // commitEntry, so history always reverses regardless of policy.
+  const rules = await fetchActiveDimensionRules(supabase, companyId)
+  if (rules === null) {
+    // Deliberate fail-open, but LOUD: a transient policy-table error must not
+    // block month-end bookings company-wide, yet a silently skipped control
+    // is invisible — the warning makes the degradation observable.
+    log.warn('dimension rule fetch failed — mandatory enforcement skipped (fail-open)', {
+      companyId,
+      entityId: entryId,
+    })
+  } else if (rules.some((r) => r.rule_type === 'required')) {
+    const { data: ruleLines, error: ruleLinesError } = await supabase
+      .from('journal_entry_lines')
+      .select('account_number, dimensions')
+      .eq('journal_entry_id', entryId)
+    if (ruleLinesError || !ruleLines) {
+      log.warn('line fetch for mandatory dimension check failed — enforcement skipped (fail-open)', {
+        companyId,
+        entityId: entryId,
+      })
+    } else {
+      assertMandatoryDimensions(
+        ruleLines as Array<{ account_number: string; dimensions: Record<string, string> }>,
+        rules
+      )
+    }
+  }
 
   // Atomic: increment voucher sequence + update status in one transaction.
   // Rolls back the sequence if the balance trigger or any constraint fails.
