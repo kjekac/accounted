@@ -85,9 +85,16 @@ describe('tools/list payload size guard', () => {
     //     already use the compact "Dims bag" form (~90 tokens trimmed first);
     //     the remainder is schema structure the resolve-don't-select contract
     //     depends on, not trimmable prose.
+    //   * 44K → 45K when the rot/rut branch merged with main: main's #877 put
+    //     qualified identifiers in all tool output schemas (+~260 across 103
+    //     tools — wire contract, not prose) and the branch added
+    //     gnubok_generate_rot_rut_file (~444: begäran-om-utbetalning file flow,
+    //     eligible/blocked per-invoice output). Each side alone was under the
+    //     ceiling; the combination crossed it by ~220. Descriptions are at
+    //     their trimmed floor per the entries above.
     // Long-term answer to growth is leaning harder on gnubok_search_tools — if this
     // fires again, prefer trimming descriptions or making a tool opt-in via search
     // before bumping further.
-    expect(approxTokens).toBeLessThan(44_000)
+    expect(approxTokens).toBeLessThan(45_000)
   })
 })

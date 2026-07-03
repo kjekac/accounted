@@ -51,6 +51,7 @@ export interface InvoiceWriteItemInput {
   work_type?: string | null
   housing_designation?: string | null
   apartment_number?: string | null
+  brf_org_number?: string | null
   accrual_period_start?: string | null
   accrual_period_end?: string | null
   accrual_balance_account?: string | null
@@ -71,6 +72,9 @@ export interface InvoiceWriteInput {
   ore_rounding?: boolean
   deduction_personnummer?: string
   deduction_housing_designation?: string
+  /** ROT i bostadsrätt: lägenhetsnummer + föreningens orgnr instead of fastighetsbeteckning. */
+  deduction_apartment_number?: string
+  deduction_brf_org_number?: string
   /** Dimensions PR7: invoice-level bag applied to every generated journal line. */
   default_dimensions?: Record<string, string>
   items: InvoiceWriteItemInput[]
@@ -127,6 +131,7 @@ export type InvoiceWriteItemRow = {
   work_type: string | null
   housing_designation: string | null
   apartment_number: string | null
+  brf_org_number: string | null
   accrual_period_start: string | null
   accrual_period_end: string | null
   accrual_balance_account: string | null
@@ -260,7 +265,23 @@ export async function buildInvoiceWriteData(params: {
   let deductionPersonnummerEncrypted: string | null = null
   let deductionPersonnummerLast4: string | null = null
   if (documentType === 'invoice') {
-    const housingProvided = !!input.deduction_housing_designation?.trim()
+    // Housing info satisfies the ROT requirement in either of two shapes
+    // (Begaran.xsd V6): fastighetsbeteckning (småhus/ägarlägenhet) OR
+    // lägenhetsnummer + bostadsrättsföreningens orgnr (bostadsrätt).
+    const fastighetProvided = !!input.deduction_housing_designation?.trim()
+    const apartmentProvided = !!input.deduction_apartment_number?.trim()
+    const brfProvided = !!input.deduction_brf_org_number?.trim()
+    if ((apartmentProvided || brfProvided) && !(apartmentProvided && brfProvided)) {
+      return {
+        ok: false,
+        code: 'INVOICE_CREATE_ROT_RUT_VALIDATION',
+        details: {
+          errors: ['För bostadsrätt krävs både lägenhetsnummer och föreningens organisationsnummer.'],
+          warnings: [],
+        },
+      }
+    }
+    const housingProvided = fastighetProvided || (apartmentProvided && brfProvided)
     const personnummerRaw = input.deduction_personnummer?.trim() || ''
     const personnummerProvided = personnummerRaw.length > 0
 
@@ -377,6 +398,7 @@ export async function buildInvoiceWriteData(params: {
         work_type: null,
         housing_designation: null,
         apartment_number: null,
+        brf_org_number: null,
         accrual_period_start: null,
         accrual_period_end: null,
         accrual_balance_account: null,
@@ -416,8 +438,22 @@ export async function buildInvoiceWriteData(params: {
       deduction_amount: deductionAmount,
       labor_hours: documentType === 'invoice' ? (item.labor_hours ?? null) : null,
       work_type: documentType === 'invoice' ? (item.work_type ?? null) : null,
-      housing_designation: documentType === 'invoice' ? (item.housing_designation ?? null) : null,
-      apartment_number: documentType === 'invoice' ? (item.apartment_number ?? null) : null,
+      // Property info: per-line value wins, else the invoice-level claim-card
+      // value is stamped onto every deduction line so the Skatteverket file
+      // generator can read it off the line later. Non-deduction lines carry
+      // no property data (privacy by default).
+      housing_designation:
+        documentType === 'invoice' && deductionType
+          ? (item.housing_designation ?? input.deduction_housing_designation?.trim() ?? null) || null
+          : null,
+      apartment_number:
+        documentType === 'invoice' && deductionType
+          ? (item.apartment_number ?? input.deduction_apartment_number?.trim() ?? null) || null
+          : null,
+      brf_org_number:
+        documentType === 'invoice' && deductionType
+          ? (item.brf_org_number ?? input.deduction_brf_org_number?.trim() ?? null) || null
+          : null,
       // Periodisering (förutbetald intäkt): frozen onto the line. The schedule
       // itself is created when the invoice is sent/booked. ROT/RUT lines never
       // defer (schema-enforced); the guard above restricted this to real

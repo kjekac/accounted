@@ -243,6 +243,8 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_export_sie:                      'reports:read',
   gnubok_audit_package:                   'reports:read',
   gnubok_import_sie:                      'bookkeeping:write',
+  // Rot/rut begäran om utbetalning (records a payout request on generate)
+  gnubok_generate_rot_rut_file:           'invoices:write',
   // Supplier CRUD
   gnubok_create_supplier:                 'suppliers:write',
   // Supplier invoice lifecycle

@@ -676,6 +676,42 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'Personnumret för ROT/RUT-avdraget är ogiltigt.',
     message_en: 'The personnummer provided for the ROT/RUT deduction is invalid.',
   },
+  // Rot/rut begäran om utbetalning (Skatteverkets husavdragstjänst)
+  ROT_RUT_REQUEST_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Begäran om utbetalning hittades inte.',
+    message_en: 'Payout request not found.',
+  },
+  ROT_RUT_NO_ELIGIBLE_INVOICES: {
+    httpStatus: 400,
+    message_sv: 'Ingen av de valda fakturorna kan ingå i filen. Se blockeringarna per faktura.',
+    message_en: 'None of the selected invoices can be included in the file. See the per-invoice blockers.',
+  },
+  ROT_RUT_INVOICES_BLOCKED: {
+    httpStatus: 400,
+    message_sv: 'En eller flera valda fakturor kan inte ingå i filen. Åtgärda blockeringarna eller välj bort fakturorna.',
+    message_en: 'One or more selected invoices cannot be included in the file. Fix the blockers or deselect the invoices.',
+  },
+  ROT_RUT_INVOICE_CONFLICT: {
+    httpStatus: 409,
+    message_sv: 'Minst en faktura ingår redan i en aktiv begäran om utbetalning.',
+    message_en: 'At least one invoice is already part of an active payout request.',
+  },
+  ROT_RUT_INVALID_STATUS_TRANSITION: {
+    httpStatus: 400,
+    message_sv: 'Statusändringen är inte tillåten för begäran i dess nuvarande läge.',
+    message_en: 'The status transition is not allowed from the request current state.',
+  },
+  ROT_RUT_SETTLE_INVALID_STATE: {
+    httpStatus: 400,
+    message_sv: 'Utbetalningen kan bara bokföras för en inskickad begäran som inte redan är bokförd.',
+    message_en: 'The payout can only be booked for a submitted request that is not already settled.',
+  },
+  ROT_RUT_FILE_CREATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Filen kunde inte skapas.',
+    message_en: 'The payout file could not be created.',
+  },
   INVOICE_CREATE_INSERT_FAILED: {
     httpStatus: 500,
     message_sv: 'Fakturan kunde inte sparas.',
@@ -1488,6 +1524,11 @@ const DOCUMENT: Record<string, StructuredErrorEntry> = {
     httpStatus: 400,
     message_sv: 'Filtypen stöds inte.',
     message_en: 'Unsupported file type.',
+  },
+  DOC_UPLOAD_INVALID_CONTENT: {
+    httpStatus: 400,
+    message_sv: 'Filen kunde inte läsas som en giltig PDF eller bild. Kontrollera att filen inte är skadad.',
+    message_en: 'The file could not be read as a valid PDF or image. Check that the file is not corrupted.',
   },
   DOC_UPLOAD_STORAGE_FAILED: {
     httpStatus: 500,

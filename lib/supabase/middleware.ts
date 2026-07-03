@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { shouldEnforceMfa } from '@/lib/auth/mfa'
+import { apiPathSkipsMfaGate } from '@/lib/auth/api-mfa-gate'
 import { DEFAULT_LOCALE, LOCALE_COOKIE, isLocale } from '@/i18n/config'
 import { userHasPassword } from '@/lib/auth/has-password'
 
@@ -43,6 +44,34 @@ export async function updateSession(request: NextRequest) {
 
   // Get the pathname
   const pathname = request.nextUrl.pathname
+
+  // ── API routes ──────────────────────────────────────────────────────────
+  // API routes authenticate themselves (requireAuth, API-key Bearer, cron
+  // secret, webhook signatures). Middleware runs on them for ONE reason: to
+  // close the MFA gap. Many legacy routes hand-roll supabase.auth.getUser()
+  // instead of requireAuth(), so without this an authenticated-but-not-MFA-
+  // verified (AAL1) cookie session could reach them on the hosted product.
+  // Gate ONLY cookie sessions. Bearer-auth SURFACES (/api/v1, the MCP
+  // endpoint) and the AAL1 escape-hatch / OAuth routes pass straight through
+  // (see apiPathSkipsMfaGate) — header presence alone never skips the gate,
+  // since the header is attacker-controlled and cookie-authenticated routes
+  // ignore it. Pure Bearer callers (cron, webhooks) carry no cookie session,
+  // so the `user` guard below already excludes them. Everything else about
+  // /api auth stays the route's own responsibility.
+  if (pathname.startsWith('/api')) {
+    const skipMfaGate = apiPathSkipsMfaGate(
+      pathname,
+      request.headers.get('authorization') !== null,
+    )
+    if (!skipMfaGate && user && shouldEnforceMfa(user)) {
+      const { data: aal } =
+        await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+      if (aal?.nextLevel === 'aal2' && aal?.currentLevel === 'aal1') {
+        return NextResponse.json({ error: 'MFA-verifiering krävs.' }, { status: 403 })
+      }
+    }
+    return supabaseResponse
+  }
 
   // If the refresh token is stale/invalid, clear the session cookies
   // so the browser stops sending them on every request.

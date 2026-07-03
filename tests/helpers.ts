@@ -583,6 +583,7 @@ export function makeCompanySettings(
     invoice_font_family: 'Helvetica',
     invoice_header_text: null,
     invoice_footer_text: null,
+    invoice_email_texts: null,
     send_invoice_reminders: true,
     reminder_fee_enabled: true,
     reminder_fee_amount: 60,

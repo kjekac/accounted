@@ -289,10 +289,22 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
         { requestId: ctx.requestId },
       )
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown'
+      // Magic-byte validation rejections (validateDocumentMagicBytes) are a
+      // client problem, not a storage failure — surface as 400 with an
+      // accurate message instead of the misleading "kunde inte sparas".
+      if (/kunde inte verifieras|matchar inte den angivna filtypen/i.test(message)) {
+        opLog.warn('document upload rejected by content validation', { reason: message })
+        return v1ErrorResponseFromCode('DOC_UPLOAD_INVALID_CONTENT', opLog, {
+          requestId: ctx.requestId,
+          details: { reason: message },
+        })
+      }
+      // Full error is logged above; the raw message can leak storage-layer
+      // internals, so the client only gets the generic code + requestId.
       opLog.error('document upload failed', err as Error)
       return v1ErrorResponseFromCode('DOC_UPLOAD_STORAGE_FAILED', opLog, {
         requestId: ctx.requestId,
-        details: { reason: err instanceof Error ? err.message : 'unknown' },
       })
     }
   },

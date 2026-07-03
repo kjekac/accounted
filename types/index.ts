@@ -180,6 +180,22 @@ export interface Profile {
   updated_at: string
 }
 
+// Editable invoice email texts (standard invoices only; sv + en).
+// Missing / whitespace-only fields fall back to the hardcoded defaults in
+// lib/email/invoice-templates.ts. Supports the fixed placeholder set
+// {fakturanummer} {kundnamn} {förnamn} {företag} {förfallodatum} {belopp}.
+export interface InvoiceEmailTextOverrides {
+  subject?: string
+  greeting?: string
+  body?: string
+  signoff?: string
+}
+
+export interface InvoiceEmailTexts {
+  sv?: InvoiceEmailTextOverrides
+  en?: InvoiceEmailTextOverrides
+}
+
 // Company Settings
 export interface CompanySettings {
   id: string
@@ -287,6 +303,9 @@ export interface CompanySettings {
   invoice_font_family: 'Helvetica' | 'Times-Roman' | 'Courier'
   invoice_header_text: string | null
   invoice_footer_text: string | null
+
+  // Editable invoice email texts. null = all defaults.
+  invoice_email_texts: InvoiceEmailTexts | null
 
   // Automation
   send_invoice_reminders: boolean
@@ -965,12 +984,61 @@ export interface InvoiceItem {
   housing_designation?: string | null
   /** Lägenhetsnummer. Optional, used for ROT in flerbostadshus. */
   apartment_number?: string | null
+  /** Bostadsrättsföreningens orgnr. ROT i bostadsrätt reports lägenhetsnummer
+   *  + BRF orgnr instead of fastighetsbeteckning (Begaran.xsd: BrfOrgNr). */
+  brf_org_number?: string | null
 
   // Per-item dimensions bag, merged over the invoice's default_dimensions on
   // the revenue line this item books to (dimensions PR7). jsonb DEFAULT '{}'.
   dimensions?: Record<string, string>
 
   created_at: string
+}
+
+// Rot/rut payout request (begäran om utbetalning, Skatteverkets husavdragstjänst).
+// One row per generated HUS XML file; items link the invoices whose 1513
+// receivable the file requests. See lib/invoices/rot-rut-file.ts.
+export type RotRutPayoutRequestStatus =
+  | 'generated'
+  | 'submitted'
+  | 'paid'
+  | 'partially_paid'
+  | 'rejected'
+  | 'cancelled'
+
+export interface RotRutPayoutRequest {
+  id: string
+  company_id: string
+  user_id: string
+  deduction_type: 'rot' | 'rut'
+  /** NamnPaBegaran in the file — 1-16 chars, shown in Skatteverkets e-tjänst. */
+  name: string
+  status: RotRutPayoutRequestStatus
+  requested_total: number
+  decided_total: number | null
+  file_name: string
+  file_document_id: string | null
+  settlement_journal_entry_id: string | null
+  submitted_at: string | null
+  decided_at: string | null
+  created_at: string
+  updated_at: string
+
+  // Relations (populated when fetched)
+  items?: RotRutPayoutRequestItem[]
+}
+
+export interface RotRutPayoutRequestItem {
+  id: string
+  request_id: string
+  invoice_id: string
+  requested_amount: number
+  decided_amount: number | null
+  created_at: string
+  updated_at: string
+
+  // Relations (populated when fetched)
+  invoice?: Invoice
 }
 
 // Recurring Invoice Schedule (template + monthly cadence)
@@ -1287,6 +1355,7 @@ export type JournalEntrySourceType =
   | 'reminder_fee'
   | 'accrual'
   | 'result_appropriation'
+  | 'rot_rut_payout'
 
 // Journal entry status
 export type JournalEntryStatus = 'draft' | 'posted' | 'reversed' | 'cancelled'
@@ -2232,6 +2301,33 @@ export interface CompanyInbox {
   created_at: string
   updated_at: string
   deprecated_at: string | null
+}
+
+export type CompanyInboundDomainStatus = 'pending' | 'verified' | 'failed'
+
+// A DNS record the user must publish to verify their custom inbound domain
+// (verbatim from the Resend domains API).
+export interface InboundDomainDnsRecord {
+  record: string
+  name: string
+  value: string
+  type: string
+  ttl: string
+  status: string
+  priority?: number
+}
+
+export interface CompanyInboundDomain {
+  id: string
+  company_id: string
+  domain: string
+  status: CompanyInboundDomainStatus
+  resend_domain_id: string | null
+  dns_records: InboundDomainDnsRecord[] | null
+  verified_at: string | null
+  last_checked_at: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface InvoiceInboxItem {

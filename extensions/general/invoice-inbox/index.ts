@@ -9,6 +9,7 @@ import {
   fetchReceivingEmail,
   fetchInboundAttachment,
   extractLocalPartForDomain,
+  parseRecipients,
   isEmailReceivedEvent,
   ResendSignatureError,
 } from './lib/resend-inbound'
@@ -17,6 +18,14 @@ import {
   getActiveInbox,
   composeInboxAddress,
 } from './lib/inbox-provisioning'
+import {
+  claimCustomDomain,
+  checkCustomDomainVerification,
+  removeCustomDomain,
+  getCustomDomain,
+  findCompanyForRecipientDomains,
+  applyDomainStatusFromWebhook,
+} from './lib/custom-domains'
 import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { createSchedulesForSupplierInvoice } from '@/lib/bookkeeping/accruals/from-invoices'
 import { suggestBalanceAccount } from '@/lib/bookkeeping/accruals/account-suggestions'
@@ -142,6 +151,27 @@ const UpdateExtractedDataSchema = z.object({
     .partial()
     .optional(),
 })
+
+// Claim body for POST /inbox/domain. Length-capped only — real validation
+// (punycode, hostname shape, blocklist) lives in normalizeInboundDomain /
+// validateClaimableDomain so the same rules apply to every caller.
+const ClaimDomainSchema = z.object({
+  domain: z.string().trim().min(1).max(255),
+})
+
+// Custom inbound domains are fully built but deliberately not exposed —
+// product decision 2026-07-02: the default is the Fortnox-style shared
+// address (+ user-side forwarding); own-domain inbound waits for real demand.
+// Flip INBOX_CUSTOM_DOMAINS_ENABLED=true to re-enable the /inbox/domain
+// routes. The globe entry point in InvoiceInboxWorkspace was removed at the
+// same time — restore it when re-enabling.
+const customDomainsEnabled = () => process.env.INBOX_CUSTOM_DOMAINS_ENABLED === 'true'
+
+const customDomainsDisabledResponse = () =>
+  NextResponse.json(
+    { error: 'Egen domän är inte tillgänglig.', code: 'FEATURE_DISABLED' },
+    { status: 403 }
+  )
 
 const UPLOAD_ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
@@ -1288,6 +1318,123 @@ export const invoiceInboxExtension: Extension = {
       },
     },
 
+    // ── Custom inbound domain: read current state ────────────
+    {
+      method: 'GET',
+      path: '/inbox/domain',
+      handler: async (_request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        if (!customDomainsEnabled()) return customDomainsDisabledResponse()
+
+        try {
+          const row = await getCustomDomain(ctx.supabase, ctx.companyId)
+          // null when the company has no custom domain — the UI renders the
+          // claim form in that case.
+          return NextResponse.json({ data: row })
+        } catch (err) {
+          return NextResponse.json(
+            { error: err instanceof Error ? err.message : 'Failed to load domain' },
+            { status: 500 }
+          )
+        }
+      },
+    },
+
+    // ── Custom inbound domain: claim (admin/owner only) ──────
+    {
+      method: 'POST',
+      path: '/inbox/domain',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        if (!customDomainsEnabled()) return customDomainsDisabledResponse()
+
+        const isAdmin = await isCompanyAdmin(ctx.supabase, ctx.userId, ctx.companyId)
+        if (!isAdmin) return NextResponse.json({ error: 'Behörighet saknas.' }, { status: 403 })
+
+        // Sandbox companies are anonymous 24h demo accounts — letting them
+        // register domains in our Resend account is a pure abuse vector.
+        if (await isSandboxCompany(ctx.supabase, ctx.companyId)) {
+          return NextResponse.json(
+            { error: 'Egen domän är inte tillgänglig i sandlådan.' },
+            { status: 403 }
+          )
+        }
+
+        // Claiming hits the Resend domains API — share the per-company inbox
+        // quota so a claim/delete loop can't burn the provider budget.
+        const limit = await checkInboxUploadRateLimit(ctx.supabase, ctx.companyId)
+        if (!limit.ok) {
+          return NextResponse.json(
+            { error: 'För många förfrågningar — försök igen om en stund.', retry_after: limit.retryAfterSec },
+            { status: 429, headers: { 'Retry-After': String(limit.retryAfterSec ?? 60) } },
+          )
+        }
+
+        let body: z.infer<typeof ClaimDomainSchema>
+        try {
+          body = ClaimDomainSchema.parse(await request.json())
+        } catch (err) {
+          return NextResponse.json(
+            { error: err instanceof Error ? err.message : 'Invalid request body' },
+            { status: 400 }
+          )
+        }
+
+        const result = await claimCustomDomain(ctx.supabase, ctx.companyId, body.domain)
+        if (!result.ok) {
+          return NextResponse.json({ error: result.error }, { status: result.status })
+        }
+        return NextResponse.json({ data: result.data })
+      },
+    },
+
+    // ── Custom inbound domain: re-check verification ─────────
+    {
+      method: 'POST',
+      path: '/inbox/domain/verify',
+      handler: async (_request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        if (!customDomainsEnabled()) return customDomainsDisabledResponse()
+
+        const isAdmin = await isCompanyAdmin(ctx.supabase, ctx.userId, ctx.companyId)
+        if (!isAdmin) return NextResponse.json({ error: 'Behörighet saknas.' }, { status: 403 })
+
+        // verify() triggers a DNS check at Resend — rate-limit the button.
+        const limit = await checkInboxUploadRateLimit(ctx.supabase, ctx.companyId)
+        if (!limit.ok) {
+          return NextResponse.json(
+            { error: 'För många kontroller — försök igen om en stund.', retry_after: limit.retryAfterSec },
+            { status: 429, headers: { 'Retry-After': String(limit.retryAfterSec ?? 60) } },
+          )
+        }
+
+        const result = await checkCustomDomainVerification(ctx.supabase, ctx.companyId)
+        if (!result.ok) {
+          return NextResponse.json({ error: result.error }, { status: result.status })
+        }
+        return NextResponse.json({ data: result.data })
+      },
+    },
+
+    // ── Custom inbound domain: remove (admin/owner only) ─────
+    {
+      method: 'DELETE',
+      path: '/inbox/domain',
+      handler: async (_request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        if (!customDomainsEnabled()) return customDomainsDisabledResponse()
+
+        const isAdmin = await isCompanyAdmin(ctx.supabase, ctx.userId, ctx.companyId)
+        if (!isAdmin) return NextResponse.json({ error: 'Behörighet saknas.' }, { status: 403 })
+
+        const result = await removeCustomDomain(ctx.supabase, ctx.companyId)
+        if (!result.ok) {
+          return NextResponse.json({ error: result.error }, { status: result.status })
+        }
+        return NextResponse.json({ data: result.data })
+      },
+    },
+
     // ── Resend Inbound webhook (Svix-signed, no user auth) ──
     {
       method: 'POST',
@@ -1313,44 +1460,87 @@ export const invoiceInboxExtension: Extension = {
           return NextResponse.json({ error: 'Verification failed' }, { status: 500 })
         }
 
+        // Resend pushes domain.* lifecycle events to the same webhook. Apply
+        // domain.updated to custom-domain rows so verification flips without
+        // the user pressing "Kontrollera igen" (requires the event type to be
+        // subscribed on the Resend webhook; harmless when it isn't).
+        if (event.type === 'domain.updated') {
+          const domainServiceSupabase = createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_ROLE_KEY!
+          )
+          const matched = await applyDomainStatusFromWebhook(domainServiceSupabase, {
+            id: event.data.id,
+            status: event.data.status,
+            records: event.data.records,
+          })
+          return NextResponse.json({ data: { domain_updated: matched } })
+        }
+
         if (!isEmailReceivedEvent(event)) {
           return NextResponse.json({ data: { ignored: event.type } }, { status: 200 })
         }
 
         const { email_id, to, from, subject, message_id, created_at } = event.data
 
-        const localPart = extractLocalPartForDomain(to, domain)
-        if (!localPart) {
-          console.warn('[invoice-inbox/inbound] No recipient matched domain', { to, domain })
-          return NextResponse.json({ error: 'No matching recipient' }, { status: 404 })
-        }
-
         const serviceSupabase = createClient(
           process.env.NEXT_PUBLIC_SUPABASE_URL!,
           process.env.SUPABASE_SERVICE_ROLE_KEY!
         )
 
-        const { data: inbox } = await serviceSupabase
-          .from('company_inboxes')
-          .select('id, company_id, status')
-          .eq('local_part', localPart)
-          .maybeSingle()
+        // Recipient → company resolution. Shared-domain addresses first
+        // (existing local_part flow), then per-company verified custom
+        // domains. Custom domains are catch-all by design: MX routing is
+        // per-domain, and a supplier typing fakturor@ instead of faktura@
+        // must land in the inbox rather than silently vanish (Resend has
+        // already accepted the message; there is no bounce path).
+        let companyId: string | null = null
+        let sharedInboxStatus: string | null = null
 
-        if (!inbox) {
-          return NextResponse.json({ error: 'Address not found' }, { status: 404 })
+        const localPart = extractLocalPartForDomain(to, domain)
+        if (localPart) {
+          const { data: inbox } = await serviceSupabase
+            .from('company_inboxes')
+            .select('id, company_id, status')
+            .eq('local_part', localPart)
+            .maybeSingle()
+          if (inbox) {
+            sharedInboxStatus = inbox.status
+            if (inbox.status === 'active') companyId = inbox.company_id
+          }
         }
-        if (inbox.status !== 'active') {
-          return NextResponse.json({ error: 'Address no longer active' }, { status: 410 })
+
+        if (!companyId) {
+          const customDomains = parseRecipients(to)
+            .map((r) => r.domain)
+            .filter((d) => d !== domain.toLowerCase())
+          if (customDomains.length > 0) {
+            const match = await findCompanyForRecipientDomains(serviceSupabase, customDomains)
+            if (match) companyId = match.companyId
+          }
+        }
+
+        if (!companyId) {
+          // Preserve the pre-custom-domain status semantics: 410 for a
+          // deprecated/blocked shared address, 404 otherwise.
+          if (sharedInboxStatus && sharedInboxStatus !== 'active') {
+            return NextResponse.json({ error: 'Address no longer active' }, { status: 410 })
+          }
+          console.warn('[invoice-inbox/inbound] No recipient matched', { to, domain })
+          return NextResponse.json(
+            { error: localPart ? 'Address not found' : 'No matching recipient' },
+            { status: 404 }
+          )
         }
 
         const { data: company } = await serviceSupabase
           .from('companies')
           .select('created_by')
-          .eq('id', inbox.company_id)
+          .eq('id', companyId)
           .single()
 
         if (!company?.created_by) {
-          console.error('[invoice-inbox/inbound] Company has no created_by', inbox.company_id)
+          console.error('[invoice-inbox/inbound] Company has no created_by', companyId)
           return NextResponse.json({ error: 'Company owner missing' }, { status: 500 })
         }
         const userId = company.created_by
@@ -1370,11 +1560,11 @@ export const invoiceInboxExtension: Extension = {
         // Per-company rate limit (30/min, 500/day). Same Postgres-backed
         // RPC as /upload. Acknowledge + drop on cap — returning 429 to
         // Resend would just consume more budget via their retry.
-        const limit = await checkInboxUploadRateLimit(serviceSupabase, inbox.company_id)
+        const limit = await checkInboxUploadRateLimit(serviceSupabase, companyId)
         if (!limit.ok) {
           try {
             await appendProcessingHistory({
-              companyId: inbox.company_id,
+              companyId,
               correlationId: email_id,
               aggregateType: 'System',
               aggregateId: email_id,
@@ -1404,7 +1594,7 @@ export const invoiceInboxExtension: Extension = {
         if (truncatedCount > 0) {
           try {
             await appendProcessingHistory({
-              companyId: inbox.company_id,
+              companyId,
               correlationId: email_id,
               aggregateType: 'System',
               aggregateId: email_id,
@@ -1426,7 +1616,7 @@ export const invoiceInboxExtension: Extension = {
 
         if (attachments.length === 0) {
           await serviceSupabase.from('invoice_inbox_items').insert({
-            company_id: inbox.company_id,
+            company_id: companyId,
             user_id: userId,
             status: 'error',
             source: 'email',
@@ -1459,7 +1649,7 @@ export const invoiceInboxExtension: Extension = {
           // oversized values when read back into the UI / audit trails.
           try {
             await serviceSupabase.from('invoice_inbox_items').insert({
-              company_id: inbox.company_id,
+              company_id: companyId,
               user_id: userId,
               status: 'error',
               source: 'email',
@@ -1530,7 +1720,7 @@ export const invoiceInboxExtension: Extension = {
                 const innerResult = await uploadAndExtract(
                   serviceSupabase,
                   userId,
-                  inbox.company_id,
+                  companyId,
                   { name: innerName, buffer: innerArrayBuffer, type: innerType },
                   'email',
                   {
@@ -1562,7 +1752,7 @@ export const invoiceInboxExtension: Extension = {
             const result = await uploadAndExtract(
               serviceSupabase,
               userId,
-              inbox.company_id,
+              companyId,
               { name: download.filename, buffer: download.buffer, type: download.contentType },
               'email',
               {

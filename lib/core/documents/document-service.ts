@@ -65,16 +65,22 @@ export function validateDocumentFile(file: { size: number; type?: string }): str
  */
 function detectFileMagic(bytes: Uint8Array): string | null {
   if (bytes.length < 4) return null
-  // PDF: %PDF-  (allow a leading UTF-8 BOM as some tools prepend one)
-  const offset = bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF ? 3 : 0
-  if (
-    bytes.length >= offset + 5 &&
-    bytes[offset] === 0x25 &&
-    bytes[offset + 1] === 0x50 &&
-    bytes[offset + 2] === 0x44 &&
-    bytes[offset + 3] === 0x46 &&
-    bytes[offset + 4] === 0x2D
-  ) return 'application/pdf'
+  // PDF: %PDF- anywhere in the first 1024 bytes. ISO 32000 readers accept a
+  // preamble before the header (Acrobat scans the first 1 KB), and real-world
+  // invoice PDFs arrive with leading newlines/junk — requiring offset 0
+  // rejected files every normal reader opens. Image types stay strict at
+  // offset 0: genuine image files always start with their signature, and the
+  // looseness is not needed there to keep the anti-placeholder defense tight.
+  const pdfScanEnd = Math.min(bytes.length - 5, 1024)
+  for (let i = 0; i <= pdfScanEnd; i++) {
+    if (
+      bytes[i] === 0x25 &&
+      bytes[i + 1] === 0x50 &&
+      bytes[i + 2] === 0x44 &&
+      bytes[i + 3] === 0x46 &&
+      bytes[i + 4] === 0x2D
+    ) return 'application/pdf'
+  }
   // PNG: 89 50 4E 47
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) return 'image/png'
   // JPEG: FF D8 FF

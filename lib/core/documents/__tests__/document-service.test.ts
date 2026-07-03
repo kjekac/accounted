@@ -116,6 +116,61 @@ describe('validateDocumentMagicBytes — application/xhtml+xml', () => {
   })
 })
 
+describe('validateDocumentMagicBytes — PDF header offset tolerance', () => {
+  const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+
+  const withPreamble = (preamble: string): ArrayBuffer => {
+    const pdf = new Uint8Array(pdfBuffer())
+    const lead = new TextEncoder().encode(preamble)
+    const combined = new Uint8Array(lead.length + pdf.length)
+    combined.set(lead, 0)
+    combined.set(pdf, lead.length)
+    return toArrayBuffer(combined)
+  }
+
+  it('accepts a PDF with a leading newline before %PDF- (ISO 32000 preamble)', () => {
+    expect(validateDocumentMagicBytes(withPreamble('\n'), 'application/pdf')).toBeNull()
+  })
+
+  it('accepts a PDF with leading whitespace/junk before %PDF-', () => {
+    expect(validateDocumentMagicBytes(withPreamble('   '), 'application/pdf')).toBeNull()
+    expect(validateDocumentMagicBytes(withPreamble('\r\n\r\n<junk>'), 'application/pdf')).toBeNull()
+  })
+
+  it('accepts a PDF with a UTF-8 BOM before %PDF-', () => {
+    const pdf = new Uint8Array(pdfBuffer())
+    const combined = new Uint8Array(3 + pdf.length)
+    combined.set([0xEF, 0xBB, 0xBF], 0)
+    combined.set(pdf, 3)
+    expect(validateDocumentMagicBytes(toArrayBuffer(combined), 'application/pdf')).toBeNull()
+  })
+
+  it('rejects when %PDF- appears only beyond the first 1024 bytes', () => {
+    expect(validateDocumentMagicBytes(withPreamble('x'.repeat(1025)), 'application/pdf')).toMatch(
+      /kunde inte verifieras/,
+    )
+  })
+
+  it('still rejects HTML and plain text declared as PDF', () => {
+    const toBuffer = (text: string): ArrayBuffer =>
+      toArrayBuffer(new TextEncoder().encode(text))
+    expect(
+      validateDocumentMagicBytes(toBuffer('<html><body>Your invoice</body></html>'), 'application/pdf'),
+    ).toMatch(/kunde inte verifieras/)
+    expect(
+      validateDocumentMagicBytes(toBuffer('JVBERi0xLjQKJcOkw7zDtsO'), 'application/pdf'),
+    ).toMatch(/kunde inte verifieras/)
+  })
+
+  it('images stay strict at offset 0 — a leading byte still rejects', () => {
+    const png = new Uint8Array([0x0A, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    expect(validateDocumentMagicBytes(toArrayBuffer(png), 'image/png')).toMatch(
+      /kunde inte verifieras/,
+    )
+  })
+})
+
 describe('uploadDocument', () => {
   it('computes SHA-256 hash, stores metadata, emits document.uploaded', async () => {
     const doc = makeDocumentAttachment({

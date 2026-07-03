@@ -1283,6 +1283,21 @@
     "credit_terms_label": "Betalningsvillkor (fotnot)",
     "credit_terms_placeholder": "T.ex. Betalning sker till angivet bankgiro."
   },
+  "settings_email_texts": {
+    "heading": "E-posttexter",
+    "description": "Texterna i mejlet som skickas med fakturan. Ändra fritt — bara dina ändringar sparas. Gäller inte kreditfakturor, proforma eller följesedlar.",
+    "reset_label": "Återställ till standard",
+    "tab_sv": "Svenska",
+    "tab_en": "Engelska",
+    "en_tab_hint": "Används för kunder med engelska som språk.",
+    "subject_label": "Ämnesrad",
+    "greeting_label": "Hälsning",
+    "body_label": "Brödtext",
+    "signoff_label": "Avslutning",
+    "placeholders_help": "Tillgängliga platshållare (okända lämnas kvar som text):",
+    "firstname_note": "Platshållaren förnamn använder första ordet i kundens namn.",
+    "toast_save_failed": "Kunde inte spara"
+  },
   "settings_period_locking": {
     "heading": "Periodlåsning",
     "locked_through_label": "Bokföring låst t.o.m.",
@@ -3360,6 +3375,7 @@
     "toast_attach_failed_description": "{count} fil(er) kunde inte länkas till verifikationen. Försök igen via bokföringssidan.",
     "fill_balance_tooltip": "Dubbelklicka för att fylla i balanserande belopp",
     "fill_balance_hint": "Tips: dubbelklicka på debet eller kredit för att fylla i differensen.",
+    "keyboard_hint": "Enter hoppar till nästa fält — när verifikatet balanserar öppnar Enter granskningen.",
     "review_month_changed": "Obs: annan månad än föregående verifikat ({prev} → {current}).",
     "review_period_locked": "Perioden är stängd eller låst — bokföring kan nekas.",
     "add_dimensions": "Kostnadsställe/Projekt",

@@ -74,7 +74,8 @@ describe('dimension filter — statutory exclusion', () => {
     const reportRoutes = walk(join(ROOT, 'app/api/reports'))
     const importers = reportRoutes
       .filter((f) => readFileSync(f, 'utf8').includes('lib/reports/dimension-filter'))
-      .map((f) => f.slice(ROOT.length + 1))
+      // Normalize to POSIX separators so the allowlist matches on Windows too.
+      .map((f) => f.slice(ROOT.length + 1).replace(/\\/g, '/'))
       .sort()
 
     // Exactly the P&L-safe routes — nothing more (statutory leak), nothing

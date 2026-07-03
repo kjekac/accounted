@@ -1283,6 +1283,21 @@
     "credit_terms_label": "Payment terms (footnote)",
     "credit_terms_placeholder": "E.g. Payment is made to the specified bankgiro."
   },
+  "settings_email_texts": {
+    "heading": "Email texts",
+    "description": "The texts in the email sent with the invoice. Edit freely — only your changes are saved. Does not apply to credit notes, proforma invoices or delivery notes.",
+    "reset_label": "Reset to standard",
+    "tab_sv": "Swedish",
+    "tab_en": "English",
+    "en_tab_hint": "Used for customers with English as their language.",
+    "subject_label": "Subject line",
+    "greeting_label": "Greeting",
+    "body_label": "Body text",
+    "signoff_label": "Sign-off",
+    "placeholders_help": "Available placeholders (unknown ones are left as text):",
+    "firstname_note": "The first-name placeholder uses the first word of the customer's name.",
+    "toast_save_failed": "Could not save"
+  },
   "settings_period_locking": {
     "heading": "Period locking",
     "locked_through_label": "Bookkeeping locked through",
@@ -3360,6 +3375,7 @@
     "toast_attach_failed_description": "{count} file(s) could not be linked to the journal entry. Try again from the bookkeeping page.",
     "fill_balance_tooltip": "Double-click to fill the balancing amount",
     "fill_balance_hint": "Tip: double-click debit or credit to fill the remaining difference.",
+    "keyboard_hint": "Enter jumps to the next field — once the entry balances, Enter opens the review.",
     "review_month_changed": "Note: different month than the previous voucher ({prev} → {current}).",
     "review_period_locked": "This period is closed or locked — posting may be rejected.",
     "add_dimensions": "Cost centre/Project",

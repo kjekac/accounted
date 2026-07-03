@@ -165,11 +165,16 @@ export default function JournalEntryForm({
   // user typed in the combobox so we can prefill the dialog.
   const [creatingAccountForLine, setCreatingAccountForLine] = useState<number | null>(null)
   const [createAccountPrefill, setCreateAccountPrefill] = useState<string>('')
-  // Per-row refs to the debit inputs so we can auto-advance focus there once an
-  // account is committed on a row. Two layouts render simultaneously (mobile
-  // cards + desktop table); we focus whichever one is actually visible.
+  // Per-row refs to the account/debit/credit inputs so the keyboard flow can
+  // advance focus with Enter: konto → debet → kredit → nästa rads konto. Two
+  // layouts render simultaneously (mobile cards + desktop table); we focus
+  // whichever one is actually visible.
+  const desktopAccountRefs = useRef<(HTMLInputElement | null)[]>([])
+  const mobileAccountRefs = useRef<(HTMLInputElement | null)[]>([])
   const desktopDebitRefs = useRef<(HTMLInputElement | null)[]>([])
   const mobileDebitRefs = useRef<(HTMLInputElement | null)[]>([])
+  const desktopCreditRefs = useRef<(HTMLInputElement | null)[]>([])
+  const mobileCreditRefs = useRef<(HTMLInputElement | null)[]>([])
   // Confirm button in the inline (bare) review, focused on open so Enter posts.
   const bareConfirmRef = useRef<HTMLButtonElement>(null)
 
@@ -512,18 +517,37 @@ export default function JournalEntryForm({
     updateLine(index, side === 'debit' ? 'debit_amount' : 'credit_amount', fill.toFixed(2))
   }
 
-  // Move focus to a row's debit input. Deferred a frame so it runs after any
+  // Move focus to a row's input. Deferred a frame so it runs after any
   // re-render (e.g. the auto-appended trailing row). offsetParent is null for
   // display:none elements, so this picks whichever layout is currently visible.
-  const focusDebit = useCallback((index: number) => {
-    requestAnimationFrame(() => {
-      const d = desktopDebitRefs.current[index]
-      const m = mobileDebitRefs.current[index]
-      const target = d && d.offsetParent !== null ? d : m && m.offsetParent !== null ? m : (d ?? m)
-      target?.focus()
-      target?.select?.()
-    })
-  }, [])
+  const focusRowInput = useCallback(
+    (
+      desktop: React.RefObject<(HTMLInputElement | null)[]>,
+      mobile: React.RefObject<(HTMLInputElement | null)[]>,
+      index: number
+    ) => {
+      requestAnimationFrame(() => {
+        const d = desktop.current?.[index]
+        const m = mobile.current?.[index]
+        const target = d && d.offsetParent !== null ? d : m && m.offsetParent !== null ? m : (d ?? m)
+        target?.focus()
+        target?.select?.()
+      })
+    },
+    []
+  )
+  const focusAccount = useCallback(
+    (index: number) => focusRowInput(desktopAccountRefs, mobileAccountRefs, index),
+    [focusRowInput]
+  )
+  const focusDebit = useCallback(
+    (index: number) => focusRowInput(desktopDebitRefs, mobileDebitRefs, index),
+    [focusRowInput]
+  )
+  const focusCredit = useCallback(
+    (index: number) => focusRowInput(desktopCreditRefs, mobileCreditRefs, index),
+    [focusRowInput]
+  )
 
   // Keep exactly one trailing blank row so the user never has to click "Lägg
   // till rad": once the last row is started (account or amount), append a fresh
@@ -674,6 +698,44 @@ export default function JournalEntryForm({
     if ((e.target as HTMLElement).tagName === 'TEXTAREA') return
     e.preventDefault()
     if (canSubmitReview()) handleReview()
+  }
+
+  // Enter-to-advance inside the konteringsrader: konto → debet → kredit →
+  // nästa rads konto. Navigation only fires while the entry is NOT
+  // submittable — once the voucher balances, Enter falls through to the
+  // form-level handler above and opens the review instead, so a single Enter
+  // never both moves focus and submits.
+  const handleAmountKeyDown =
+    (index: number, side: 'debit' | 'credit') =>
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key !== 'Enter' || canSubmitReview()) return
+      e.preventDefault()
+      // An amount on this side finishes the row (debit clears credit and vice
+      // versa) → jump to the next row's account. An empty debit means the row
+      // books on the credit side → hop across first.
+      if (side === 'debit' && !(parseFloat(lines[index].debit_amount) > 0)) {
+        focusCredit(index)
+      } else {
+        focusAccount(index + 1)
+      }
+    }
+
+  // Enter in a radbeskrivning continues to that row's amount.
+  const handleLineDescKeyDown =
+    (index: number) => (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key !== 'Enter' || canSubmitReview()) return
+      e.preventDefault()
+      focusDebit(index)
+    }
+
+  // Enter in the verifikationstext drops into the first row still missing an
+  // account, so the top-to-bottom keyboard flow never needs the mouse.
+  const handleHeaderDescKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter' || canSubmitReview()) return
+    const idx = lines.findIndex((l) => !l.account_number)
+    if (idx === -1) return
+    e.preventDefault()
+    focusAccount(idx)
   }
 
   // Inner submit: builds payload, POSTs, throws a structured error on failure
@@ -929,7 +991,17 @@ export default function JournalEntryForm({
   // summary instead of stacking a second dialog over the form dialog. The
   // no-underlag caveat folds in here so there's a single confirm step.
   const reviewPanel = (
-    <div className="space-y-4">
+    <div
+      className="space-y-4"
+      // The host dialog swallows Escape (accidental-close guard), so Escape
+      // here is free to mean "back to the form" — keyboard mirror of ←.
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && !isSubmitting) {
+          e.stopPropagation()
+          setShowReview(false)
+        }
+      }}
+    >
       <div className="flex items-center justify-between gap-2">
         <button
           type="button"
@@ -1022,6 +1094,7 @@ export default function JournalEntryForm({
             <Input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              onKeyDown={handleHeaderDescKeyDown}
               placeholder={t('description_placeholder')}
               className="mt-1 h-8"
             />
@@ -1223,6 +1296,7 @@ export default function JournalEntryForm({
                   onChange={(num) => updateLine(index, 'account_number', num)}
                   onCommit={() => focusDebit(index)}
                   onCreateAccount={(prefill) => handleOpenCreateAccount(index, prefill)}
+                  inputRef={(el) => { mobileAccountRefs.current[index] = el }}
                 />
               </div>
               <Button
@@ -1238,6 +1312,7 @@ export default function JournalEntryForm({
             <Input
               value={line.line_description}
               onChange={(e) => updateLine(index, 'line_description', e.target.value)}
+              onKeyDown={handleLineDescKeyDown(index)}
               placeholder={t('line_description_placeholder')}
             />
             <div className="grid grid-cols-2 gap-2">
@@ -1248,6 +1323,7 @@ export default function JournalEntryForm({
                   type="number"
                   value={line.debit_amount}
                   onChange={(e) => updateLine(index, 'debit_amount', e.target.value)}
+                  onKeyDown={handleAmountKeyDown(index, 'debit')}
                   onDoubleClick={() => handleFillBalance(index, 'debit')}
                   title={t('fill_balance_tooltip')}
                   placeholder="0,00"
@@ -1260,9 +1336,11 @@ export default function JournalEntryForm({
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">{t('col_credit')}</Label>
                 <Input
+                  ref={(el) => { mobileCreditRefs.current[index] = el }}
                   type="number"
                   value={line.credit_amount}
                   onChange={(e) => updateLine(index, 'credit_amount', e.target.value)}
+                  onKeyDown={handleAmountKeyDown(index, 'credit')}
                   onDoubleClick={() => handleFillBalance(index, 'credit')}
                   title={t('fill_balance_tooltip')}
                   placeholder="0,00"
@@ -1348,6 +1426,7 @@ export default function JournalEntryForm({
                     onChange={(num) => updateLine(index, 'account_number', num)}
                     onCommit={() => focusDebit(index)}
                     onCreateAccount={(prefill) => handleOpenCreateAccount(index, prefill)}
+                    inputRef={(el) => { desktopAccountRefs.current[index] = el }}
                     className="h-8"
                   />
                 </td>
@@ -1355,6 +1434,7 @@ export default function JournalEntryForm({
                   <Input
                     value={line.line_description}
                     onChange={(e) => updateLine(index, 'line_description', e.target.value)}
+                    onKeyDown={handleLineDescKeyDown(index)}
                     placeholder={t('line_description_placeholder')}
                     className="h-8"
                   />
@@ -1372,6 +1452,7 @@ export default function JournalEntryForm({
                     type="number"
                     value={line.debit_amount}
                     onChange={(e) => updateLine(index, 'debit_amount', e.target.value)}
+                    onKeyDown={handleAmountKeyDown(index, 'debit')}
                     onDoubleClick={() => handleFillBalance(index, 'debit')}
                     title={t('fill_balance_tooltip')}
                     placeholder="0,00"
@@ -1383,9 +1464,11 @@ export default function JournalEntryForm({
                 </td>
                 <td className="py-1.5 px-1">
                   <Input
+                    ref={(el) => { desktopCreditRefs.current[index] = el }}
                     type="number"
                     value={line.credit_amount}
                     onChange={(e) => updateLine(index, 'credit_amount', e.target.value)}
+                    onKeyDown={handleAmountKeyDown(index, 'credit')}
                     onDoubleClick={() => handleFillBalance(index, 'credit')}
                     title={t('fill_balance_tooltip')}
                     placeholder="0,00"
@@ -1504,7 +1587,9 @@ export default function JournalEntryForm({
             entityType={company?.entity_type}
           />
         </div>
-        <p className="mt-1.5 text-xs text-muted-foreground">{t('fill_balance_hint')}</p>
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          {t('fill_balance_hint')} {t('keyboard_hint')}
+        </p>
       </div>
 
       {/* Document attachments — hidden when editing a draft; underlag is
@@ -1666,6 +1751,7 @@ export default function JournalEntryForm({
           setShowReview(true)
         }}
         isSubmitting={false}
+        autoFocusConfirm
         title={t('no_doc_dialog_title')}
         warningText={t('no_doc_dialog_warning')}
         confirmLabel={t('no_doc_confirm')}

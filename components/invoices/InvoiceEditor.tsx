@@ -138,6 +138,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       work_type: z.string().nullable().optional(),
       housing_designation: z.string().nullable().optional(),
       apartment_number: z.string().nullable().optional(),
+      brf_org_number: z.string().nullable().optional(),
       // Periodisering (förutbetald intäkt). Active when balance account is
       // non-null; both period dates are then required (refine below).
       accrual_period_start: z.string().nullable().optional(),
@@ -199,7 +200,10 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       self_billing_agreement_ref: z.string().optional(),
       received_date: z.string().optional(),
       // Invoice-level ROT/RUT claim info. Personnummer is plaintext on
-      // the wire; the API encrypts it before storage.
+      // the wire; the API encrypts it before storage. The API additionally
+      // accepts the bostadsrätt pair (deduction_apartment_number +
+      // deduction_brf_org_number) — no editor UI for it yet, rot i
+      // bostadsrätt data enters via API/MCP until the payout-file UI ships.
       deduction_personnummer: z.string().optional(),
       deduction_housing_designation: z.string().optional(),
       items: z.array(itemSchema).min(1, t('validation_min_one_row')),
@@ -262,6 +266,10 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
   // draft. Starts true for create (always derive), false for edit (skip once).
   const didInitialCustomerSync = useRef(!isEditMode)
 
+  // Edit mode: the claim card's property fields are restored from the first
+  // rot line (they're stamped onto every rot line server-side at save time).
+  const initialRotLine = initial?.items?.find((i) => i.deduction_type === 'rot') ?? null
+
   const {
     register,
     control,
@@ -291,7 +299,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
           self_billing_agreement_ref: '',
           received_date: '',
           deduction_personnummer: '',
-          deduction_housing_designation: '',
+          deduction_housing_designation: initialRotLine?.housing_designation ?? '',
           items: (initial.items ?? []).map((item) => ({
             line_type: (item.line_type ?? 'product') as 'product' | 'text',
             description: item.description,
@@ -306,6 +314,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             work_type: item.work_type ?? null,
             housing_designation: item.housing_designation ?? null,
             apartment_number: item.apartment_number ?? null,
+            brf_org_number: item.brf_org_number ?? null,
             accrual_period_start: item.accrual_period_start ?? null,
             accrual_period_end: item.accrual_period_end ?? null,
             accrual_balance_account: item.accrual_balance_account ?? null,
@@ -334,6 +343,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             work_type: null,
             housing_designation: null,
             apartment_number: null,
+            brf_org_number: null,
             accrual_period_start: null,
             accrual_period_end: null,
             accrual_balance_account: null,
@@ -927,6 +937,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
         work_type: _wt,
         housing_designation: _hd,
         apartment_number: _an,
+        brf_org_number: _bn,
         ...rest
       } = item
       return rest
@@ -1003,6 +1014,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
         work_type: _wt,
         housing_designation: _hd,
         apartment_number: _an,
+        brf_org_number: _bn,
         ...rest
       } = item
       return rest
@@ -1061,6 +1073,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
         work_type: _wt,
         housing_designation: _hd,
         apartment_number: _an,
+        brf_org_number: _bn,
         ...rest
       } = item
       return rest
@@ -1816,6 +1829,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                         work_type: null,
                         housing_designation: null,
                         apartment_number: null,
+                        brf_org_number: null,
                         accrual_period_start: null,
                         accrual_period_end: null,
                         accrual_balance_account: null,
@@ -1852,6 +1866,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                           work_type: null,
                           housing_designation: null,
                           apartment_number: null,
+                          brf_org_number: null,
                           accrual_period_start: null,
                           accrual_period_end: null,
                           accrual_balance_account: null,

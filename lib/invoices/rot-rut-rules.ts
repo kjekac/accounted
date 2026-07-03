@@ -37,9 +37,13 @@ export const RUT_MAX = 75000
 export type DeductionType = 'rot' | 'rut'
 
 /** Skatteverket work codes used by Husavdragstjänsten. Maps a free-text */
-/** "what the worker did" label to the official code the Skatteverket file */
-/** will need. v1 stores both — the label is shown on the PDF; the code is */
-/** stored as `work_type` for the future submission file. */
+/** "what the worker did" label to the official code. The code drives which */
+/** element the begäran-om-utbetalning file (Begaran.xsd V6) reports the */
+/** hours under — see WORK_TYPE_ELEMENTS in lib/invoices/rot-rut-file.ts. */
+/** The lists mirror the XSD exactly: rot work types are the seven */
+/** ArendeUtfortArbeteRotTYPE elements (IT-tjänster is a RUT service and was */
+/** removed from the rot list 2026-07); rut covers all thirteen */
+/** ArendeUtfortArbeteRutTYPE elements incl. the two schablontjänster. */
 export const ROT_WORK_TYPES = [
   { code: 'BYGG', label: 'Byggnadsarbete' },
   { code: 'EL', label: 'Elarbete' },
@@ -48,20 +52,24 @@ export const ROT_WORK_TYPES = [
   { code: 'MURNING', label: 'Murnings- och putsarbete' },
   { code: 'MALNING', label: 'Mål- och tapetseringsarbete' },
   { code: 'VVS', label: 'VVS-arbete' },
-  { code: 'IT', label: 'IT-tjänster i hemmet' },
 ] as const
 
 export const RUT_WORK_TYPES = [
-  { code: 'STAD', label: 'Städning, tvätt och vård av kläder' },
-  { code: 'KLAD', label: 'Klädvård i hemmet' },
+  { code: 'STAD', label: 'Städning' },
+  { code: 'KLAD', label: 'Kläd- och textilvård' },
+  { code: 'SNOSKOTTNING', label: 'Snöskottning' },
   { code: 'TRADGARD', label: 'Trädgårdsarbete' },
   { code: 'BARNPASS', label: 'Barnpassning' },
   { code: 'PERSONLIG_OMS', label: 'Personlig omsorg' },
-  { code: 'FLYTT', label: 'Flytthjälp' },
-  { code: 'REPARATION', label: 'Reparation av vitvaror' },
+  { code: 'FLYTT', label: 'Flyttjänster' },
   { code: 'IT', label: 'IT-tjänster i hemmet' },
-  { code: 'MOBLERING', label: 'Möblering och tillsyn av bostad' },
-  { code: 'TRANSPORT', label: 'Transport till och från återvinning' },
+  { code: 'REPARATION', label: 'Reparation av vitvaror' },
+  { code: 'MOBLERING', label: 'Möblering' },
+  { code: 'TILLSYN', label: 'Tillsyn av bostad' },
+  // Schablontjänster: reported as utförd/ej utförd in the Skatteverket file,
+  // never with hours or material.
+  { code: 'TRANSPORT', label: 'Transport till försäljning (schablon)' },
+  { code: 'TVATT', label: 'Tvätt vid tvättinrättning (schablon)' },
 ] as const
 
 export interface ItemForDeduction {

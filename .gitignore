@@ -66,20 +66,6 @@ supabase/.temp/
 # `npm run taxonomy:check` (core-build.yml) and the golden test pins against
 # the example document.
 /dev_docs/*
-!/dev_docs/bokslut/
-/dev_docs/bokslut/*
-!/dev_docs/bokslut/taxonomi/
-/dev_docs/bokslut/taxonomi/*
-!/dev_docs/bokslut/taxonomi/taxonomi-paket-2024-09-12_rev20250312.zip
-!/dev_docs/bokslut/taxonomi/dokumentation/
-/dev_docs/bokslut/taxonomi/dokumentation/*
-!/dev_docs/bokslut/taxonomi/dokumentation/k2-ab-arsredovisning-elementlista-2024-09-12_rev20250312_sv.xlsx
-!/dev_docs/bokslut/taxonomi/dokumentation/tuple-innehallsmodell-arsredovisning-k2-2024-09-12.xlsx
-!/dev_docs/bokslut/exempel/
-/dev_docs/bokslut/exempel/*
-!/dev_docs/bokslut/exempel/k2/
-/dev_docs/bokslut/exempel/k2/*
-!/dev_docs/bokslut/exempel/k2/faststalld-arsredovisning-exempel-1-rev20240214.xhtml
 
 # Extension registry (auto-generated but defaults are committed)
 # Run `npm run setup:extensions` to regenerate after changing extensions.config.json

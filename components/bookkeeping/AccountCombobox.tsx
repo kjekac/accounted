@@ -49,6 +49,11 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
   const containerRef = useRef<HTMLDivElement>(null)
   const internalInputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  // Whether the user has typed or arrow-navigated since the field was focused.
+  // Enter only selects the highlighted item after an actual interaction — a
+  // bare Enter on a freshly-focused field must not grab the first account in
+  // the list (it either re-commits the current value or bubbles to the form).
+  const hasInteractedRef = useRef(false)
 
   // Attach the internal ref (used for focus bookkeeping) and forward the element
   // to any external callback ref the parent passed.
@@ -140,8 +145,14 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!isOpen) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        hasInteractedRef.current = true
         setIsOpen(true)
         e.preventDefault()
+      } else if (e.key === 'Enter' && /^\d{4}$/.test(search)) {
+        // Dropdown closed but a full account number sits in the field — treat
+        // Enter as a re-commit so focus advances to the amount field.
+        e.preventDefault()
+        onCommit?.(search)
       }
       return
     }
@@ -149,16 +160,27 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault()
+        hasInteractedRef.current = true
         setHighlightedIndex((prev) => Math.min(prev + 1, flatList.length - 1))
         break
       case 'ArrowUp':
         e.preventDefault()
+        hasInteractedRef.current = true
         setHighlightedIndex((prev) => Math.max(prev - 1, 0))
         break
       case 'Enter':
-        e.preventDefault()
-        if (flatList[highlightedIndex]) {
+        if (hasInteractedRef.current && flatList[highlightedIndex]) {
+          e.preventDefault()
           selectAccount(flatList[highlightedIndex].account_number)
+        } else if (/^\d{4}$/.test(search)) {
+          // Committed number, no new interaction — advance without re-selecting.
+          e.preventDefault()
+          setIsOpen(false)
+          onCommit?.(search)
+        } else {
+          // Nothing actively chosen — close the list and let the event bubble
+          // so the form-level Enter (open review when balanced) can take over.
+          setIsOpen(false)
         }
         break
       case 'Escape':
@@ -170,6 +192,7 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value
+    hasInteractedRef.current = true
     setSearch(newValue)
     // Emit any 4-digit numeric value to the parent. Unknown BAS numbers are
     // accepted optimistically — the submit-time ActivateAccountsDialog lets
@@ -193,6 +216,7 @@ export default function AccountCombobox({ value, accounts, onChange, onCommit, o
   }
 
   const handleFocus = () => {
+    hasInteractedRef.current = false
     setIsOpen(true)
   }
 
