@@ -186,7 +186,13 @@ export function assertMandatoryDimensions(
  *     result account must not be able to block closing the year
  *   - storno/correction/credit notes are HOW history gets fixed — blocking
  *     them on entries that pre-date a rule would make old mistakes
- *     permanent (same argument as the commitEntry bypass for reversals)
+ *     permanent (same argument as the commitEntry bypass for reversals).
+ *     Credit notes specifically COPY the original's bags (PR7) so the
+ *     reversal nets against the same dimension cells: if the original
+ *     satisfied the rules, so does the copy (enforcement = no-op); if the
+ *     original pre-dates the rules, enforcing would demand an ASYMMETRIC
+ *     tag — a credit in P001 with no original in P001 — which is exactly
+ *     the project-P&L skew this feature exists to prevent
  *   - accrual dissolutions replay a schedule created before the rule
  *
  * Operational sources (manual, bank_transaction, invoice_*, supplier_*

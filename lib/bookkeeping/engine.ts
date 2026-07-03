@@ -592,6 +592,9 @@ export async function commitEntry(
       // System/correction sources are exempt — see
       // DIMENSION_RULE_EXEMPT_SOURCE_TYPES (imported history, bokslut
       // mechanics and credit instruments must never be blocked by policy).
+      // source_type is a HEADER column (journal_entries) — the join repeats
+      // the same value on every line, so reading lines[0] IS reading the
+      // entry header; lines cannot mix source types.
       if (!isDimensionRuleExemptSource(typedLines[0]?.journal_entries?.source_type)) {
         assertMandatoryDimensions(typedLines, rules)
       }
