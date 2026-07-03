@@ -2202,9 +2202,17 @@ export const DimensionTaggingLinesQuerySchema = z.object({
   account_to: accountNumber.optional(),
   /** Free-text ilike filter on journal_entries.description. */
   text: z.string().trim().max(200).optional(),
-  /** '1' → only lines whose dimensions map is empty ({}). */
+  /** '1' → only vouchers with at least one untagged line ({} dimensions). */
   only_untagged: z.enum(['0', '1']).optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(200),
+  /**
+   * '1' → include reversal pairs (annulled entries + their stornos). Excluded
+   * by default: a pair nets to zero in every dimension bucket when both sides
+   * carry the same tag, so retro-tagging it is a no-op — and showing it
+   * invites tagging one side only, which skews project P&L.
+   */
+  include_annulled: z.enum(['0', '1']).optional(),
+  /** Cap counts VOUCHERS since the voucher-level rework. */
+  limit: z.coerce.number().int().min(1).max(300).default(150),
 })
 
 /**

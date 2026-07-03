@@ -1,7 +1,16 @@
 'use client'
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Loader2, Search, Tags, Undo2, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Search,
+  Tags,
+  Undo2,
+  X,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -29,21 +38,27 @@ import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
 
-/** Flattened line DTO from GET /api/dimensions/tagging/lines. */
+/** Line DTO inside a voucher from GET /api/dimensions/tagging/lines. */
 interface TaggingLine {
   id: string
   account_number: string
   debit_amount: number
   credit_amount: number
   dimensions: Record<string, string>
+}
+
+/** Voucher DTO from GET /api/dimensions/tagging/lines. */
+interface TaggingVoucher {
   journal_entry_id: string
   entry_date: string
   voucher_number: number | null
   voucher_series: string | null
   description: string
+  annulled: boolean
   reversed_by_id: string | null
   reverses_id: string | null
   fiscal_period_id: string
+  lines: TaggingLine[]
 }
 
 interface ApplyResult {
@@ -53,6 +68,8 @@ interface ApplyResult {
 }
 
 const ACCOUNT_RE = /^\d{4}$/
+/** POST /api/dimensions/tagging/apply accepts at most 500 line_ids per call. */
+const APPLY_CHUNK = 500
 
 function dimensionLabel(sieDimNo: string): string {
   if (sieDimNo === '1') return 'KS'
@@ -69,16 +86,48 @@ function mapKey(dims: Record<string, string>): string {
   )
 }
 
+function voucherLabel(v: TaggingVoucher): string {
+  return `${v.voucher_series ?? ''}${v.voucher_number ?? ''}`
+}
+
 /**
- * Bulk retro-tagging workbench (dimensions plan PR6 §3, Retrofit UX): browse
- * posted lines, select (shift-click ranges supported), pick KS/Projekt values
- * and apply them through the audited retag RPC. Merge mode (default) layers
- * the picked values onto each line's existing map; "Ersätt tagg" replaces the
- * whole map — used to consolidate typo/phantom codes.
+ * Distinct non-empty bags across a voucher's lines (insertion order), plus
+ * whether the voucher mixes tagged and untagged lines ("delvis taggad").
+ */
+function voucherTagState(v: TaggingVoucher): {
+  bags: Record<string, string>[]
+  partial: boolean
+} {
+  const seen = new Map<string, Record<string, string>>()
+  let tagged = 0
+  for (const line of v.lines) {
+    if (Object.keys(line.dimensions).length === 0) continue
+    tagged++
+    const key = mapKey(line.dimensions)
+    if (!seen.has(key)) seen.set(key, line.dimensions)
+  }
+  return {
+    bags: [...seen.values()],
+    partial: tagged > 0 && tagged < v.lines.length,
+  }
+}
+
+/**
+ * Bulk retro-tagging workbench (dimensions plan PR6 §3, voucher-level
+ * rework): browse posted VERIFIKAT, select whole vouchers (shift-click
+ * ranges), pick KS/Projekt values and apply them to every line through the
+ * audited retag RPC — retroactive tagging produces exactly what tagging at
+ * creation would have (the producers stamp all lines too). Rows expand to
+ * their lines for the mixed case (a voucher split across projects).
  *
- * Strings are hardcoded Swedish per the dimensions-surface convention
- * (DimensionCombobox/LineDimensionFields): this operates directly on
- * verifikat, a stays-Swedish surface per .claude/rules/i18n.md.
+ * Reversal pairs are hidden by default (they net to zero in every dimension
+ * bucket when kept symmetric — tagging them is a no-op, and tagging one side
+ * only is the one way to skew project P&L). "Visa annullerade" opts them in;
+ * the blocking motverifikat confirmation survives only there.
+ *
+ * Merge mode (default) layers picked values onto each line's existing map;
+ * "Ersätt tagg" replaces the whole map — used to consolidate typo/phantom
+ * codes. Strings hardcoded Swedish per the dimensions-surface convention.
  */
 export default function BulkTagWorkbench() {
   const { toast } = useToast()
@@ -91,14 +140,16 @@ export default function BulkTagWorkbench() {
   const [accountTo, setAccountTo] = useState('')
   const [text, setText] = useState('')
   const [onlyUntagged, setOnlyUntagged] = useState(false)
+  const [showAnnulled, setShowAnnulled] = useState(false)
 
   // Result set (null = never fetched)
-  const [lines, setLines] = useState<TaggingLine[] | null>(null)
+  const [vouchers, setVouchers] = useState<TaggingVoucher[] | null>(null)
   const [totalCapped, setTotalCapped] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
 
-  // Selection + apply panel
+  // Selection (line-id based — the retag RPC is per line), expansion + apply
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const anchorIndexRef = useRef<number | null>(null)
   const [picked, setPicked] = useState<Record<string, string>>({})
   const [replaceMode, setReplaceMode] = useState(false)
@@ -106,7 +157,7 @@ export default function BulkTagWorkbench() {
   const [isApplying, setIsApplying] = useState(false)
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
 
-  const loadLines = useCallback(async () => {
+  const loadVouchers = useCallback(async () => {
     for (const [label, value] of [
       ['Konto från', accountFrom],
       ['Konto till', accountTo],
@@ -130,94 +181,135 @@ export default function BulkTagWorkbench() {
       if (accountTo) params.set('account_to', accountTo)
       if (text.trim()) params.set('text', text.trim())
       if (onlyUntagged) params.set('only_untagged', '1')
+      if (showAnnulled) params.set('include_annulled', '1')
 
       const res = await fetch(`/api/dimensions/tagging/lines?${params.toString()}`)
       const json = await res.json().catch(() => null)
       if (!res.ok) throw json ?? new Error()
 
-      setLines((json?.data?.lines ?? []) as TaggingLine[])
+      setVouchers((json?.data?.vouchers ?? []) as TaggingVoucher[])
       setTotalCapped(Boolean(json?.data?.total_capped))
       setSelected(new Set())
+      setExpanded(new Set())
       setRowErrors({})
       anchorIndexRef.current = null
     } catch (err) {
       toast({
-        title: 'Kunde inte hämta rader',
+        title: 'Kunde inte hämta verifikat',
         description: getErrorMessage(err, { locale: 'sv' }),
         variant: 'destructive',
       })
     } finally {
       setIsLoading(false)
     }
-  }, [accountFrom, accountTo, dateFrom, dateTo, text, onlyUntagged, toast])
+  }, [accountFrom, accountTo, dateFrom, dateTo, text, onlyUntagged, showAnnulled, toast])
 
-  const toggleRow = useCallback(
+  /** Selection state of one voucher: 'none' | 'some' | 'all'. */
+  const voucherSelection = useCallback(
+    (v: TaggingVoucher): 'none' | 'some' | 'all' => {
+      let count = 0
+      for (const line of v.lines) if (selected.has(line.id)) count++
+      if (count === 0) return 'none'
+      return count === v.lines.length ? 'all' : 'some'
+    },
+    [selected],
+  )
+
+  const toggleVoucher = useCallback(
     (index: number, shiftKey: boolean) => {
-      if (!lines) return
+      if (!vouchers) return
       setSelected((prev) => {
         const next = new Set(prev)
         const anchor = anchorIndexRef.current
-        if (shiftKey && anchor !== null && anchor !== index) {
-          // Range selection: the whole range takes the clicked row's NEW state.
-          const target = !prev.has(lines[index].id)
-          const [lo, hi] = anchor < index ? [anchor, index] : [index, anchor]
-          for (let i = lo; i <= hi; i++) {
-            if (target) next.add(lines[i].id)
-            else next.delete(lines[i].id)
+        const setVoucher = (v: TaggingVoucher, on: boolean) => {
+          for (const line of v.lines) {
+            if (on) next.add(line.id)
+            else next.delete(line.id)
           }
-        } else if (next.has(lines[index].id)) {
-          next.delete(lines[index].id)
+        }
+        const clicked = vouchers[index]
+        const target = !clicked.lines.every((l) => prev.has(l.id))
+        if (shiftKey && anchor !== null && anchor !== index) {
+          // Range selection: the whole range takes the clicked voucher's NEW state.
+          const [lo, hi] = anchor < index ? [anchor, index] : [index, anchor]
+          for (let i = lo; i <= hi; i++) setVoucher(vouchers[i], target)
         } else {
-          next.add(lines[index].id)
+          setVoucher(clicked, target)
         }
         return next
       })
       anchorIndexRef.current = index
     },
-    [lines],
+    [vouchers],
   )
 
+  const toggleLine = useCallback((lineId: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(lineId)) next.delete(lineId)
+      else next.add(lineId)
+      return next
+    })
+  }, [])
+
+  const toggleExpanded = useCallback((entryId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(entryId)) next.delete(entryId)
+      else next.add(entryId)
+      return next
+    })
+  }, [])
+
   const allSelected =
-    lines !== null && lines.length > 0 && lines.every((l) => selected.has(l.id))
-  const someSelected = lines !== null && lines.some((l) => selected.has(l.id))
+    vouchers !== null &&
+    vouchers.length > 0 &&
+    vouchers.every((v) => v.lines.every((l) => selected.has(l.id)))
+  const someSelected = selected.size > 0
 
   const toggleAll = useCallback(() => {
-    if (!lines) return
-    setSelected(allSelected ? new Set() : new Set(lines.map((l) => l.id)))
+    if (!vouchers) return
+    setSelected(
+      allSelected ? new Set() : new Set(vouchers.flatMap((v) => v.lines.map((l) => l.id))),
+    )
     anchorIndexRef.current = null
-  }, [lines, allSelected])
+  }, [vouchers, allSelected])
 
-  // Reversal-pair warning: a selected line whose entry is half of a storno
-  // pair, where the paired entry's lines are loaded but not (all) selected.
+  const selectedVoucherCount = useMemo(() => {
+    if (!vouchers) return 0
+    return vouchers.filter((v) => v.lines.some((l) => selected.has(l.id))).length
+  }, [vouchers, selected])
+
+  // Reversal-pair guard — only reachable when annullerade are shown: a
+  // selected voucher whose counter-entry is loaded but not fully selected.
   const missingPairLineIds = useMemo(() => {
-    if (!lines || selected.size === 0) return [] as string[]
+    if (!vouchers || selected.size === 0) return [] as string[]
     const pairEntryIds = new Set<string>()
-    for (const line of lines) {
-      if (!selected.has(line.id)) continue
-      if (line.reversed_by_id) pairEntryIds.add(line.reversed_by_id)
-      if (line.reverses_id) pairEntryIds.add(line.reverses_id)
+    for (const v of vouchers) {
+      if (!v.lines.some((l) => selected.has(l.id))) continue
+      if (v.reversed_by_id) pairEntryIds.add(v.reversed_by_id)
+      if (v.reverses_id) pairEntryIds.add(v.reverses_id)
     }
     if (pairEntryIds.size === 0) return [] as string[]
-    return lines
-      .filter((l) => pairEntryIds.has(l.journal_entry_id) && !selected.has(l.id))
-      .map((l) => l.id)
-  }, [lines, selected])
+    return vouchers
+      .filter((v) => pairEntryIds.has(v.journal_entry_id))
+      .flatMap((v) => v.lines.map((l) => l.id))
+      .filter((id) => !selected.has(id))
+  }, [vouchers, selected])
 
   // Voucher labels of the unselected counter-vouchers — the blocking
   // confirmation names them so the skew risk is concrete (#867 review:
   // Srf U 14 gross reporting; an asymmetric storno pair silently skews
   // project P&L, so the advisory alone is not enough).
   const missingPairVouchers = useMemo(() => {
-    if (!lines || missingPairLineIds.length === 0) return [] as string[]
+    if (!vouchers || missingPairLineIds.length === 0) return [] as string[]
     const ids = new Set(missingPairLineIds)
     const labels = new Set<string>()
-    for (const line of lines) {
-      if (ids.has(line.id)) {
-        labels.add(`${line.voucher_series ?? ''}${line.voucher_number ?? ''}`)
-      }
+    for (const v of vouchers) {
+      if (v.lines.some((l) => ids.has(l.id))) labels.add(voucherLabel(v))
     }
     return [...labels]
-  }, [lines, missingPairLineIds])
+  }, [vouchers, missingPairLineIds])
 
   const includeCounterVouchers = useCallback(() => {
     setSelected((prev) => {
@@ -248,10 +340,12 @@ export default function BulkTagWorkbench() {
   const { dialogProps: confirmDialogProps, confirm } = useDestructiveConfirm()
 
   const handleApply = useCallback(async () => {
-    if (!lines || !canApply) return
+    if (!vouchers || !canApply) return
 
     // Storno-pair guard: tagging one leg of a reversal pair without the
     // other skews project P&L. Blocking confirmation, not just the banner.
+    // Only reachable when "Visa annullerade" is on — the default view
+    // excludes pairs entirely.
     if (missingPairLineIds.length > 0) {
       const ok = await confirm({
         title: 'Motverifikat är inte valda',
@@ -260,11 +354,13 @@ export default function BulkTagWorkbench() {
       })
       if (!ok) return
     }
-    const selectedLines = lines.filter((l) => selected.has(l.id))
+
+    const selectedLines = vouchers.flatMap((v) => v.lines).filter((l) => selected.has(l.id))
 
     // Per-line resulting map, grouped so each distinct map is one POST
-    // (the API takes ONE dimensions object per call). Usually 1 group; more
-    // when merge mode meets heterogeneous existing tags.
+    // (the API takes ONE dimensions object per call), then chunked to the
+    // apply route's 500-line cap. Usually 1 group; more when merge mode
+    // meets heterogeneous existing tags.
     const groups = new Map<string, { dimensions: Record<string, string>; ids: string[] }>()
     for (const line of selectedLines) {
       const dims = replaceMode ? { ...picked } : { ...line.dimensions, ...picked }
@@ -282,54 +378,71 @@ export default function BulkTagWorkbench() {
 
     try {
       for (const group of groups.values()) {
-        const res = await fetch('/api/dimensions/tagging/apply', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            line_ids: group.ids,
-            dimensions: group.dimensions,
-            reason: reason.trim(),
-          }),
-        })
-        const json = await res.json().catch(() => null)
-        if (!res.ok) {
-          const message = getErrorMessage(json, { locale: 'sv' })
-          for (const id of group.ids) failed.push({ line_id: id, error: message })
-          continue
-        }
-        const result = (json?.data ?? {}) as Partial<ApplyResult>
-        retagged += result.retagged ?? 0
-        unchanged += result.unchanged ?? 0
-        const failedIds = new Set<string>()
-        for (const f of result.failed ?? []) {
-          failed.push(f)
-          failedIds.add(f.line_id)
-        }
-        for (const id of group.ids) {
-          if (!failedIds.has(id)) newDimsByLine.set(id, group.dimensions)
+        for (let i = 0; i < group.ids.length; i += APPLY_CHUNK) {
+          const chunk = group.ids.slice(i, i + APPLY_CHUNK)
+          const res = await fetch('/api/dimensions/tagging/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              line_ids: chunk,
+              dimensions: group.dimensions,
+              reason: reason.trim(),
+            }),
+          })
+          const json = await res.json().catch(() => null)
+          if (!res.ok) {
+            const message = getErrorMessage(json, { locale: 'sv' })
+            for (const id of chunk) failed.push({ line_id: id, error: message })
+            continue
+          }
+          const result = (json?.data ?? {}) as Partial<ApplyResult>
+          retagged += result.retagged ?? 0
+          unchanged += result.unchanged ?? 0
+          const failedIds = new Set<string>()
+          for (const f of result.failed ?? []) {
+            failed.push(f)
+            failedIds.add(f.line_id)
+          }
+          for (const id of chunk) {
+            if (!failedIds.has(id)) newDimsByLine.set(id, group.dimensions)
+          }
         }
       }
     } finally {
       setIsApplying(false)
     }
 
-    // Succeeded rows get their new map locally (no refetch); failed rows stay
-    // selected with their Swedish RPC error shown inline.
-    setLines((prev) =>
+    // Succeeded lines get their new map locally (no refetch); failed lines
+    // stay selected with their Swedish RPC error shown inline, and their
+    // vouchers auto-expand so the error is visible.
+    setVouchers((prev) =>
       prev
-        ? prev.map((l) =>
-            newDimsByLine.has(l.id)
-              ? { ...l, dimensions: newDimsByLine.get(l.id) as Record<string, string> }
-              : l,
-          )
+        ? prev.map((v) => ({
+            ...v,
+            lines: v.lines.map((l) =>
+              newDimsByLine.has(l.id)
+                ? { ...l, dimensions: newDimsByLine.get(l.id) as Record<string, string> }
+                : l,
+            ),
+          }))
         : prev,
     )
     setSelected(new Set(failed.map((f) => f.line_id)))
     setRowErrors(Object.fromEntries(failed.map((f) => [f.line_id, f.error])))
+    if (failed.length > 0 && vouchers) {
+      const failedIds = new Set(failed.map((f) => f.line_id))
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        for (const v of vouchers) {
+          if (v.lines.some((l) => failedIds.has(l.id))) next.add(v.journal_entry_id)
+        }
+        return next
+      })
+    }
 
     toast({
-      title: failed.length > 0 ? 'Omtaggningen slutfördes delvis' : 'Rader omtaggade',
-      description: `${retagged} ändrade, ${unchanged} oförändrade${
+      title: failed.length > 0 ? 'Omtaggningen slutfördes delvis' : 'Verifikat omtaggade',
+      description: `${retagged} rader ändrade, ${unchanged} oförändrade${
         failed.length > 0 ? `, ${failed.length} misslyckades` : ''
       }.`,
       variant: failed.length > 0 ? 'destructive' : undefined,
@@ -339,7 +452,7 @@ export default function BulkTagWorkbench() {
       setPicked({})
       setReason('')
     }
-  }, [lines, canApply, selected, replaceMode, picked, reason, toast, missingPairLineIds, missingPairVouchers, confirm])
+  }, [vouchers, canApply, selected, replaceMode, picked, reason, toast, missingPairLineIds, missingPairVouchers, confirm])
 
   const headerChecked: boolean | 'indeterminate' = allSelected
     ? true
@@ -415,7 +528,7 @@ export default function BulkTagWorkbench() {
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') void loadLines()
+                  if (e.key === 'Enter') void loadVouchers()
                 }}
               />
             </div>
@@ -426,29 +539,39 @@ export default function BulkTagWorkbench() {
                 onCheckedChange={(checked) => setOnlyUntagged(checked === true)}
               />
               <Label htmlFor="tag-only-untagged" className="text-sm font-normal">
-                Endast otaggade rader
+                Endast otaggade
               </Label>
             </div>
-            <Button onClick={() => void loadLines()} disabled={isLoading}>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="tag-show-annulled"
+                checked={showAnnulled}
+                onCheckedChange={(checked) => setShowAnnulled(checked === true)}
+              />
+              <Label htmlFor="tag-show-annulled" className="text-sm font-normal">
+                Visa annullerade
+              </Label>
+            </div>
+            <Button onClick={() => void loadVouchers()} disabled={isLoading}>
               {isLoading ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
                 <Search className="mr-2 h-4 w-4" />
               )}
-              Hämta rader
+              Hämta verifikat
             </Button>
           </div>
         </CardContent>
       </Card>
 
       {/* Result list */}
-      {lines === null && !isLoading ? (
+      {vouchers === null && !isLoading ? (
         <Card>
           <CardContent className="p-0">
             <DataListEmpty
               icon={<Tags className="h-6 w-6" />}
-              title="Hämta rader att tagga"
-              description="Välj filter ovan och klicka på Hämta rader för att bläddra bland bokförda verifikatrader."
+              title="Hämta verifikat att tagga"
+              description="Välj filter ovan och klicka på Hämta verifikat för att bläddra bland bokförda verifikat."
             />
           </CardContent>
         </Card>
@@ -461,100 +584,185 @@ export default function BulkTagWorkbench() {
                 e.preventDefault()
                 toggleAll()
               }}
-              aria-label="Markera alla rader"
-              disabled={!lines || lines.length === 0}
+              aria-label="Markera alla verifikat"
+              disabled={!vouchers || vouchers.length === 0}
             />
             <span className="text-xs text-muted-foreground">
-              {lines ? `${lines.length} rader` : ''}
+              {vouchers ? `${vouchers.length} verifikat` : ''}
             </span>
             {totalCapped && (
               <span className="ml-auto text-xs text-muted-foreground">
-                Visar de första {lines?.length ?? 0} raderna — förfina filtren för att se
-                fler.
+                Visar de första {vouchers?.length ?? 0} verifikaten — förfina filtren för
+                att se fler.
               </span>
             )}
           </DataListHeader>
           {isLoading ? (
             <DataListLoading />
-          ) : lines && lines.length === 0 ? (
+          ) : vouchers && vouchers.length === 0 ? (
             <DataListEmpty
               icon={<Search className="h-6 w-6" />}
-              title="Inga rader matchade filtren"
+              title="Inga verifikat matchade filtren"
               description="Justera datum, kontointervall eller söktext och försök igen."
             />
           ) : (
-            (lines ?? []).map((line, index) => {
-              const isSelected = selected.has(line.id)
-              const inStornoPair = Boolean(line.reversed_by_id || line.reverses_id)
-              const dimEntries = Object.entries(line.dimensions)
-              const isDebit = line.debit_amount > 0
+            (vouchers ?? []).map((voucher, index) => {
+              const sel = voucherSelection(voucher)
+              const isExpanded = expanded.has(voucher.journal_entry_id)
+              const { bags, partial } = voucherTagState(voucher)
+              const total = voucher.lines.reduce((sum, l) => sum + l.debit_amount, 0)
+              const hasError = voucher.lines.some((l) => rowErrors[l.id])
               return (
-                <DataListRow
-                  key={line.id}
-                  selected={isSelected}
-                  className="select-none"
-                  onClick={(e) => toggleRow(index, e.shiftKey)}
-                  leading={
-                    <Checkbox
-                      checked={isSelected}
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        toggleRow(index, e.shiftKey)
-                      }}
-                      aria-label={`Markera rad ${line.voucher_series ?? ''}${line.voucher_number ?? ''} ${line.account_number}`}
-                    />
-                  }
-                  trailing={
-                    <div className="text-right">
-                      <p className="text-sm tabular-nums">
-                        {formatCurrency(isDebit ? line.debit_amount : line.credit_amount)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {isDebit ? 'Debet' : 'Kredit'}
-                      </p>
-                    </div>
-                  }
-                >
-                  <DataListPrimary className="flex items-center gap-2">
-                    <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                      {line.voucher_series ?? ''}
-                      {line.voucher_number ?? ''}
-                    </span>
-                    <span className="truncate">{line.description}</span>
-                    {inStornoPair && (
-                      <span
-                        title="Verifikatet ingår i ett storno-par"
-                        className="inline-flex shrink-0"
-                      >
-                        <Undo2
-                          className="h-3.5 w-3.5 text-muted-foreground"
-                          aria-hidden="true"
+                <div key={voucher.journal_entry_id}>
+                  <DataListRow
+                    selected={sel !== 'none'}
+                    className="select-none"
+                    onClick={(e) => toggleVoucher(index, e.shiftKey)}
+                    leading={
+                      <div className="flex items-center gap-1">
+                        <Checkbox
+                          checked={sel === 'all' ? true : sel === 'some' ? 'indeterminate' : false}
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            toggleVoucher(index, e.shiftKey)
+                          }}
+                          aria-label={`Markera verifikat ${voucherLabel(voucher)}`}
                         />
-                        <span className="sr-only">Ingår i ett storno-par</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            toggleExpanded(voucher.journal_entry_id)
+                          }}
+                          aria-label={
+                            isExpanded
+                              ? `Dölj rader för ${voucherLabel(voucher)}`
+                              : `Visa rader för ${voucherLabel(voucher)}`
+                          }
+                          aria-expanded={isExpanded}
+                        >
+                          {isExpanded ? (
+                            <ChevronDown className="h-4 w-4" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                    }
+                    trailing={
+                      <p className="text-sm tabular-nums">{formatCurrency(total)}</p>
+                    }
+                  >
+                    <DataListPrimary className="flex items-center gap-2">
+                      <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                        {voucherLabel(voucher)}
                       </span>
+                      <span className="truncate">{voucher.description}</span>
+                      {voucher.annulled && (
+                        <span
+                          title="Verifikatet ingår i ett storno-par"
+                          className="inline-flex shrink-0"
+                        >
+                          <Undo2
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                          <span className="sr-only">Ingår i ett storno-par</span>
+                        </span>
+                      )}
+                    </DataListPrimary>
+                    <DataListMeta>
+                      <span className="tabular-nums">{formatDate(voucher.entry_date)}</span>
+                      <DataListMetaSeparator />
+                      <span>{voucher.lines.length} rader</span>
+                      {(bags.length > 0 || partial) && <DataListMetaSeparator />}
+                      {bags.map((bag) => (
+                        <Badge
+                          key={mapKey(bag)}
+                          variant="outline"
+                          className="px-1.5 py-0 text-[10px] font-normal"
+                        >
+                          {Object.entries(bag)
+                            .sort(([a], [b]) => Number(a) - Number(b))
+                            .map(([dimNo, code]) => `${dimensionLabel(dimNo)} ${code}`)
+                            .join(' · ')}
+                        </Badge>
+                      ))}
+                      {partial && (
+                        <Badge
+                          variant="secondary"
+                          className="px-1.5 py-0 text-[10px] font-normal"
+                        >
+                          Delvis taggad
+                        </Badge>
+                      )}
+                    </DataListMeta>
+                    {hasError && !isExpanded && (
+                      <p className="mt-1 text-xs text-destructive">
+                        Vissa rader kunde inte taggas — visa raderna för detaljer.
+                      </p>
                     )}
-                  </DataListPrimary>
-                  <DataListMeta>
-                    <span className="tabular-nums">{formatDate(line.entry_date)}</span>
-                    <DataListMetaSeparator />
-                    <span className="font-mono">{line.account_number}</span>
-                    {dimEntries.length > 0 && <DataListMetaSeparator />}
-                    {dimEntries.map(([dimNo, code]) => (
-                      <Badge
-                        key={dimNo}
-                        variant="outline"
-                        className="px-1.5 py-0 text-[10px] font-normal"
-                      >
-                        {dimensionLabel(dimNo)}{' '}
-                        <span className="ml-1 font-mono">{code}</span>
-                      </Badge>
-                    ))}
-                  </DataListMeta>
-                  {rowErrors[line.id] && (
-                    <p className="mt-1 text-xs text-destructive">{rowErrors[line.id]}</p>
-                  )}
-                </DataListRow>
+                  </DataListRow>
+                  {isExpanded &&
+                    voucher.lines.map((line) => {
+                      const isSelected = selected.has(line.id)
+                      const dimEntries = Object.entries(line.dimensions)
+                      const isDebit = line.debit_amount > 0
+                      const amount = isDebit ? line.debit_amount : -line.credit_amount
+                      return (
+                        <DataListRow
+                          key={line.id}
+                          selected={isSelected}
+                          className="select-none bg-muted/30"
+                          onClick={() => toggleLine(line.id)}
+                          leading={
+                            <div className="flex items-center gap-1 pl-7">
+                              <Checkbox
+                                checked={isSelected}
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  toggleLine(line.id)
+                                }}
+                                aria-label={`Markera rad ${line.account_number} på ${voucherLabel(voucher)}`}
+                              />
+                            </div>
+                          }
+                          trailing={
+                            <p className="text-sm tabular-nums">{formatCurrency(amount)}</p>
+                          }
+                        >
+                          <DataListPrimary className="flex items-center gap-2">
+                            <span className="font-mono text-xs">{line.account_number}</span>
+                          </DataListPrimary>
+                          <DataListMeta>
+                            {dimEntries.length === 0 ? (
+                              <span className="text-muted-foreground">Otaggad</span>
+                            ) : (
+                              dimEntries.map(([dimNo, code]) => (
+                                <Badge
+                                  key={dimNo}
+                                  variant="outline"
+                                  className="px-1.5 py-0 text-[10px] font-normal"
+                                >
+                                  {dimensionLabel(dimNo)}{' '}
+                                  <span className="ml-1 font-mono">{code}</span>
+                                </Badge>
+                              ))
+                            )}
+                          </DataListMeta>
+                          {rowErrors[line.id] && (
+                            <p className="mt-1 text-xs text-destructive">
+                              {rowErrors[line.id]}
+                            </p>
+                          )}
+                        </DataListRow>
+                      )
+                    })}
+                </div>
               )
             })
           )}
@@ -586,7 +794,9 @@ export default function BulkTagWorkbench() {
           )}
 
           <div className="flex flex-wrap items-center gap-3">
-            <Badge variant="secondary">{selected.size} rader valda</Badge>
+            <Badge variant="secondary">
+              {selectedVoucherCount} verifikat · {selected.size} rader
+            </Badge>
             <Button
               variant="ghost"
               size="sm"
@@ -631,13 +841,13 @@ export default function BulkTagWorkbench() {
                   disabled={isApplying}
                   className="flex-1"
                 />
-                <Button onClick={() => void handleApply()} disabled={!canApply}>{/* storno-pair confirm inside */}
+                <Button onClick={() => void handleApply()} disabled={!canApply}>
                   {isApplying ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
                     <Tags className="mr-2 h-4 w-4" />
                   )}
-                  Tagga {selected.size} rader
+                  Tagga {selectedVoucherCount} verifikat
                 </Button>
               </div>
             </div>
