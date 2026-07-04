@@ -9,7 +9,7 @@ import {
 } from '@/components/dimensions/types'
 
 interface LineDimensionFieldsProps {
-  /** Current dimensions map ({sie_dim_no: object_code}) — a line's map or the header default. */
+  /** Current dimensions map ({sie_dim_no: object_code}), a line's map or the header default. */
   dimensions: Record<string, string> | undefined
   /** Fired per dimension; `code === null` clears the value. */
   onChange: (sieDimNo: string, code: string | null) => void
@@ -22,7 +22,7 @@ interface LineDimensionFieldsProps {
 
 /**
  * While the registry loads (or if the fetch fails) we render the seeded
- * system pair (SIE dims 1/6) so the tagging affordance never disappears —
+ * system pair (SIE dims 1/6) so the tagging affordance never disappears:
  * the registry always contains at least these two.
  */
 const FALLBACK_FIELDS: { sieDimNo: string; label: string }[] = [
@@ -35,7 +35,7 @@ const FALLBACK_FIELDS: { sieDimNo: string; label: string }[] = [
  * default, the per-row tag popover, and the mobile line cards. One combobox
  * per active registry dimension, ordered by sort_order then sie_dim_no (the
  * seeded 1/6 pair sorts first). Labels are the registry dimension names and
- * hardcoded-Swedish fallbacks — the component mounts on the voucher editor,
+ * hardcoded-Swedish fallbacks: the component mounts on the voucher editor,
  * a stays-Swedish surface per .claude/rules/i18n.md (same convention as
  * DimensionCombobox).
  */

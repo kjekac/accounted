@@ -70,7 +70,7 @@ function compareStrings(a: string, b: string): number {
 }
 
 /**
- * Register for dimension values (kostnadsställen & projekt) — the
+ * Register for dimension values (kostnadsställen & projekt): the
  * customers-page register recipe hosted behind one segmented tab per registry
  * dimension. Archive rides the edit form's aktiv switch (PATCH is_active);
  * delete lives only in the edit dialog and surfaces the DB retention
@@ -212,7 +212,7 @@ export default function DimensionsManager() {
         if (!res.ok) throw json ?? new Error()
         toast({ title: t('updated_title') })
       } else {
-        // "Create as archived" rides the create contract's is_active field —
+        // "Create as archived" rides the create contract's is_active field:
         // one atomic POST, no follow-up PATCH.
         const body: Record<string, unknown> = {
           code: input.code,
@@ -295,7 +295,7 @@ export default function DimensionsManager() {
       )
       if (!res.ok) {
         const json = await res.json().catch(() => null)
-        // Values referenced by posted lines cannot be deleted — the DB
+        // Values referenced by posted lines cannot be deleted: the DB
         // retention trigger's Swedish message ("…arkivera det istället")
         // rides the error envelope; surface it verbatim.
         toast({
@@ -379,7 +379,7 @@ export default function DimensionsManager() {
 
   return (
     <div className="space-y-8">
-      {/* Segmented tabs — one per registry dimension (1 Kostnadsställe,
+      {/* Segmented tabs: one per registry dimension (1 Kostnadsställe,
           6 Projekt, plus any custom 20+ dims) */}
       <div className="space-y-2">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -488,10 +488,10 @@ export default function DimensionsManager() {
                       {isProjectTab && (
                         <>
                           <TableCell className="tabular-nums text-muted-foreground">
-                            {value.start_date ? formatDate(value.start_date) : '—'}
+                            {value.start_date ? formatDate(value.start_date) : '-'}
                           </TableCell>
                           <TableCell className="tabular-nums text-muted-foreground">
-                            {value.end_date ? formatDate(value.end_date) : '—'}
+                            {value.end_date ? formatDate(value.end_date) : '-'}
                           </TableCell>
                         </>
                       )}
@@ -524,9 +524,9 @@ export default function DimensionsManager() {
                 {isProjectTab && (value.start_date || value.end_date) && (
                   <CardContent>
                     <p className="text-sm text-muted-foreground tabular-nums">
-                      {value.start_date ? formatDate(value.start_date) : '—'}
-                      {' – '}
-                      {value.end_date ? formatDate(value.end_date) : '—'}
+                      {value.start_date ? formatDate(value.start_date) : '-'}
+                      {' till '}
+                      {value.end_date ? formatDate(value.end_date) : '-'}
                     </p>
                   </CardContent>
                 )}

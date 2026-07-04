@@ -264,7 +264,7 @@ export function EditAccountDialog({ open, onOpenChange, account, onSaved }: Edit
       onSaved()
       onOpenChange(false)
     } catch {
-      // Error handled silently — toast is in parent
+      // Error handled silently: toast is in parent
     } finally {
       setIsSaving(false)
     }

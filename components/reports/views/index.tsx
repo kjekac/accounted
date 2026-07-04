@@ -419,7 +419,7 @@ export function IncomeStatementView({ periodId, dateRange, dimensionFilter = nul
 
     // Monthly breakdown is full-period by design (it IS the per-month view),
     // so the date range only affects the headline numbers above the chart.
-    // The dimension filter DOES apply — a dimension-scoped view must not
+    // The dimension filter DOES apply: a dimension-scoped view must not
     // silently chart company-wide months.
     fetch(`/api/reports/monthly-breakdown?${reportQuery(periodId, undefined, dimensionFilter)}`)
       .then((res) => res.json())
@@ -770,7 +770,7 @@ export function ResultatrapportView({ periodId, dateRange, dimensionFilter = nul
                         <td className="px-4 py-1.5">{row.account_name}</td>
                         <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(row.current_period)}</td>
                         <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">
-                          {hasPrior ? formatAmount(row.prior_period) : '—'}
+                          {hasPrior ? formatAmount(row.prior_period) : '-'}
                         </td>
                       </tr>
                     ))}
@@ -780,7 +780,7 @@ export function ResultatrapportView({ periodId, dateRange, dimensionFilter = nul
                       </td>
                       <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(group.subtotal_current)}</td>
                       <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">
-                        {hasPrior ? formatAmount(group.subtotal_prior) : '—'}
+                        {hasPrior ? formatAmount(group.subtotal_prior) : '-'}
                       </td>
                     </tr>
                   </React.Fragment>
@@ -799,7 +799,7 @@ export function ResultatrapportView({ periodId, dateRange, dimensionFilter = nul
               {formatAmount(data.net_result_current)} kr
             </span>
             <span className="tabular-nums text-base text-muted-foreground w-32 text-right">
-              {hasPrior ? `${formatAmount(data.net_result_prior)} kr` : '—'}
+              {hasPrior ? `${formatAmount(data.net_result_prior)} kr` : '-'}
             </span>
           </div>
         </CardContent>
@@ -1241,7 +1241,7 @@ export function VatDeclarationView() {
               </Select>
             </div>
             {isYearly ? (
-              // Annual VAT covers a räkenskapsår — picked here, not a
+              // Annual VAT covers a räkenskapsår: picked here, not a
               // calendar year.
               <FiscalYearSelector
                 value={fiscalPeriodId || null}
@@ -1580,7 +1580,7 @@ function VatRutaRow({
     () => (canDrill ? makeVatFetcher(ruta, periodType!, year!, period!, fiscalPeriodId) : null),
     [canDrill, ruta, periodType, year, period, fiscalPeriodId]
   )
-  // Hooks must be called unconditionally — provide a noop fetcher when drill
+  // Hooks must be called unconditionally: provide a noop fetcher when drill
   // is disabled. The early-return for zero rows lives below the hooks.
   const expansion = useReportRowExpansion(
     fetcher ?? (async () => ({ lines: [], next_cursor: null })),
@@ -1811,7 +1811,7 @@ export function SupplierLedgerView({ periodId }: { periodId: string }) {
                 )}
                 {reconciliation.unconverted_fx_count > 0 && (
                   <p className="text-xs text-muted-foreground">
-                    {reconciliation.unconverted_fx_count} leverantörsfaktura i utländsk valuta saknar växelkurs — differensen kan bero på saknade kursuppgifter snarare än felbokning.
+                    {reconciliation.unconverted_fx_count} leverantörsfaktura i utländsk valuta saknar växelkurs: differensen kan bero på saknade kursuppgifter snarare än felbokning.
                   </p>
                 )}
               </div>
@@ -2009,7 +2009,7 @@ export function GeneralLedgerView({ periodId, initialAccountFilter, dimensionFil
 
       {data.period.start && (
         <p className="text-sm text-muted-foreground">
-          Period: {data.period.start} — {data.period.end} | {data.accounts.length} konton
+          Period: {data.period.start}: {data.period.end} | {data.accounts.length} konton
         </p>
       )}
 
@@ -2188,7 +2188,7 @@ export function JournalRegisterView({ periodId }: { periodId: string }) {
       <ReportExportMenu items={[{ format: 'xlsx', href: `/api/reports/journal-register/xlsx?period_id=${periodId}` }]} />
       {data.period.start && (
         <p className="text-sm text-muted-foreground">
-          Period: {data.period.start} — {data.period.end} | {data.total_entries} verifikationer
+          Period: {data.period.start}: {data.period.end} | {data.total_entries} verifikationer
         </p>
       )}
 
@@ -2336,7 +2336,7 @@ function ARCustomerInvoiceRows({
     currency: string
   }[]
 }) {
-  // ARCustomerInvoiceRows is mounted lazily — only when a customer is
+  // ARCustomerInvoiceRows is mounted lazily: only when a customer is
   // expanded, so initial state matches "still loading" and resets on
   // unmount. No synchronous setState in the effect is needed.
   const [enriched, setEnriched] = useState<Record<string, { journal_entry_id: string; voucher_series: string; voucher_number: number } | undefined>>({})
@@ -2622,7 +2622,7 @@ export function ARLedgerView({ periodId }: { periodId: string }) {
                 )}
                 {reconciliation.unconverted_fx_count > 0 && (
                   <p className="text-xs text-muted-foreground">
-                    {reconciliation.unconverted_fx_count} kundfaktura i utländsk valuta saknar växelkurs — differensen kan bero på saknade kursuppgifter snarare än felbokning.
+                    {reconciliation.unconverted_fx_count} kundfaktura i utländsk valuta saknar växelkurs: differensen kan bero på saknade kursuppgifter snarare än felbokning.
                   </p>
                 )}
               </div>
@@ -2638,7 +2638,7 @@ export function ARLedgerView({ periodId }: { periodId: string }) {
 
 export function DimensionPnlView({ periodId, dateRange }: { periodId: string; dateRange: DateRangeValue }) {
   // Loading is DERIVED (result key ≠ current query string) instead of a
-  // setState at effect start — keeps react-hooks/set-state-in-effect clean
+  // setState at effect start: keeps react-hooks/set-state-in-effect clean
   // and is race-safe when the pivot/date changes mid-flight.
   const [result, setResult] = useState<{
     qs: string
