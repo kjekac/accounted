@@ -1,7 +1,7 @@
 import { type NextRequest } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   return await updateSession(request)
 }
 
@@ -14,7 +14,7 @@ export const config = {
      * - favicon.ico (favicon file)
      * - Static assets (images, scripts, manifest, icons, etc.)
      *
-     * NOTE: `/api` is intentionally INCLUDED so middleware can enforce the MFA
+     * NOTE: `/api` is intentionally INCLUDED so the proxy can enforce the MFA
      * (AAL2) gate on cookie-authenticated API calls (updateSession short-
      * circuits API routes after that check: see lib/supabase/middleware.ts).
      */
