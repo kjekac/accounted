@@ -21,6 +21,7 @@ The accounting rules are Swedish law, enforced by DB triggers. Code that violate
 General prohibitions:
 
 - **Never modify an existing migration**: schemas already shipped; create a new migration. Never touch the enforcement triggers (migration 017); they are legally required.
+- **Never leave a remote DB ahead of the repo.** If you `apply_migration` (or run any DDL) against prod, staging, or a preview branch, write the byte-identical SQL into `supabase/migrations/` under the exact applied version in the same change. An applied version with no committed file is an orphan: Supabase branching aborts the next merge to `main` with "Remote migration versions not found in local migrations directory" and blocks every pending migration behind it. The PR preview passes anyway (preview branches fork from prod's history, which already has the orphan), so this only surfaces at merge.
 - **Core code must never import from `@/extensions/`.** CI builds core with zero extensions enabled; a direct import breaks that build. Extensions cannot use dynamic imports (the registry generates static imports via `setup:extensions`).
 - **Don't add dependencies without asking.** This is an AGPL-3.0 project; license compatibility matters, and the dependency surface is audited.
 - **Don't "finish" the gnubok → Accounted rename.** Wire-format identifiers keep the old name on purpose: `gnubok-company-id` cookie, `gnubok_sk_`/`gnubok_inv_` prefixes, `gnubok-mcp` npm package. Renaming them breaks live sessions, API keys, and invites.
@@ -46,6 +47,7 @@ A change is done when all of these hold; iterate until they do:
 5. If you edited an atom `SKILL.md`, `npm run skills:generate` was run (CI's `skills:check` fails otherwise).
 6. `npm run check:guards` passes if you touched API routes.
 7. Commit is conventional (`feat:`/`fix:`/`refactor:`/`test:`/`docs:`), atomic, branched from `main`.
+8. If the change touches migrations, local and prod are reconciled: every version in prod's `schema_migrations` has a matching file in `supabase/migrations/`, and vice versa. Check before opening the PR (e.g. `list_migrations` / `select version from supabase_migrations.schema_migrations`); a remote-only version means an uncommitted orphan that will fail the merge.
 
 ## Commands
 
