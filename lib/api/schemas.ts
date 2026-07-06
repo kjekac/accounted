@@ -30,6 +30,10 @@ const accountNumber = z.string().regex(/^\d{4}$/, 'Account number must be exactl
 /** Non-negative monetary amount (>= 0) */
 const nonNegativeAmount = z.number().nonnegative()
 
+function roundOre(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
 /** BAS class-3 revenue account — exactly 4 digits starting with 3 (försäljning/intäkt). */
 const revenueAccount = z
   .string()
@@ -941,6 +945,30 @@ export const BulkBookSchema = z
         code: z.ZodIssueCode.custom,
         message: 'entry_description is required when manual_lines is set',
         path: ['entry_description'],
+      })
+    }
+    if (hasManual && data.manual_lines) {
+      const totalDebit = roundOre(
+        data.manual_lines.reduce((sum, line) => sum + Number(line.debit_amount ?? 0), 0),
+      )
+      const totalCredit = roundOre(
+        data.manual_lines.reduce((sum, line) => sum + Number(line.credit_amount ?? 0), 0),
+      )
+      if (totalDebit <= 0 || totalCredit <= 0 || totalDebit !== totalCredit) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `manual_lines must balance: debit ${totalDebit}, credit ${totalCredit}`,
+          path: ['manual_lines'],
+        })
+      }
+      data.manual_lines.forEach((line, index) => {
+        if (line.debit_amount > 0 && line.credit_amount > 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'A manual line cannot have both debit_amount and credit_amount',
+            path: ['manual_lines', index],
+          })
+        }
       })
     }
   })
@@ -2036,4 +2064,3 @@ export const SalaryEmployeeOverrideSchema = z
       path: ['reason'],
     },
   )
-

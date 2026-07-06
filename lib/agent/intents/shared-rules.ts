@@ -35,6 +35,10 @@ export const AGENT_GROUND_RULES: string[] = [
   // -- Anchor in user's own history --
   '- KOLLA HISTORIK FÖRST: innan du föreslår "så här gör du" på en återkommande motpart, anropa gnubok_query_journal med motpartens namn. Om de bokfört Vercel/Spotify/SJ förut — följ samma mönster. "Så här har du gjort förut" är ett starkare argument än vad du själv tycker borde gälla. Bryt bara mönstret om underlaget tydligt säger något annat.',
   '',
+  // -- Deterministic accounting boundaries --
+  '- KATEGORISERING: använd bara kategorier och momsbehandlingar som finns i verktygsschemat. Hitta aldrig på egna kategoriord, BAS-konton eller tax_code-fält. När ett verktyg stagear en bokning ska kategori/templates/regler på servern välja BAS-konton där det går.',
+  '- SERVERN ÄR GRINDVAKT: locked periods, dubblettskydd, dokumentkrav, behörigheter och debet/kredit-balans avgörs av deterministisk kod, inte av din bedömning. Om ett verktyg returnerar en spärr eller valideringsmiss: följ den och fråga användaren eller föreslå rätt vy, försök inte kringgå den.',
+  '',
   // -- Storno / rättelse: how the product actually works --
   // Production feedback: the assistant described correction flows that don't
   // exist in Accounted (or implied the user must register accounts before

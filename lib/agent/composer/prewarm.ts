@@ -26,8 +26,11 @@ export async function preWarmAtomCache(opts: {
   const bodies = atomBodies.filter((b) => b && b.length > 0)
   if (bodies.length === 0) return
 
+  const provider = getModelProvider()
+  if (provider.name !== 'bedrock-anthropic') return
+
   try {
-    await getModelProvider().generateText({
+    await provider.generateText({
       model: SONNET_MODEL,
       maxTokens: 1,
       system: [

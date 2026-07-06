@@ -67,6 +67,13 @@ export interface ModelProvider {
   streamWithTools(input: StreamWithToolsInput): Promise<ModelResponse>
 }
 
+export class MalformedModelToolCallError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MalformedModelToolCallError'
+  }
+}
+
 export function textMessage(role: ModelRole, text: string): ModelMessage {
   return { role, content: [{ kind: 'text', text }] }
 }

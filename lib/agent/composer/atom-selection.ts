@@ -1,5 +1,6 @@
 import { getModelProvider, textMessage } from '@/lib/agent/model-provider'
 import { OPUS_MODEL } from './client'
+import { fallbackAtomSelection } from './fallback'
 import { AtomSelectionSchema, ATOM_SELECTION_TOOL_SCHEMA, type AtomSelection } from './schemas'
 import type { ComposerInputs } from './inputs'
 
@@ -90,6 +91,8 @@ export async function selectAtoms(inputs: ComposerInputs): Promise<AtomSelection
     ]
   }
 
+  applyDeterministicAtomSignals(parsed.data, inputs)
+
   // Belt-and-braces: filter redundant questions deterministically even if
   // the model ignored the "do not ask about KÄNDA FAKTA" instruction.
   parsed.data.verification_questions = filterRedundantQuestions(
@@ -99,6 +102,90 @@ export async function selectAtoms(inputs: ComposerInputs): Promise<AtomSelection
   )
 
   return parsed.data
+}
+
+function applyDeterministicAtomSignals(selection: AtomSelection, inputs: ComposerInputs): void {
+  const known = new Set(inputs.atomIndex.map((a) => a.id))
+  const tic = inputs.ticSnapshot as
+    | {
+        legalEntityType?: string | null
+        registration?: { vat?: boolean; payroll?: boolean }
+        sniCodes?: { code: string; name?: string | null }[]
+        beneficialOwners?: { name: string }[]
+        payrolls?: { payroll2?: { employeeCount?: number | null }[] | null }[]
+      }
+    | null
+  const settings = inputs.companySettings
+
+  const add = (tier: 'horizontal' | 'vertical' | 'modifier', id: string) => {
+    if (!known.has(id)) return
+    const target =
+      tier === 'horizontal'
+        ? selection.horizontal_atoms
+        : tier === 'vertical'
+          ? selection.vertical_atoms
+          : selection.modifier_atoms
+    if (!target.includes(id)) target.push(id)
+  }
+
+  const isAb =
+    /^(ab|aktiebolag)$/i.test(inputs.entityType) ||
+    /^(ab|aktiebolag)$/i.test(tic?.legalEntityType ?? '')
+
+  if (settings?.vat_registered === true || tic?.registration?.vat === true) {
+    add('horizontal', 'horizontal/swedish-vat')
+  }
+
+  const hasActualPayroll = latestFiledEmployeeCount(tic?.payrolls) > 0
+  const paysSalaries =
+    settings?.pays_salaries === true ||
+    ((settings?.employee_count ?? 0) > 0 && settings?.has_employees === true)
+  if (hasActualPayroll || paysSalaries) {
+    add('horizontal', 'horizontal/swedish-payroll')
+  }
+
+  if (isAb && Array.isArray(tic?.beneficialOwners) && tic.beneficialOwners.length === 1) {
+    add('modifier', 'modifier/single-shareholder-ab-fmb')
+  }
+
+  const employeeCount = latestFiledEmployeeCount(tic?.payrolls) || settings?.employee_count || 0
+  if (employeeCount >= 1 && employeeCount <= 9) {
+    add('modifier', 'modifier/small-employer')
+  }
+
+  for (const code of tic?.sniCodes ?? []) {
+    for (const atom of inputs.atomIndex) {
+      if (atom.tier !== 'vertical') continue
+      if (atom.sni_prefixes.some((prefix) => code.code.startsWith(prefix))) {
+        add('vertical', atom.id)
+      }
+    }
+  }
+}
+
+function latestFiledEmployeeCount(
+  payrolls: { payroll2?: { employeeCount?: number | null }[] | null }[] | undefined,
+): number {
+  if (!Array.isArray(payrolls)) return 0
+  for (let i = payrolls.length - 1; i >= 0; i--) {
+    const rows = payrolls[i]?.payroll2
+    if (!Array.isArray(rows)) continue
+    for (const row of rows) {
+      if (typeof row.employeeCount === 'number') return row.employeeCount
+    }
+  }
+  return 0
+}
+
+export async function selectAtomsWithFallback(inputs: ComposerInputs): Promise<{
+  selection: AtomSelection
+  usedFallback: boolean
+}> {
+  try {
+    return { selection: await selectAtoms(inputs), usedFallback: false }
+  } catch {
+    return { selection: fallbackAtomSelection(inputs), usedFallback: true }
+  }
 }
 
 // Drops questions whose answer is already settled in company_settings or
@@ -170,7 +257,12 @@ export function filterRedundantQuestions(
     }
 
     // Employees — pattern "har bolaget anställda" or "har du anställda".
-    if (knowsEmployees && /har\s+(bolaget|du|ni|företaget)\s+anställda/.test(lower)) {
+    if (
+      knowsEmployees &&
+      (/har\s+(bolaget|du|ni|företaget)\s+anställda/.test(lower) ||
+        /hur\s+många\s+anställda/.test(lower) ||
+        /antal(et)?\s+anställda/.test(lower))
+    ) {
       return false
     }
 

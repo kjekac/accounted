@@ -7,7 +7,7 @@ import { requireCapability } from '@/lib/entitlements/has-capability'
 import { CAPABILITY } from '@/lib/entitlements/keys'
 import { checkAgentRateLimit, agentRateLimitResponseBody } from '@/lib/rate-limits/agent'
 import { gatherComposerInputs, inputsToSourceSignals } from '@/lib/agent/composer/inputs'
-import { selectAtoms } from '@/lib/agent/composer/atom-selection'
+import { selectAtomsWithFallback } from '@/lib/agent/composer/atom-selection'
 import { writeNarrative } from '@/lib/agent/composer/narrative'
 import { fallbackAtomSelection, fallbackNarrative } from '@/lib/agent/composer/fallback'
 import { filterRedundantQuestions } from '@/lib/agent/composer/atom-selection'
@@ -170,8 +170,13 @@ export async function POST(request: Request) {
         send({ step: 'select', status: 'in_progress' })
         let selection: AtomSelection
         try {
-          selection = await withTimeout(selectAtoms(inputs), SELECT_BUDGET_MS)
-          send({ step: 'select', status: 'success', selection })
+          const result = await withTimeout(selectAtomsWithFallback(inputs), SELECT_BUDGET_MS)
+          selection = result.selection
+          send({
+            step: 'select',
+            status: result.usedFallback ? 'fallback' : 'success',
+            selection,
+          })
         } catch {
           selection = fallbackAtomSelection(inputs)
           send({ step: 'select', status: 'fallback', selection })
@@ -306,4 +311,3 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
     )
   })
 }
-

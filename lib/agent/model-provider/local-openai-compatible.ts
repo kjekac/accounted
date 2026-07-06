@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { AiProviderUnavailableError, getLocalAiConfig } from '@/lib/ai/provider'
+import { MalformedModelToolCallError } from './types'
 import type {
   GenerateStructuredInput,
   GenerateTextInput,
@@ -310,10 +311,17 @@ function parseJson(text: string): unknown {
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {
-  const parsed = parseJson(text)
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {}
+  try {
+    const parsed = parseJson(text)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch (err) {
+    throw new MalformedModelToolCallError(
+      err instanceof Error ? err.message : 'Model returned invalid tool-call JSON.',
+    )
+  }
+  throw new MalformedModelToolCallError('Model returned a non-object tool-call argument payload.')
 }
 
 function readString(value: unknown): string | null {

@@ -27,6 +27,7 @@ interface CapturedTransaction {
     amount: number | null
     currency: string | null
     counterparty_name: string | null
+    direction: 'in' | 'out' | 'zero' | 'unknown'
   } | null
   // Each linked receipt/invoice in a flattened "what we already know" shape.
   // Empty when the user has not attached anything yet.
@@ -83,7 +84,7 @@ export const transactionCategorization = defineAgentIntent<
   capture: async ({ transaction_id }, { supabase, companyId }) => {
     const { data: tx } = await supabase
       .from('transactions')
-      .select('id, date, description, amount, currency, document_id, journal_entry_id')
+      .select('id, date, description, amount, currency, merchant_name, reference, document_id, journal_entry_id')
       .eq('id', transaction_id)
       .eq('company_id', companyId)
       .single()
@@ -249,7 +250,18 @@ export const transactionCategorization = defineAgentIntent<
             description: (tx.description as string | null) ?? null,
             amount: tx.amount as number | null,
             currency: tx.currency as string | null,
-            counterparty_name: null,
+            counterparty_name:
+              ((tx as { merchant_name?: string | null }).merchant_name ?? null) ||
+              ((tx as { reference?: string | null }).reference ?? null) ||
+              ((tx.description as string | null) ?? null),
+            direction:
+              typeof tx.amount === 'number'
+                ? tx.amount > 0
+                  ? 'in'
+                  : tx.amount < 0
+                    ? 'out'
+                    : 'zero'
+                : 'unknown',
           }
         : null,
       underlag,
@@ -272,6 +284,8 @@ export const transactionCategorization = defineAgentIntent<
     lines.push(`- transaction_id: ${tx.id}`)
     lines.push(`- Datum: ${tx.date ?? 'okänt'}`)
     lines.push(`- Beskrivning: ${tx.description ?? '(saknas)'}`)
+    lines.push(`- Motpart/signal: ${tx.counterparty_name ?? '(saknas)'}`)
+    lines.push(`- Riktning: ${tx.direction === 'in' ? 'inbetalning' : tx.direction === 'out' ? 'utbetalning' : tx.direction === 'zero' ? '0-belopp' : 'okänd'}`)
     lines.push(
       `- Belopp: ${tx.amount != null ? `${tx.amount.toLocaleString('sv-SE')} ${tx.currency ?? 'SEK'}` : '(okänt)'}`,
     )
@@ -317,11 +331,14 @@ export const transactionCategorization = defineAgentIntent<
     }
     lines.push('')
     lines.push('Arbetssätt: hämta information via verktygsanrop FÖRST (tyst — statusraderna visar att du söker, och ditt resonemang sker i tankekanalen), föreslå sedan. Skriv din förklaring EN gång efteråt, inte i flera block runt anropen.')
+    lines.push('- Uppgiften är transaktionskategorisering, inte "titta på kvittot/transaktionen och gissa". Du ska bara föreslå eller staga när beslutet är grundat i: transaktionens belopp, riktning, motpart, tidigare bokningar, underlag om det finns, och företagets profil. Saknas någon avgörande datapunkt: ställ en följdfråga.')
+    lines.push('- Använd exakt de enum-värden och fält som finns i gnubok_categorize_transaction-schemat. Hitta aldrig på kategori, vat_treatment eller extra fält. BAS-konton väljs server-side av kategori/templates/regler, inte av dig i fri text.')
     lines.push('- Atomerna i systemprompten (swedish-vat, swedish-accounting-compliance, swedish-invoice-compliance + företagets vertikal/modifier-atomer) är din primärkälla — citera BFL / ML 2023:200 / BFNAR / BAS därifrån i din korta motivering. (Disciplinen kring satser och gränser, ladda-före-svar, styrs av systemprompten.)')
     lines.push('- KOLLA HUR MOTPARTEN BOKFÖRTS FÖRUT innan du föreslår kategori. Anropa gnubok_query_journal({ text: "<motpartens namn>", limit: 5 }) — använd det renaste namn-signalen du har (underlagets leverantörsnamn när det finns, annars ett kort utdrag ur transaktionsbeskrivningen utan adress/stad-cruft, t.ex. "Linear" inte "LINEAR.APP*HQ STOCKHOLM"). Granska de returnerade raderna: vilka BAS-konton användes, vilken momsbehandling, samma summor i samma härad? Om det finns ett tydligt mönster — följ det om inte underlaget motsäger det. "Så har du gjort förut" är ett starkare argument än vad du själv tycker borde gälla. Om query_journal returnerar 0 träffar är motparten ny: grunda förslaget på atomerna (nämn att den är ny bara om det är relevant, i din korta motivering — skriv ingen separat rad om sökresultatet).')
     lines.push('- Om underlaget inte är extraherat tillräckligt djupt (t.ex. saknar momsbelopp), läs PDF/bilden med gnubok_get_document_content(document_id=…) och fyll i luckorna.')
     lines.push('- Om något i underlaget är oklart eller motsägelsefullt (t.ex. moms saknas men säljaren är svensk, eller belopp inte stämmer med transaktionen), FRÅGA användaren först innan du stagear.')
-    lines.push('- STÄLL en kort följdfråga (2–3 alternativ) när kategorin beror på syfte som inte syns på kvittot: restaurang/café, Systembolaget, detaljhandel (ICA/Clas Ohlson/Apoteket), resor, drivmedel, gåvor. Hellre en fråga än en felaktig bokning. Spara användarens svar via gnubok_remember_fact så du inte behöver fråga igen nästa gång liknande motpart dyker upp.')
+    lines.push('- Om underlag och historik redan räcker för en säker kategori, ANROPA gnubok_categorize_transaction. Skriv inte bara kategorin i text. Anropet ska innehålla exakt transaction_id ovan och en category från verktygets enum.')
+    lines.push('- STÄLL en kort följdfråga (2–3 alternativ) när kategorin beror på syfte som inte syns på kvittot: representation, privat/business-ambiguitet, blandade inköp, oklar affärsnytta, restaurang/café, Systembolaget, detaljhandel (ICA/Clas Ohlson/Apoteket), resor, drivmedel, gåvor. I dessa fall är gnubok_categorize_transaction FÖRBJUDET tills användaren har svarat. Hellre en fråga än en felaktig bokning. Spara användarens svar via gnubok_remember_fact så du inte behöver fråga igen nästa gång liknande motpart dyker upp.')
     lines.push('- REPRESENTATION (måltid): fånga ANTAL deltagare, vilka (namn + företag) och syftet innan du bokför — antalet styr momsavdraget (tak per person på underlaget). Använd kvittots FAKTISKA momssats, gissa aldrig. Fråga "Hur många var ni, och vilka?" om det inte framgår. När du har uppgifterna: (1) anropa gnubok_remember_fact med content som beskriver deltagare + syfte; (2) stagea med notes="X deltagare: [namn + företag]. Syfte: [text]." så det landar i verifikationen. Saknas uppgifterna medges inget momsavdrag — säg det.')
     lines.push(`- När du är säker, staga via gnubok_categorize_transaction med transaction_id=${tx.id} (ALDRIG document_id). Välj kategori från enum-listan i verktygets schema.`)
     lines.push('- Förklara dina val kort på svenska — använd kategori-namn (t.ex. "Mjukvara/IT-tjänster", "Tele & internet"), ALDRIG ett BAS-kontonummer. Verktyget mappar kategori → konto, och godkännandekortet visar det faktiska BAS-kontot.')

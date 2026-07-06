@@ -1,7 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { getAiProvider, isAiFallbackOnly } from '@/lib/ai/provider'
 import { gatherComposerInputs, inputsToSourceSignals } from './inputs'
-import { selectAtoms } from './atom-selection'
+import { selectAtoms, selectAtomsWithFallback } from './atom-selection'
 import { writeNarrative } from './narrative'
+import { fallbackNarrative } from './fallback'
 import { preWarmAtomCache } from './prewarm'
 import { OPUS_MODEL } from './client'
 import type { ComposedProfile } from './schemas'
@@ -25,8 +27,8 @@ export async function composeAgentProfile(
 ): Promise<ComposedProfile> {
   const inputs = await gatherComposerInputs(supabase, companyId)
 
-  const selection = await selectAtoms(inputs)
-  const profileSummary = await writeNarrative(inputs, selection)
+  const selection = await composeAtomSelection(inputs)
+  const profileSummary = await composeNarrative(inputs, selection)
 
   const sourceSignals = inputsToSourceSignals(inputs)
   const composedAt = new Date().toISOString()
@@ -88,3 +90,27 @@ export async function composeAgentProfile(
 }
 
 export type { ComposedProfile } from './schemas'
+
+async function composeAtomSelection(
+  inputs: Awaited<ReturnType<typeof gatherComposerInputs>>,
+) {
+  if (!shouldUseNonFatalLocalFallbacks()) return selectAtoms(inputs)
+  const { selection } = await selectAtomsWithFallback(inputs)
+  return selection
+}
+
+async function composeNarrative(
+  inputs: Awaited<ReturnType<typeof gatherComposerInputs>>,
+  selection: Awaited<ReturnType<typeof composeAtomSelection>>,
+) {
+  try {
+    return await writeNarrative(inputs, selection)
+  } catch (err) {
+    if (shouldUseNonFatalLocalFallbacks()) return fallbackNarrative(inputs)
+    throw err
+  }
+}
+
+function shouldUseNonFatalLocalFallbacks(): boolean {
+  return getAiProvider() === 'local' || isAiFallbackOnly()
+}

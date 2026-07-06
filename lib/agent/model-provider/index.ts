@@ -16,7 +16,7 @@ export type {
   StreamWithToolsInput,
   StructuredSchema,
 } from './types'
-export { extractText, textMessage } from './types'
+export { extractText, MalformedModelToolCallError, textMessage } from './types'
 export { bedrockAnthropicProvider } from './bedrock-anthropic'
 export { disabledProvider } from './disabled'
 export { localProvider } from './local-openai-compatible'
