@@ -25,6 +25,7 @@ import {
   UpdateInvoiceSchema,
   CreateCreditNoteSchema,
   MarkInvoicePaidSchema,
+  CreateRecurringScheduleSchema,
   // Customer schemas
   CreateCustomerSchema,
   // Supplier schemas
@@ -66,6 +67,8 @@ import {
   // Report query schemas
   VatDeclarationQuerySchema,
   PaginationQuerySchema,
+  // Employee schemas
+  CreateEmployeeSchema,
 } from '../schemas'
 
 // ============================================================
@@ -1404,6 +1407,35 @@ describe('UpdateSettingsSchema', () => {
       expect(result.success).toBe(false)
     })
   })
+
+  describe('default_voucher_series_per_source_type', () => {
+    it('accepts a partial map that omits source types (regression: Zod 4 enum-keyed z.record is exhaustive)', () => {
+      const result = UpdateSettingsSchema.safeParse({
+        default_voucher_series_per_source_type: { manual: 'A', bank_transaction: 'C' },
+      })
+      expect(result.success).toBe(true)
+    })
+
+    it('accepts an empty map', () => {
+      expect(
+        UpdateSettingsSchema.safeParse({ default_voucher_series_per_source_type: {} }).success,
+      ).toBe(true)
+    })
+
+    it('rejects a series value that is not a single A-Z letter', () => {
+      const result = UpdateSettingsSchema.safeParse({
+        default_voucher_series_per_source_type: { manual: 'ab' },
+      })
+      expect(result.success).toBe(false)
+    })
+
+    it('rejects an unknown source_type key', () => {
+      const result = UpdateSettingsSchema.safeParse({
+        default_voucher_series_per_source_type: { not_a_source_type: 'A' },
+      })
+      expect(result.success).toBe(false)
+    })
+  })
 })
 
 // ============================================================
@@ -2303,5 +2335,97 @@ describe('Integration with test helpers', () => {
     }
     const result = CreateSupplierInvoiceSchema.safeParse(supplierInvoiceData)
     expect(result.success).toBe(true)
+  })
+})
+
+// ============================================================
+// Employee bank-account validation (CreateEmployeeSchema)
+// ============================================================
+
+describe('CreateEmployeeSchema bank details', () => {
+  const baseEmployee = {
+    first_name: 'Anna',
+    last_name: 'Andersson',
+    personnummer: '199001011234',
+    employment_type: 'employee' as const,
+    employment_start: '2026-01-01',
+    salary_type: 'monthly' as const,
+    monthly_salary: 30000,
+    f_skatt_status: 'a_skatt' as const,
+    is_sidoinkomst: false,
+    tax_table_number: 33,
+    tax_municipality: 'Stockholm',
+  }
+
+  it('accepts an employee with no bank details', () => {
+    const result = CreateEmployeeSchema.safeParse(baseEmployee)
+    expect(result.success).toBe(true)
+  })
+
+  it('accepts a valid clearing + account pair', () => {
+    const result = CreateEmployeeSchema.safeParse({
+      ...baseEmployee,
+      clearing_number: '6000',
+      bank_account_number: '1234567',
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('accepts a 5-digit Swedbank clearing', () => {
+    const result = CreateEmployeeSchema.safeParse({
+      ...baseEmployee,
+      clearing_number: '83279',
+      bank_account_number: '1234567',
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects a malformed clearing number', () => {
+    const result = CreateEmployeeSchema.safeParse({
+      ...baseEmployee,
+      clearing_number: '12',
+      bank_account_number: '1234567',
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.path.includes('clearing_number'))).toBe(true)
+    }
+  })
+
+  it('rejects a clearing without an account', () => {
+    const result = CreateEmployeeSchema.safeParse({
+      ...baseEmployee,
+      clearing_number: '6000',
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.path.includes('bank_account_number'))).toBe(true)
+    }
+  })
+})
+
+describe('CreateRecurringScheduleSchema send_hour', () => {
+  const base = {
+    customer_id: '550e8400-e29b-41d4-a716-446655440000',
+    name: 'Retainer',
+    day_of_month: 15,
+    items: [{ description: 'Service', quantity: 1, unit_price: 1000 }],
+  }
+
+  it('defaults send_hour to 8 when omitted', () => {
+    const result = CreateRecurringScheduleSchema.safeParse(base)
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.send_hour).toBe(8)
+  })
+
+  it('accepts a valid send_hour', () => {
+    const result = CreateRecurringScheduleSchema.safeParse({ ...base, send_hour: 14 })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.send_hour).toBe(14)
+  })
+
+  it('rejects an out-of-range send_hour', () => {
+    expect(CreateRecurringScheduleSchema.safeParse({ ...base, send_hour: 24 }).success).toBe(false)
+    expect(CreateRecurringScheduleSchema.safeParse({ ...base, send_hour: -1 }).success).toBe(false)
   })
 })

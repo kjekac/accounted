@@ -62,7 +62,7 @@ export async function GET(
 
   const { link } = resolved
 
-  const [{ data: run }, { data: sre }, { data: company }] = await Promise.all([
+  const [{ data: run }, { data: sre }, { data: company }, { data: settings }] = await Promise.all([
     serviceClient
       .from('salary_runs')
       .select('*')
@@ -80,6 +80,11 @@ export async function GET(
       .select('name, org_number')
       .eq('id', link.company_id)
       .single(),
+    serviceClient
+      .from('company_settings')
+      .select('company_name')
+      .eq('company_id', link.company_id)
+      .maybeSingle(),
   ])
 
   if (!run || !sre || !company) {
@@ -97,7 +102,14 @@ export async function GET(
     bank_account_number: string | null
   }
 
-  const data = buildPayslipData({ run, sre, employee: emp, company })
+  // Employer name follows the current company_settings.company_name, falling
+  // back to the frozen onboarding companies.name.
+  const data = buildPayslipData({
+    run,
+    sre,
+    employee: emp,
+    company: { name: settings?.company_name || company.name, org_number: company.org_number },
+  })
   const fileName = payslipFileName(run, emp)
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

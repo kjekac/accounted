@@ -14,6 +14,14 @@ import { ArrowLeft, Save, Trash2 } from 'lucide-react'
 import { useToast } from '@/components/ui/use-toast'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
+import {
+  validateEmployeeBankAccount,
+  isValidClearing,
+  isValidAccount,
+  normalizeBankNumber,
+  lookupBankByClearing,
+  checkEmployeeAccountChecksum,
+} from '@/lib/salary/payment/bank-account'
 import type { Employee } from '@/types'
 import { EmployeeBenefitsPanel } from '@/components/salary/EmployeeBenefitsPanel'
 import EmployeeTaxCard, { type EmployeeTaxValue } from '@/components/salary/EmployeeTaxCard'
@@ -41,6 +49,10 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
   const [employmentType, setEmploymentType] = useState('employee')
   const [salaryType, setSalaryType] = useState('monthly')
   const [vacationRule, setVacationRule] = useState('procentregeln')
+  const [clearing, setClearing] = useState('')
+  const [account, setAccount] = useState('')
+  // Suppress the soft check-digit warning while the bank fields are focused.
+  const [bankFocused, setBankFocused] = useState(false)
   const [tax, setTax] = useState<EmployeeTaxValue | null>(null)
   // Default dimensions bag ({sie_dim_no: object_code}) proposed on the
   // employee's salary-cost lines at booking. The fields render only when
@@ -57,6 +69,8 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
         setEmploymentType(data.employment_type)
         setSalaryType(data.salary_type || 'monthly')
         setVacationRule(data.vacation_rule || 'procentregeln')
+        setClearing(data.clearing_number || '')
+        setAccount(data.bank_account_number || '')
         setDimensions(data.default_dimensions ?? {})
       }
       setLoading(false)
@@ -83,6 +97,24 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
 
   async function handleSave(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+
+    // Block invalid bank details, but only when they actually changed: a legacy
+    // employee with incomplete free-text bank data must stay editable in other
+    // ways (mirrors the server's changed-only check).
+    const clearingChanged = normalizeBankNumber(clearing) !== normalizeBankNumber(employee?.clearing_number)
+    const accountChanged = normalizeBankNumber(account) !== normalizeBankNumber(employee?.bank_account_number)
+    if (clearingChanged || accountChanged) {
+      const bankIssues = validateEmployeeBankAccount(clearing, account)
+      if (bankIssues.length > 0) {
+        toast({
+          title: t('detail_update_failed'),
+          description: bankIssues.map((i) => t(`bank_error_${i.code}`)).join('. '),
+          variant: 'destructive',
+        })
+        return
+      }
+    }
+
     setSaving(true)
 
     const form = new FormData(e.currentTarget)
@@ -104,8 +136,8 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
       address_line1: form.get('address_line1') as string || undefined,
       postal_code: form.get('postal_code') as string || undefined,
       city: form.get('city') as string || undefined,
-      clearing_number: form.get('clearing_number') as string || undefined,
-      bank_account_number: form.get('bank_account_number') as string || undefined,
+      clearing_number: normalizeBankNumber(clearing) || undefined,
+      bank_account_number: normalizeBankNumber(account) || undefined,
       vacation_rule: vacationRule,
       vacation_days_per_year: parseInt(form.get('vacation_days_per_year') as string) || 25,
       // Always sent: {} clears the employee's default dimensions.
@@ -163,6 +195,12 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
   if (!employee) {
     return <p className="text-muted-foreground">{t('detail_not_found')}</p>
   }
+
+  const bankName = lookupBankByClearing(clearing)
+  const showChecksumWarning =
+    !bankFocused &&
+    validateEmployeeBankAccount(clearing, account).length === 0 &&
+    checkEmployeeAccountChecksum(clearing, account) === 'invalid'
 
   return (
     <div className="space-y-8">
@@ -370,13 +408,44 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="clearing_number">{t('form_clearing_number')}</Label>
-                <Input id="clearing_number" name="clearing_number" defaultValue={employee.clearing_number || ''} disabled={!canWrite} />
+                <Input
+                  id="clearing_number"
+                  name="clearing_number"
+                  inputMode="numeric"
+                  value={clearing}
+                  onChange={(e) => setClearing(e.target.value)}
+                  onFocus={() => setBankFocused(true)}
+                  onBlur={() => setBankFocused(false)}
+                  disabled={!canWrite}
+                  aria-invalid={clearing !== '' && !isValidClearing(normalizeBankNumber(clearing))}
+                />
+                {clearing !== '' && !isValidClearing(normalizeBankNumber(clearing)) ? (
+                  <p className="text-xs text-destructive">{t('bank_error_clearing_format')}</p>
+                ) : bankName ? (
+                  <p className="text-xs text-muted-foreground">{bankName}</p>
+                ) : null}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="bank_account_number">{t('form_account_number')}</Label>
-                <Input id="bank_account_number" name="bank_account_number" defaultValue={employee.bank_account_number || ''} disabled={!canWrite} />
+                <Input
+                  id="bank_account_number"
+                  name="bank_account_number"
+                  inputMode="numeric"
+                  value={account}
+                  onChange={(e) => setAccount(e.target.value)}
+                  onFocus={() => setBankFocused(true)}
+                  onBlur={() => setBankFocused(false)}
+                  disabled={!canWrite}
+                  aria-invalid={account !== '' && !isValidAccount(normalizeBankNumber(account))}
+                />
+                {account !== '' && !isValidAccount(normalizeBankNumber(account)) && (
+                  <p className="text-xs text-destructive">{t('bank_error_account_format')}</p>
+                )}
               </div>
             </div>
+            {showChecksumWarning && (
+              <p className="mt-2 text-xs text-warning-foreground">{t('bank_warn_checksum')}</p>
+            )}
             <p className="text-xs text-muted-foreground mt-2">{t('form_bank_hint')}</p>
           </CardContent>
         </Card>

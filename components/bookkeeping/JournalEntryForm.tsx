@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
-import { Plus, Trash2, AlertTriangle, Loader2, Lock, CalendarPlus, Eraser, Tags } from 'lucide-react'
+import { Plus, Trash2, AlertTriangle, Loader2, Lock, CalendarPlus, Eraser, Tags, BookmarkPlus } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
@@ -20,6 +20,8 @@ import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
 import { loadBasCatalog, type CatalogAccount } from '@/lib/bookkeeping/bas-catalog-client'
 import BookingTemplatePicker from '@/components/bookkeeping/BookingTemplatePicker'
+import { deriveTemplateLinesFromBooking } from '@/lib/bookkeeping/template-library'
+import { TemplateForm } from '@/components/settings/TemplateForm'
 import CreatePeriodDialog from '@/components/bookkeeping/CreatePeriodDialog'
 import { ActivateAccountsDialog } from '@/components/bookkeeping/ActivateAccountsDialog'
 import { AddAccountDialog } from '@/components/bookkeeping/AddAccountDialog'
@@ -35,7 +37,7 @@ import { formatVoucher, resolveDefaultSeriesForSource } from '@/lib/bookkeeping/
 import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
 import { useCompany } from '@/contexts/CompanyContext'
 import type { UploadedFile } from '@/components/bookkeeping/DocumentUploadZone'
-import type { CreateJournalEntryLineInput, FiscalPeriod, BASAccount, JournalEntrySourceType, Currency } from '@/types'
+import type { CreateJournalEntryLineInput, FiscalPeriod, BASAccount, JournalEntrySourceType, Currency, BookingTemplateLibrary } from '@/types'
 import type { BookedDuplicateCandidate } from '@/lib/transactions/booking-duplicate-detection'
 
 const CURRENCIES: { value: Currency; label: string }[] = [
@@ -103,6 +105,10 @@ export default function JournalEntryForm({
   const { toast } = useToast()
   const { company } = useCompany()
   const t = useTranslations('journal_form')
+  // Reused only for the bilingual entity-type labels the shared TemplateForm
+  // expects (matches BookingTemplatesPanel); the form itself already pulls its
+  // copy from this namespace.
+  const tTpl = useTranslations('settings_booking_templates')
   const locale = useLocale()
   const [periods, setPeriods] = useState<FiscalPeriod[]>([])
   const [selectedPeriod, setSelectedPeriod] = useState('')
@@ -154,6 +160,10 @@ export default function JournalEntryForm({
   const [periodMismatch, setPeriodMismatch] = useState<'no_period' | 'wrong_period' | null>(null)
   const [showCreatePeriod, setShowCreatePeriod] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
+  // "Spara som mall": derive a reusable template from the current kontering and
+  // hand it to the shared TemplateForm (create mode). Amounts become ratios/VAT
+  // rates so the mall re-computes when applied to a fresh amount later.
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false)
   // Month (YYYY-MM) of the most recently posted voucher this session. Used to
   // flag, at the review step, when the user is about to book into a different
   // month: guards against accidentally posting to the wrong month.
@@ -596,6 +606,18 @@ export default function JournalEntryForm({
     && totalDebit > 0
     && submittableLines.length >= 2
     && incompleteLineCount === 0
+
+  // Account number → BAS name, so derived template lines get meaningful labels.
+  const accountNameMap = useMemo(
+    () => Object.fromEntries(catalog.map((a) => [a.account_number, a.account_name])),
+    [catalog],
+  )
+  // Template lines derived from the current kontering. Fewer than two usable
+  // lines (a 4-digit account + an amount) disables "Spara som mall".
+  const derivedTemplateLines = useMemo(
+    () => deriveTemplateLinesFromBooking(lines, accountNameMap),
+    [lines, accountNameMap],
+  )
 
   const rate = parseFloat(exchangeRate) || 0
   // If user has manually entered a foreign amount, use that; otherwise derive from SEK total
@@ -1398,6 +1420,16 @@ export default function JournalEntryForm({
             onApply={handleTemplateApply}
             entityType={company?.entity_type}
           />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowSaveTemplate(true)}
+            disabled={derivedTemplateLines.length < 2}
+            title={derivedTemplateLines.length < 2 ? t('save_template_disabled_hint') : undefined}
+          >
+            <BookmarkPlus className="h-3 w-3 mr-1" />
+            {t('save_as_template')}
+          </Button>
         </div>
       </div>
 
@@ -1586,6 +1618,16 @@ export default function JournalEntryForm({
             onApply={handleTemplateApply}
             entityType={company?.entity_type}
           />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowSaveTemplate(true)}
+            disabled={derivedTemplateLines.length < 2}
+            title={derivedTemplateLines.length < 2 ? t('save_template_disabled_hint') : undefined}
+          >
+            <BookmarkPlus className="h-3 w-3 mr-1" />
+            {t('save_as_template')}
+          </Button>
         </div>
         <p className="mt-1.5 text-xs text-muted-foreground">
           {t('fill_balance_hint')} {t('keyboard_hint')}
@@ -1671,6 +1713,45 @@ export default function JournalEntryForm({
       </div>
       </>
       )}
+
+      {/* Save the current kontering as a reusable template. Amounts are stored
+          as ratios of the total, so the user picks a fresh amount when applying
+          the mall later. The shared TemplateForm re-seeds from the derived lines
+          each time the dialog opens (Radix unmounts its content when closed). */}
+      <Dialog open={showSaveTemplate} onOpenChange={setShowSaveTemplate}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('save_template_dialog_title')}</DialogTitle>
+            <DialogDescription>{t('save_template_dialog_description')}</DialogDescription>
+          </DialogHeader>
+          {showSaveTemplate && (
+            <TemplateForm
+              mode="create"
+              entityLabels={{
+                all: tTpl('entity_all'),
+                enskild_firma: tTpl('entity_enskild_firma'),
+                aktiebolag: tTpl('entity_aktiebolag'),
+              }}
+              initialTemplate={{
+                id: '',
+                company_id: null,
+                team_id: null,
+                created_by: null,
+                name: description.trim(),
+                description: '',
+                category: 'other',
+                entity_type: company?.entity_type ?? 'all',
+                lines: derivedTemplateLines,
+                is_system: false,
+                is_active: true,
+                created_at: '',
+                updated_at: '',
+              } satisfies BookingTemplateLibrary}
+              onSaved={() => setShowSaveTemplate(false)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
 
       <ActivateAccountsDialog
         open={activationDialog.open}

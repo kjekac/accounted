@@ -7,6 +7,7 @@ import { requireCompanyId, getCompanyEntityType } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import { decryptPersonnummer, encryptPersonnummer, extractLast4, maskPersonnummer, validatePersonnummer } from '@/lib/salary/personnummer'
 import { isEmploymentTypeAllowedForEntity, EF_OWNER_EMPLOYMENT_ERROR } from '@/lib/salary/employment-rules'
+import { validateEmployeeBankAccount } from '@/lib/salary/payment/bank-account'
 
 ensureInitialized()
 
@@ -85,6 +86,21 @@ export async function PATCH(
   }
   if (mergedErrors.length > 0) {
     return NextResponse.json({ error: mergedErrors.join('. ') }, { status: 400 })
+  }
+
+  // Validate bank details only when the caller actually changes them, so a
+  // legacy employee with incomplete/free-text bank data (from before this
+  // validation existed) can still be edited in unrelated ways. Validate the
+  // merged pair so both-or-neither reflects the row's real end state.
+  const clearingChanged =
+    body.clearing_number !== undefined && body.clearing_number !== existing.clearing_number
+  const accountChanged =
+    body.bank_account_number !== undefined && body.bank_account_number !== existing.bank_account_number
+  if (clearingChanged || accountChanged) {
+    const bankIssues = validateEmployeeBankAccount(merged.clearing_number, merged.bank_account_number)
+    if (bankIssues.length > 0) {
+      return NextResponse.json({ error: bankIssues.map((i) => i.message).join('. ') }, { status: 400 })
+    }
   }
 
   // Only when the caller is changing employment_type: block setting an EF's

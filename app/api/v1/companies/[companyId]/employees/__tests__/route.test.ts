@@ -40,6 +40,7 @@ import {
   PATCH as updateEmployee,
   DELETE as deleteEmployee,
 } from '../[id]/route'
+import { encryptPersonnummer, decryptPersonnummer } from '@/lib/salary/personnummer'
 
 const mockValidate = validateApiKey as ReturnType<typeof vi.fn>
 const mockServiceClient = createServiceClientNoCookies as ReturnType<typeof vi.fn>
@@ -210,6 +211,30 @@ describe('GET /api/v1/companies/:companyId/employees', () => {
     const body = await res.json()
     expect(body.error.code).toBe('INSUFFICIENT_SCOPE')
   })
+
+  it('decrypts an encrypted-at-rest row and masks it birthdate-visible', async () => {
+    // Rows are stored encrypted; the list must decrypt before masking so the
+    // mask is YYYYMMDDXXXX (not fully redacted). Neither the ciphertext nor
+    // the plaintext may leak in the response.
+    const encRow = { ...SAMPLE_EMPLOYEE, personnummer: encryptPersonnummer(SAMPLE_PERSONNUMMER) }
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        employees: { data: [encRow], error: null },
+      }),
+    )
+
+    const res = await listEmployees(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/employees`),
+      companyParams(COMPANY_ID),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data[0].personnummer_masked).toBe('19000101XXXX')
+    expect(JSON.stringify(body)).not.toContain(encRow.personnummer)
+    expect(JSON.stringify(body)).not.toContain(SAMPLE_PERSONNUMMER)
+  })
 })
 
 describe('GET /api/v1/companies/:companyId/employees/:id', () => {
@@ -261,6 +286,29 @@ describe('GET /api/v1/companies/:companyId/employees/:id', () => {
       detailParams(COMPANY_ID, 'not-a-uuid'),
     )
     expect(res.status).toBe(400)
+  })
+
+  it('decrypts the stored ciphertext and returns the full personnummer', async () => {
+    // The detail drill-in returns the full value; it is stored encrypted, so
+    // the endpoint must decrypt it rather than hand back the ciphertext.
+    const encRow = { ...SAMPLE_EMPLOYEE, personnummer: encryptPersonnummer(SAMPLE_PERSONNUMMER) }
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        employees: { data: encRow, error: null },
+      }),
+    )
+
+    const res = await getEmployee(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/employees/${EMPLOYEE_ID}`),
+      detailParams(COMPANY_ID, EMPLOYEE_ID),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.personnummer).toBe(SAMPLE_PERSONNUMMER)
+    // The raw ciphertext must not surface.
+    expect(JSON.stringify(body)).not.toContain(encRow.personnummer)
   })
 })
 
@@ -468,6 +516,52 @@ describe('POST /api/v1/companies/:companyId/employees', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error.code).toBe('VALIDATION_ERROR')
+  })
+
+  it('stores the personnummer encrypted at rest (round-trips, never plaintext)', async () => {
+    // Regression: this path used to insert body.personnummer verbatim, leaving
+    // plaintext personnummer in the DB and 500-ing every decrypt-on-read path.
+    let inserted: Record<string, unknown> | undefined
+    mockServiceClient.mockReturnValue({
+      from: (table: string) =>
+        new Proxy(
+          {},
+          {
+            get(_t, prop) {
+              if (prop === 'then') {
+                const data =
+                  table === 'company_members'
+                    ? { company_id: COMPANY_ID, role: 'owner' }
+                    : table === 'employees'
+                      ? SAMPLE_EMPLOYEE
+                      : null
+                return (resolve: (v: unknown) => void) => resolve({ data, error: null })
+              }
+              return (...args: unknown[]) => {
+                if (prop === 'insert' && table === 'employees') {
+                  inserted = args[0] as Record<string, unknown>
+                }
+                return new Proxy({}, this!)
+              }
+            },
+          },
+        ),
+    })
+
+    const res = await createEmployee(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/employees`, {
+        method: 'POST',
+        body: JSON.stringify(validBody),
+      }),
+      companyParams(COMPANY_ID),
+    )
+
+    expect(res.status).toBe(201)
+    expect(inserted).toBeDefined()
+    const storedPnr = inserted!.personnummer as string
+    // Not stored as plaintext, and round-trips back to the supplied value.
+    expect(storedPnr).not.toBe(SAMPLE_PERSONNUMMER)
+    expect(decryptPersonnummer(storedPnr)).toBe(SAMPLE_PERSONNUMMER)
   })
 })
 

@@ -25,6 +25,7 @@ import { withApiV1 } from '@/lib/api/v1/with-api-v1'
 import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
 import { UpdateEmployeeSchema } from '@/lib/api/schemas'
 import { maskPersonnummer } from '@/lib/api/v1/mask-personnummer'
+import { decryptPersonnummer } from '@/lib/salary/personnummer'
 
 const EmploymentType = z.enum(['employee', 'company_owner', 'board_member'])
 const SalaryType = z.enum(['monthly', 'hourly'])
@@ -95,7 +96,10 @@ type ExistingRow = {
  */
 function maskExistingForResponse(row: ExistingRow): Record<string, unknown> {
   const { personnummer, ...rest } = row
-  return { ...rest, personnummer_masked: maskPersonnummer(personnummer) }
+  // personnummer is stored encrypted; decrypt before masking so the write
+  // response is birthdate-visible (YYYYMMDDXXXX), not fully redacted. The
+  // decrypt helper passes legacy plaintext rows through unchanged.
+  return { ...rest, personnummer_masked: maskPersonnummer(decryptPersonnummer(personnummer)) }
 }
 
 registerEndpoint({
@@ -167,7 +171,14 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string }
       return v1ErrorResponseFromCode('EMPLOYEE_NOT_FOUND', ctx.log, { requestId: ctx.requestId })
     }
 
-    return ok(data, { requestId: ctx.requestId })
+    // Detail is the deliberate drill-in: return the full personnummer. It is
+    // stored encrypted, so decrypt before returning. Legacy plaintext rows
+    // pass through the decrypt helper unchanged.
+    const detail = data as Record<string, unknown> & { personnummer: string }
+    return ok(
+      { ...detail, personnummer: decryptPersonnummer(detail.personnummer) },
+      { requestId: ctx.requestId },
+    )
   },
 )
 

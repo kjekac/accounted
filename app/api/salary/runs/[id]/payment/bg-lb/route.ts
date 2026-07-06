@@ -61,7 +61,7 @@ export async function GET(
 
   const { data: settings } = await supabase
     .from('company_settings')
-    .select('bankgiro')
+    .select('company_name, bankgiro')
     .eq('company_id', companyId)
     .single()
 
@@ -105,7 +105,9 @@ export async function GET(
   }
 
   const companyData: BgLbCompanyData = {
-    name: company.name,
+    // Sender name follows the current company name (company_settings.company_name),
+    // not the frozen onboarding companies.name.
+    name: settings.company_name || company.name,
     senderBankgiro: settings.bankgiro,
   }
 

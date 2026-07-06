@@ -517,14 +517,18 @@ function SkatteverketPanelInner({ periodType, year, period, hasData, rutor }: Sk
     )
   }
 
-  // Not connected
+  // Not connected. The momsdeklaration is already complete and can be filed
+  // manually at skatteverket.se with no connection (see the manual-filing card
+  // rendered above this panel). Connecting is an optional convenience for
+  // submitting directly from Accounted, so frame it that way: users must not
+  // read the connection as a prerequisite for producing or filing the report.
   if (!status?.connected) {
     return (
       <Card>
         <CardHeader>
           <CardTitle className="text-lg flex items-center gap-2">
             <FileCheck className="h-5 w-5" />
-            Skicka till Skatteverket
+            Skicka direkt till Skatteverket (valfritt)
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -535,7 +539,10 @@ function SkatteverketPanelInner({ periodType, year, period, hasData, rutor }: Sk
             </div>
           )}
           <p className="text-sm text-muted-foreground">
-            Anslut till Skatteverket med BankID för att skicka momsdeklarationen direkt.
+            Deklarationen är redan klar att lämnas in manuellt hos Skatteverket
+            (se ovan). Vill du slippa skriva in siffrorna själv kan du ansluta med
+            BankID och skicka den direkt härifrån, samt validera, spara utkast och
+            signera.
           </p>
           <Button onClick={handleConnect} className="gap-2">
             <Link2 className="h-4 w-4" />

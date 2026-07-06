@@ -135,6 +135,7 @@ export default async function DashboardLayout({
     { data: agentProfileIdentity },
     { data: userProfile },
     capabilities,
+    { data: allSettingsNames },
   ] = await Promise.all([
     supabase.from('companies').select('*').eq('id', companyId).single(),
     supabase.from('company_members').select('role').eq('company_id', companyId).eq('user_id', user.id).single(),
@@ -161,7 +162,17 @@ export default async function DashboardLayout({
     // in, distinct from the active company shown at the top.
     supabase.from('profiles').select('full_name').eq('id', user.id).maybeSingle(),
     getCompanyCapabilities(supabase, companyId),
+    // Current display names for ALL the user's companies (the switcher list).
+    // RLS scopes company_settings SELECT to user_company_ids(), so this bare
+    // select returns exactly the caller's companies, letting non-active rows
+    // show company_settings.company_name instead of the frozen companies.name.
+    supabase.from('company_settings').select('company_id, company_name'),
   ])
+
+  // company_id -> current display name for every company the user belongs to.
+  const nameByCompany = new Map(
+    (allSettingsNames || []).map((s) => [s.company_id, s.company_name as string | null]),
+  )
 
   if (!companyRow || !memberRow) {
     // Stale cookie pointing to a deleted/inaccessible company.
@@ -169,10 +180,13 @@ export default async function DashboardLayout({
     const companyContextValue = {
       company: null,
       role: null,
-      companies: (allMemberships || []).filter(m => m.companies).map((m) => ({
-        company: m.companies as unknown as import('@/types').Company,
-        role: m.role as CompanyRole,
-      })),
+      companies: (allMemberships || []).filter(m => m.companies).map((m) => {
+        const c = m.companies as unknown as import('@/types').Company
+        return {
+          company: { ...c, name: nameByCompany.get(c.id) || c.name },
+          role: m.role as CompanyRole,
+        }
+      }),
       isTeamMember,
       team,
       isSandbox: false,
@@ -256,11 +270,13 @@ export default async function DashboardLayout({
     role: memberRow.role as CompanyRole,
     companies: (allMemberships || []).map((m) => {
       const c = m.companies as unknown as import('@/types').Company
-      // Override active company's name with settings name
-      if (c.id === companyId) {
-        return { company: { ...c, name: displayName }, role: m.role as CompanyRole }
+      // Current display name for every company (company_settings.company_name,
+      // falling back to the frozen companies.name) so non-active switcher rows
+      // are current too. For the active company this equals `displayName`.
+      return {
+        company: { ...c, name: nameByCompany.get(c.id) || c.name },
+        role: m.role as CompanyRole,
       }
-      return { company: c, role: m.role as CompanyRole }
     }),
     isTeamMember,
     team,

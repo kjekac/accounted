@@ -4,6 +4,7 @@ import { normalizeVatNumber } from '@/lib/vat/vat-number'
 import { isSaneDateString } from '@/lib/utils'
 import { countCalendarMonths } from '@/lib/bookkeeping/accruals/compute'
 import { DimensionsBagSchema } from '@/lib/bookkeeping/dimension-resolver'
+import { validateEmployeeBankAccount } from '@/lib/salary/payment/bank-account'
 import type { AuditAction } from '@/types'
 
 // ============================================================
@@ -390,6 +391,19 @@ export const CreateInvoiceSchema = z.object({
   // Dimensions PR7: invoice-level bag applied to every generated journal line;
   // items[].dimensions merge over it per revenue line.
   default_dimensions: DimensionsBagSchema.optional(),
+  // Self-billing (mottagen självfaktura, ML 17 kap 15§): optional. Set
+  // is_self_billed=true to register an invoice the CUSTOMER issued on your
+  // behalf. For your books it is a sale, booked immediately (Debit 1510, Credit
+  // 30xx + 26xx) with the counterparty's number in external_invoice_number: no
+  // number from your own series is consumed (BFL 5 kap 6§), and there is no
+  // draft/send step. When is_self_billed is true, external_invoice_number and
+  // received_date are required (enforced in the route). Leave off for a normal
+  // invoice. A plain optional flag (no schema refine) so UpdateInvoiceSchema's
+  // .omit() keeps working on this object.
+  is_self_billed: z.boolean().optional(),
+  external_invoice_number: z.string().min(1).max(64).optional(),
+  self_billing_agreement_ref: z.string().max(128).optional(),
+  received_date: isoDate.optional(),
   items: z.array(CreateInvoiceItemSchema).min(1, 'At least one item is required'),
 })
 
@@ -516,6 +530,8 @@ export const CreateRecurringScheduleSchema = z.object({
   customer_id: uuid,
   name: z.string().min(1, 'Schedule name is required').max(200),
   day_of_month: z.number().int().min(1).max(31),
+  // Whole hour (0-23) in Europe/Stockholm at which the invoice is sent.
+  send_hour: z.number().int().min(0).max(23).default(8),
   payment_terms_days: z.number().int().min(0).max(90).default(30),
   currency: CurrencySchema.default('SEK'),
   your_reference: z.string().optional(),
@@ -532,6 +548,7 @@ export const UpdateRecurringScheduleSchema = z.object({
   customer_id: uuid.optional(),
   name: z.string().min(1).max(200).optional(),
   day_of_month: z.number().int().min(1).max(31).optional(),
+  send_hour: z.number().int().min(0).max(23).optional(),
   payment_terms_days: z.number().int().min(0).max(90).optional(),
   currency: CurrencySchema.optional(),
   your_reference: z.string().nullable().optional(),
@@ -1354,8 +1371,14 @@ export const UpdateSettingsSchema = z.object({
   // values; values are single uppercase letters A-Z. Read by the engine
   // (`createDraftEntry`) when no explicit voucher_series is passed, with a
   // fallback to 'A' for unknown keys.
+  // partialRecord, not record: in Zod 4 an enum-keyed z.record is exhaustive
+  // (every source_type required), so saving a map that omits a source type
+  // (e.g. the newly added 'result_appropriation') fails with "expected string,
+  // received undefined". The map is intentionally sparse: the settings form
+  // sends only the source types the user configured, and the engine falls back
+  // to 'A' for any unmapped key.
   default_voucher_series_per_source_type: z
-    .record(
+    .partialRecord(
       JournalEntrySourceTypeSchema,
       z.string().regex(/^[A-Z]$/, 'Verifikationsserie måste vara en bokstav A-Z'),
     )
@@ -1933,6 +1956,19 @@ export const CreateEmployeeSchema = EmployeeSchemaBase.superRefine((data, ctx) =
       code: z.ZodIssueCode.custom,
       message: 'Växa-stödets slutdatum måste vara efter startdatumet',
       path: ['vaxa_stod_end'],
+    })
+  }
+
+  // Bank details: validate clearing/kontonummer structure at entry so a typo is
+  // caught here rather than at Bankgirot LB generation. Both empty is allowed.
+  // Update path is validated in the PATCH route (only when the fields actually
+  // change) so legacy employees with incomplete free-text bank data can still
+  // be edited in unrelated ways.
+  for (const bankIssue of validateEmployeeBankAccount(data.clearing_number, data.bank_account_number)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: bankIssue.message,
+      path: [bankIssue.field],
     })
   }
 })

@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
-import { requireCompanyId } from '@/lib/company/context'
+import { requireCompanyId, getCompanyDisplayName } from '@/lib/company/context'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { PayslipPDF } from '@/lib/salary/pdf/payslip-template'
 import { buildPayslipData, payslipFileName } from '@/lib/salary/payslips/build-payslip-data'
@@ -69,7 +69,15 @@ export async function GET(
     clearing_number: string | null; bank_account_number: string | null;
   }
 
-  const data = buildPayslipData({ run, sre, employee: emp, company })
+  // Employer name on the payslip follows the current company name
+  // (company_settings.company_name), not the frozen onboarding companies.name.
+  const displayName = await getCompanyDisplayName(supabase, companyId)
+  const data = buildPayslipData({
+    run,
+    sre,
+    employee: emp,
+    company: { name: displayName ?? company.name, org_number: company.org_number },
+  })
   const fileName = payslipFileName(run, emp)
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

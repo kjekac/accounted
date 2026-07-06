@@ -13,6 +13,7 @@ vi.mock('@/lib/init', () => ({ ensureInitialized: vi.fn() }))
 vi.mock('@/lib/auth/require-auth', () => ({ requireAuth: vi.fn() }))
 vi.mock('@/lib/company/context', () => ({
   getActiveCompanyId: vi.fn().mockResolvedValue('company-1'),
+  getCompanyDisplayName: vi.fn().mockResolvedValue('Ny Firma AB'),
 }))
 vi.mock('@/lib/auth/require-write', () => ({
   requireWritePermission: vi.fn().mockResolvedValue({ ok: true }),
@@ -193,6 +194,9 @@ describe('POST /api/salary/runs/[id]/payslips/send', () => {
     expect(emailArgs.to).toBe('anna@example.test')
     expect(emailArgs.html).toContain(`https://app.example.test/payslip/${'T'.repeat(43)}`)
     expect(emailArgs.attachments).toBeUndefined()
+    // Uses the current company name (company_settings.company_name via the
+    // resolver), not the frozen onboarding companies.name ('Bolaget AB').
+    expect(emailArgs.subject).toContain('Ny Firma AB')
   })
 
   it('records provider failures without failing the whole batch', async () => {

@@ -116,6 +116,29 @@ export function computeInitialRunDate(
 }
 
 /**
+ * Resolve the calendar date (yyyy-mm-dd) and hour (0-23) in Europe/Stockholm
+ * for a given instant. The recurring cron runs in UTC on Vercel, but users
+ * pick a send time in Swedish local time, so we need "what day and hour is it
+ * in Sweden right now". Uses Intl (DST-aware, no extra dependency); en-CA +
+ * hourCycle 'h23' guarantees zero-padded ISO-shaped parts and a 0-23 hour.
+ */
+export function getStockholmDateHour(instant: Date): { date: string; hour: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Stockholm',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(instant)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  return {
+    date: `${get('year')}-${get('month')}-${get('day')}`,
+    hour: Number(get('hour')),
+  }
+}
+
+/**
  * Spawn one invoice from a schedule. Always creates the invoice; auto_send
  * additionally renders + emails + flips status + creates JE + archives PDF.
  *

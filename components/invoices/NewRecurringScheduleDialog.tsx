@@ -27,7 +27,7 @@ import {
 import { useToast } from '@/components/ui/use-toast'
 import { useCompany } from '@/contexts/CompanyContext'
 import { Plus, Trash2 } from 'lucide-react'
-import type { Customer, Currency } from '@/types'
+import type { Customer, Currency, RecurringInvoiceSchedule } from '@/types'
 import { formatCurrency } from '@/lib/utils'
 
 const currencies: Currency[] = ['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK']
@@ -36,16 +36,18 @@ const units = ['st', 'tim', 'dag', 'månad', 'km', 'kg']
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Fired after a successful create. Hosts close the dialog and refresh their list. */
-  onCreated: () => void
+  /** Fired after a successful create or edit. Hosts close the dialog and refresh their list. */
+  onSaved: () => void
+  /** When provided, the dialog edits this schedule (PATCH) instead of creating a new one. */
+  schedule?: RecurringInvoiceSchedule
 }
 
 /**
- * "Nytt schema" as a modal: mirrors NewInvoiceDialog now that regular
- * invoice creation opens in one. Card sections carry over from the old
- * /invoices/recurring/new page.
+ * "Nytt schema" / "Redigera schema" as a modal: mirrors NewInvoiceDialog now
+ * that regular invoice creation opens in one. Passing `schedule` switches it to
+ * edit mode (prefilled form, PATCH on save).
  */
-export default function NewRecurringScheduleDialog({ open, onOpenChange, onCreated }: Props) {
+export default function NewRecurringScheduleDialog({ open, onOpenChange, onSaved, schedule }: Props) {
   const t = useTranslations('invoice_recurring_new')
 
   return (
@@ -61,17 +63,30 @@ export default function NewRecurringScheduleDialog({ open, onOpenChange, onCreat
         onInteractOutside={(e) => e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle>{t('title')}</DialogTitle>
+          <DialogTitle>{schedule ? t('edit_title') : t('title')}</DialogTitle>
         </DialogHeader>
-        <NewRecurringScheduleForm onCreated={onCreated} onCancel={() => onOpenChange(false)} />
+        <NewRecurringScheduleForm
+          schedule={schedule}
+          onSaved={onSaved}
+          onCancel={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   )
 }
 
 // Inner component so form state resets whenever the dialog reopens (Radix
-// unmounts DialogContent children on close).
-function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
+// unmounts DialogContent children on close). This is also what makes edit mode
+// work: each open re-mounts with the current schedule's values as defaults.
+function NewRecurringScheduleForm({
+  schedule,
+  onSaved,
+  onCancel,
+}: {
+  schedule?: RecurringInvoiceSchedule
+  onSaved: () => void
+  onCancel: () => void
+}) {
   const { toast } = useToast()
   const { company } = useCompany()
   const supabase = createClient()
@@ -94,6 +109,7 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
       customer_id: z.string().uuid(t('validation_customer_required')),
       name: z.string().min(1, t('validation_name_required')),
       day_of_month: z.number().int().min(1).max(31),
+      send_hour: z.number().int().min(0).max(23),
       payment_terms_days: z.number().int().min(0).max(90),
       currency: z.enum(['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK']),
       auto_send: z.boolean(),
@@ -111,18 +127,45 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
     control,
     handleSubmit,
     watch,
+    setValue,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
-    defaultValues: {
-      customer_id: '',
-      name: '',
-      day_of_month: 15,
-      payment_terms_days: 30,
-      currency: 'SEK',
-      auto_send: false,
-      items: [{ description: '', quantity: 1, unit: 'st', unit_price: 0, vat_rate: 25 }],
-    },
+    defaultValues: schedule
+      ? {
+          customer_id: schedule.customer_id,
+          name: schedule.name,
+          day_of_month: schedule.day_of_month,
+          send_hour: schedule.send_hour ?? 8,
+          payment_terms_days: schedule.payment_terms_days,
+          currency: schedule.currency,
+          auto_send: schedule.auto_send,
+          your_reference: schedule.your_reference ?? undefined,
+          our_reference: schedule.our_reference ?? undefined,
+          notes: schedule.notes ?? undefined,
+          items:
+            schedule.items && schedule.items.length > 0
+              ? [...schedule.items]
+                  .sort((a, b) => a.sort_order - b.sort_order)
+                  .map((it) => ({
+                    description: it.description,
+                    quantity: it.quantity,
+                    unit: it.unit,
+                    unit_price: it.unit_price,
+                    vat_rate: (it.vat_rate as 0 | 6 | 12 | 25 | null) ?? null,
+                  }))
+              : [{ description: '', quantity: 1, unit: 'st', unit_price: 0, vat_rate: 25 }],
+        }
+      : {
+          customer_id: '',
+          name: '',
+          day_of_month: 15,
+          send_hour: 8,
+          payment_terms_days: 30,
+          currency: 'SEK',
+          auto_send: false,
+          items: [{ description: '', quantity: 1, unit: 'st', unit_price: 0, vat_rate: 25 }],
+        },
   })
 
   const { fields, append, remove } = useFieldArray({ control, name: 'items' })
@@ -140,20 +183,23 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
   async function onSubmit(data: FormData) {
     setIsSubmitting(true)
     try {
-      const res = await fetch('/api/invoices/recurring', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      })
+      const res = await fetch(
+        schedule ? `/api/invoices/recurring/${schedule.id}` : '/api/invoices/recurring',
+        {
+          method: schedule ? 'PATCH' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        },
+      )
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.error || t('create_failed_fallback'))
       }
-      toast({ title: t('created_title') })
-      onCreated()
+      toast({ title: schedule ? t('updated_title') : t('created_title') })
+      onSaved()
     } catch (err) {
       toast({
-        title: t('create_failed_title'),
+        title: schedule ? t('update_failed_title') : t('create_failed_title'),
         description: err instanceof Error ? err.message : undefined,
         variant: 'destructive',
       })
@@ -164,6 +210,20 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
 
   const items = watch('items')
   const watchCurrency = watch('currency')
+  // Automatic sending requires a customer email; without one the cron would
+  // just produce a monthly draft + warning. Block it at the source.
+  const watchCustomerId = watch('customer_id')
+  const selectedCustomer = customers.find((c) => c.id === watchCustomerId)
+  const customerMissingEmail = !!selectedCustomer && !selectedCustomer.email
+
+  // The onValueChange guard on the customer select only fires on a manual
+  // change. In edit mode a schedule can load with auto_send=true against a
+  // customer who has since lost their email (customers load async, after the
+  // form's defaultValues). Force auto_send off whenever the effective customer
+  // has no email so a disabled-but-checked box can't PATCH auto_send=true.
+  useEffect(() => {
+    if (customerMissingEmail) setValue('auto_send', false)
+  }, [customerMissingEmail, setValue])
   const subtotalRaw = items.reduce(
     (sum, it) => sum + (it.quantity || 0) * (it.unit_price || 0),
     0,
@@ -196,7 +256,16 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
               control={control}
               name="customer_id"
               render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
+                <Select
+                  value={field.value}
+                  onValueChange={(v) => {
+                    field.onChange(v)
+                    // Switching to a customer without email while auto-send is
+                    // checked would create an unsendable schedule.
+                    const c = customers.find((x) => x.id === v)
+                    if (!c?.email) setValue('auto_send', false)
+                  }}
+                >
                   <SelectTrigger id="customer_id">
                     <SelectValue placeholder={t('customer_placeholder')} />
                   </SelectTrigger>
@@ -215,7 +284,7 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <Label htmlFor="day_of_month">{t('day_label')}</Label>
               <Input
@@ -228,6 +297,33 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
               />
               <p className="text-xs text-muted-foreground mt-1">
                 {t('day_hint')}
+              </p>
+            </div>
+            <div>
+              <Label htmlFor="send_hour">{t('send_hour_label')}</Label>
+              <Controller
+                control={control}
+                name="send_hour"
+                render={({ field }) => (
+                  <Select
+                    value={String(field.value)}
+                    onValueChange={(v) => field.onChange(Number(v))}
+                  >
+                    <SelectTrigger id="send_hour" className="tabular-nums">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 24 }, (_, h) => h).map((h) => (
+                        <SelectItem key={h} value={String(h)} className="tabular-nums">
+                          {`${String(h).padStart(2, '0')}:00`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                {t('send_hour_hint')}
               </p>
             </div>
             <div>
@@ -275,6 +371,7 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
                     id="auto_send"
                     checked={field.value}
                     onChange={(e) => field.onChange(e.target.checked)}
+                    disabled={customerMissingEmail}
                     className="mt-1 h-4 w-4"
                   />
                 )}
@@ -286,6 +383,11 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
                 <p className="text-sm text-muted-foreground mt-1">
                   {t('auto_send_description')}
                 </p>
+                {customerMissingEmail && (
+                  <p className="text-sm text-warning-foreground mt-1">
+                    {t('auto_send_missing_email')}
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -403,7 +505,13 @@ function NewRecurringScheduleForm({ onCreated, onCancel }: { onCreated: () => vo
           {t('cancel')}
         </Button>
         <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? t('creating') : t('create_schedule')}
+          {schedule
+            ? isSubmitting
+              ? t('saving')
+              : t('save_changes')
+            : isSubmitting
+              ? t('creating')
+              : t('create_schedule')}
         </Button>
       </div>
     </form>

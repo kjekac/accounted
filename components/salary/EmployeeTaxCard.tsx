@@ -25,6 +25,12 @@ interface EmployeeTaxCardProps {
   /** Income year the table/column applies to. Defaults to the current year. */
   year?: number
   disabled?: boolean
+  /**
+   * Render the fields without the Card chrome (no border/header), for hosts
+   * that lay their own section dividers around it (e.g. the compact
+   * NewEmployeeDialog). The edit page keeps the default boxed rendering.
+   */
+  flat?: boolean
   onChange: (value: EmployeeTaxValue) => void
 }
 
@@ -43,6 +49,7 @@ export default function EmployeeTaxCard({
   initial,
   year,
   disabled,
+  flat,
   onChange,
 }: EmployeeTaxCardProps) {
   const t = useTranslations('salary_employee')
@@ -88,12 +95,8 @@ export default function EmployeeTaxCard({
     })
   }, [fSkatt, sido, tableNumber, effectiveColumn, municipality, requiresTable])
 
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">{t('tax_title')}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
+  const body = (
+    <>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label htmlFor="f_skatt_status">
@@ -252,7 +255,19 @@ export default function EmployeeTaxCard({
               : t('tax_no_table_f_skatt')}
           </p>
         )}
-      </CardContent>
+    </>
+  )
+
+  if (flat) {
+    return <div className="space-y-4">{body}</div>
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">{t('tax_title')}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">{body}</CardContent>
     </Card>
   )
 }

@@ -23,6 +23,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { config as dotenv } from 'dotenv'
 import { resolve } from 'node:path'
+import { encryptPersonnummer } from '@/lib/salary/personnummer'
 
 dotenv({ path: resolve(process.cwd(), '.env.local') })
 
@@ -639,7 +640,15 @@ async function seedEmployees(ctx: CompanyCtx): Promise<Record<string, string>> {
       email: 'johan@konsult.se',
     },
   ]
-  const rows = seeds.map((s) => ({ user_id: ctx.userId, company_id: ctx.companyId, ...s }))
+  // personnummer is stored encrypted at rest (aes-256-gcm); the read paths
+  // decrypt it. Seeding the raw value would 500 the roster / salary flows with
+  // ERR_CRYPTO_INVALID_AUTH_TAG. Encrypt here, keep personnummer_last4 plain.
+  const rows = seeds.map((s) => ({
+    user_id: ctx.userId,
+    company_id: ctx.companyId,
+    ...s,
+    personnummer: encryptPersonnummer(s.personnummer),
+  }))
   const { data, error } = await sb.from('employees').insert(rows).select('id, first_name')
   if (error) throw new Error(`employees: ${error.message}`)
   return Object.fromEntries((data ?? []).map((e) => [e.first_name, e.id]))

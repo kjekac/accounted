@@ -14,6 +14,10 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/use-toast'
+import {
+  DestructiveConfirmDialog,
+  useDestructiveConfirm,
+} from '@/components/ui/destructive-confirm-dialog'
 import { Loader2, Search, Trash2 } from 'lucide-react'
 
 interface PruneCandidate {
@@ -43,6 +47,7 @@ export function PruneAccountsDialog({ open, onOpenChange, onPruned }: PruneAccou
   const t = useTranslations('chart_of_accounts')
   const tCommon = useTranslations('common')
   const { toast } = useToast()
+  const { dialogProps: confirmDialogProps, confirm } = useDestructiveConfirm()
 
   const [loading, setLoading] = useState(false)
   const [candidates, setCandidates] = useState<PruneCandidate[]>([])
@@ -117,6 +122,12 @@ export function PruneAccountsDialog({ open, onOpenChange, onPruned }: PruneAccou
     [filteredCandidates, isImportedOrCustom],
   )
 
+  // Master toggle spans both groups, scoped to the current filter so it only
+  // ever selects what the user can actually see.
+  const allFilteredChecked =
+    filteredCandidates.length > 0 &&
+    filteredCandidates.every((c) => selected.has(c.account_number))
+
   function toggleAccount(accountNumber: string) {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -145,6 +156,13 @@ export function PruneAccountsDialog({ open, onOpenChange, onPruned }: PruneAccou
 
   async function handlePrune() {
     if (selected.size === 0) return
+    const confirmed = await confirm({
+      title: t('prune_confirm_title', { count: selected.size }),
+      description: t('prune_confirm_body'),
+      confirmLabel: t('prune_confirm', { count: selected.size }),
+      cancelLabel: tCommon('cancel'),
+    })
+    if (!confirmed) return
     setIsDeleting(true)
     try {
       const res = await fetch('/api/bookkeeping/accounts/prune', {
@@ -225,6 +243,7 @@ export function PruneAccountsDialog({ open, onOpenChange, onPruned }: PruneAccou
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(v) => !isDeleting && onOpenChange(v)}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
@@ -254,6 +273,21 @@ export function PruneAccountsDialog({ open, onOpenChange, onPruned }: PruneAccou
                 className="pl-9"
               />
             </div>
+            {filteredCandidates.length > 0 && (
+              <label className="flex items-center gap-3 text-sm cursor-pointer">
+                <Checkbox
+                  checked={allFilteredChecked}
+                  onCheckedChange={(checked) => toggleGroup(filteredCandidates, checked === true)}
+                  aria-label={t('prune_select_all')}
+                />
+                <span className="font-medium">
+                  {t('prune_select_all')}{' '}
+                  <span className="text-muted-foreground tabular-nums">
+                    ({filteredCandidates.length})
+                  </span>
+                </span>
+              </label>
+            )}
             <div className="space-y-4 max-h-[60vh] overflow-y-auto overflow-x-hidden pr-1">
               {filteredCandidates.length === 0 ? (
                 <p className="py-6 text-center text-sm text-muted-foreground">{t('no_matches')}</p>
@@ -291,5 +325,7 @@ export function PruneAccountsDialog({ open, onOpenChange, onPruned }: PruneAccou
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    <DestructiveConfirmDialog {...confirmDialogProps} />
+    </>
   )
 }

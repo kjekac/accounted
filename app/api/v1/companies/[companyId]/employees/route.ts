@@ -29,6 +29,7 @@ import { withApiV1 } from '@/lib/api/v1/with-api-v1'
 import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
 import { CreateEmployeeSchema } from '@/lib/api/schemas'
 import { maskPersonnummer } from '@/lib/api/v1/mask-personnummer'
+import { decryptPersonnummer, encryptPersonnummer } from '@/lib/salary/personnummer'
 import { getCompanyEntityType } from '@/lib/company/context'
 import { isEmploymentTypeAllowedForEntity, EF_OWNER_EMPLOYMENT_ERROR } from '@/lib/salary/employment-rules'
 
@@ -199,7 +200,10 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string }> }>(
       id: r.id,
       first_name: r.first_name,
       last_name: r.last_name,
-      personnummer_masked: maskPersonnummer(r.personnummer),
+      // Rows are encrypted at rest: decrypt before masking so the mask is
+      // birthdate-visible (YYYYMMDDXXXX). The decrypt helper passes legacy
+      // plaintext rows through unchanged.
+      personnummer_masked: maskPersonnummer(decryptPersonnummer(r.personnummer)),
       employment_type: r.employment_type,
       employment_start: r.employment_start,
       employment_end: r.employment_end,
@@ -402,7 +406,11 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
         company_id: ctx.companyId!,
         first_name: body.first_name,
         last_name: body.last_name,
-        personnummer: body.personnummer,
+        // Encrypt at rest (aes-256-gcm). This is the fix for the plaintext
+        // personnummer bug: the cookie-session route already encrypts; this
+        // path used to store the raw value, which then 500'd every
+        // decrypt-on-read path with ERR_CRYPTO_INVALID_AUTH_TAG.
+        personnummer: encryptPersonnummer(body.personnummer),
         personnummer_last4: personnummerLast4,
         employment_type: body.employment_type,
         employment_start: body.employment_start,
@@ -490,7 +498,8 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
         id: row.id,
         first_name: row.first_name,
         last_name: row.last_name,
-        personnummer_masked: maskPersonnummer(row.personnummer),
+        // Mask the plaintext input, not the stored value (now ciphertext).
+        personnummer_masked: maskPersonnummer(body.personnummer),
         employment_type: row.employment_type,
         employment_start: row.employment_start,
         employment_end: row.employment_end,

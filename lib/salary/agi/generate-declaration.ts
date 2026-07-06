@@ -166,7 +166,7 @@ export async function generateAgiDeclaration(
 
   const { data: settings } = await supabase
     .from('company_settings')
-    .select('org_number, phone, email')
+    .select('company_name, org_number, phone, email')
     .eq('company_id', companyId)
     .single()
 
@@ -192,12 +192,15 @@ export async function generateAgiDeclaration(
   }
 
   // 4. Build AGI input shapes.
+  // Employer name on the arbetsgivardeklaration follows the current company
+  // name (company_settings.company_name), not the frozen onboarding companies.name.
+  const companyName = settings?.company_name || company.name
   const companyData: AGICompanyData = {
     orgNumber: (settings?.org_number || company.org_number || '').trim(),
-    companyName: company.name,
+    companyName,
     periodYear: run.period_year,
     periodMonth: run.period_month,
-    contactName: (profile?.full_name || company.name || '').trim(),
+    contactName: (profile?.full_name || companyName || '').trim(),
     contactPhone: (settings?.phone || '').trim(),
     contactEmail: (settings?.email || profile?.email || userEmail || '').trim(),
   }

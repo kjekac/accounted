@@ -21,6 +21,7 @@ vi.mock('@/lib/salary/payslips/build-payslip-data', () => ({
 import { GET } from '../route'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { resolvePayslipToken } from '@/lib/salary/payslips/links'
+import { buildPayslipData } from '@/lib/salary/payslips/build-payslip-data'
 
 // Distinct valid-format tokens per test — the route's rate-limit map is
 // module-level state shared across this file.
@@ -96,6 +97,7 @@ describe('GET /api/payslip/[token]/pdf', () => {
       { data: { id: 'run-1', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
       { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
       { data: { name: 'Bolaget AB', org_number: null } },
+      { data: { company_name: 'Ny Firma AB' } },
     ])
 
     const response = await GET(
@@ -107,5 +109,44 @@ describe('GET /api/payslip/[token]/pdf', () => {
     expect(response.headers.get('Content-Type')).toBe('application/pdf')
     expect(response.headers.get('Cache-Control')).toBe('no-store')
     expect(response.headers.get('Content-Disposition')).toContain('lonespec_Test_2026-06.pdf')
+    // Employer name follows the current company_settings.company_name, not the
+    // frozen onboarding companies.name.
+    expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
+      expect.objectContaining({ company: { name: 'Ny Firma AB', org_number: null } }),
+    )
+  })
+
+  it('falls back to companies.name when company_settings has no company_name', async () => {
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    vi.mocked(createServiceClientNoCookies).mockReturnValue(supabase as never)
+    vi.mocked(resolvePayslipToken).mockResolvedValue({
+      ok: true,
+      link: {
+        id: 'link-1',
+        company_id: 'company-1',
+        salary_run_id: 'run-1',
+        employee_id: 'emp-1',
+        token_hash: 'h',
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        revoked_at: null,
+        access_count: 0,
+      },
+    })
+    enqueueMany([
+      { data: { id: 'run-1', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
+      { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
+      { data: { name: 'Bolaget AB', org_number: '5560000000' } },
+      { data: { company_name: null } },
+    ])
+
+    const response = await GET(
+      createMockRequest('/api/payslip/t/pdf'),
+      createMockRouteParams({ token: token('G') }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
+      expect.objectContaining({ company: { name: 'Bolaget AB', org_number: '5560000000' } }),
+    )
   })
 })

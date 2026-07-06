@@ -62,19 +62,22 @@ describe('GET /api/bookkeeping/accounts/reference', () => {
     expect(res.status).toBe(401)
   })
 
-  it('pages the chart with a stable account_number order and merges activation status', async () => {
+  it('pages the chart with a stable account_number order and returns activation status', async () => {
     const { supabase, calls } = createCapturingSupabase([
       { data: [{ account_number: '1930', is_active: true, is_system_account: false }] },
     ])
     requireAuthMock.mockResolvedValue({ user: { id: 'user-1' }, supabase, error: null })
 
     const { status, body } = await parseJsonResponse<{
-      data: Array<{ account_number: string; is_activated: boolean }>
+      data: Array<{ account_number: string; is_active: boolean; is_system_account: boolean }>
     }>(await referenceGET(createMockRequest('/api/bookkeeping/accounts/reference'), routeParams))
 
     expect(status).toBe(200)
-    const activated = body.data.find((a) => a.account_number === '1930')
-    expect(activated?.is_activated).toBe(true)
+    // The route returns only the company's activation rows; the BAS catalog is
+    // merged client-side against the bundled reference data.
+    const row = body.data.find((a) => a.account_number === '1930')
+    expect(row?.is_active).toBe(true)
+    expect(row?.is_system_account).toBe(false)
     // Paging-stability regression guard.
     expect(calls.filter((c) => c.method === 'order').map((c) => c.args[0])).toContain(
       'account_number'

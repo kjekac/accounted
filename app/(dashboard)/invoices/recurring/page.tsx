@@ -30,6 +30,7 @@ type ScheduleRow = RecurringInvoiceSchedule & {
 export default function RecurringInvoicesPage() {
   const [schedules, setSchedules] = useState<ScheduleRow[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [runningId, setRunningId] = useState<string | null>(null)
   const { canWrite } = useCanWrite()
   const { toast } = useToast()
   const router = useRouter()
@@ -43,6 +44,14 @@ export default function RecurringInvoicesPage() {
   const showNewSchedule = searchParams.has('new')
   const closeNewSchedule = () => router.replace('/invoices/recurring', { scroll: false })
   const openNewSchedule = () => router.push('/invoices/recurring?new=1', { scroll: false })
+
+  // Editing reuses the same modal, driven by ?edit=<id>. The schedule is taken
+  // from the already-loaded list (it carries items + send_hour), so clicking a
+  // row opens a prefilled form with no extra fetch.
+  const editId = searchParams.get('edit')
+  const editSchedule = editId ? schedules.find((s) => s.id === editId) : undefined
+  const closeEdit = () => router.replace('/invoices/recurring', { scroll: false })
+  const openEdit = (id: string) => router.push(`/invoices/recurring?edit=${id}`, { scroll: false })
 
   async function fetchSchedules() {
     setIsLoading(true)
@@ -67,6 +76,15 @@ export default function RecurringInvoicesPage() {
 
   async function togglePause(s: ScheduleRow) {
     const next = s.status === 'active' ? 'paused' : 'active'
+    // Reactivating an auto-send schedule resumes automatic emails to the
+    // customer, so make the user consciously confirm they mean to turn it on.
+    if (
+      next === 'active' &&
+      s.auto_send &&
+      !confirm(t('resume_autosend_confirm', { name: s.name }))
+    ) {
+      return
+    }
     const res = await fetch(`/api/invoices/recurring/${s.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -82,6 +100,31 @@ export default function RecurringInvoicesPage() {
         title: t('schedule_update_failed_title'),
         variant: 'destructive',
       })
+    }
+  }
+
+  async function runNow(s: ScheduleRow) {
+    // In-flight guard: a second click while the request runs would create a
+    // duplicate invoice for the customer.
+    if (runningId) return
+    if (!confirm(t('run_now_confirm', { name: s.name }))) return
+    setRunningId(s.id)
+    try {
+      const res = await fetch(`/api/invoices/recurring/${s.id}/run`, { method: 'POST' })
+      if (res.ok) {
+        const json = await res.json().catch(() => ({}))
+        const warning = (json?.data?.warning as string | null | undefined) ?? undefined
+        toast({
+          title: t('run_now_success_title'),
+          description: warning,
+          variant: warning ? 'destructive' : undefined,
+        })
+        fetchSchedules()
+      } else {
+        toast({ title: t('run_now_failed_title'), variant: 'destructive' })
+      }
+    } finally {
+      setRunningId(null)
     }
   }
 
@@ -154,8 +197,8 @@ export default function RecurringInvoicesPage() {
                 {schedules.map((s) => (
                   <TableRow
                     key={s.id}
-                    className="cursor-pointer"
-                    onClick={() => router.push(`/invoices/recurring/${s.id}`)}
+                    className={canWrite ? 'cursor-pointer' : undefined}
+                    onClick={canWrite ? () => openEdit(s.id) : undefined}
                   >
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
@@ -171,7 +214,15 @@ export default function RecurringInvoicesPage() {
                     <TableCell className="text-muted-foreground">
                       {s.customer?.name ?? '-'}
                     </TableCell>
-                    <TableCell className="tabular-nums">{s.day_of_month}</TableCell>
+                    <TableCell className="tabular-nums">
+                      {s.day_of_month}
+                      <span className="text-muted-foreground">
+                        {' · '}
+                        {t('send_time', {
+                          time: `${String(s.send_hour ?? 8).padStart(2, '0')}:00`,
+                        })}
+                      </span>
+                    </TableCell>
                     <TableCell className="tabular-nums">{formatDate(s.next_run_date)}</TableCell>
                     <TableCell>
                       {s.status === 'active' ? (
@@ -190,6 +241,14 @@ export default function RecurringInvoicesPage() {
                       >
                         {canWrite && (
                           <>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              disabled={runningId !== null}
+                              onClick={() => runNow(s)}
+                            >
+                              {t('run_now')}
+                            </Button>
                             <Button
                               variant="secondary"
                               size="sm"
@@ -221,8 +280,20 @@ export default function RecurringInvoicesPage() {
         onOpenChange={(open) => {
           if (!open) closeNewSchedule()
         }}
-        onCreated={() => {
+        onSaved={() => {
           closeNewSchedule()
+          fetchSchedules()
+        }}
+      />
+
+      <NewRecurringScheduleDialog
+        open={!!editSchedule}
+        schedule={editSchedule}
+        onOpenChange={(open) => {
+          if (!open) closeEdit()
+        }}
+        onSaved={() => {
+          closeEdit()
           fetchSchedules()
         }}
       />

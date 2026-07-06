@@ -9,6 +9,10 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useToast } from '@/components/ui/use-toast'
 import { AccountNumber } from '@/components/ui/account-number'
+import {
+  DestructiveConfirmDialog,
+  useDestructiveConfirm,
+} from '@/components/ui/destructive-confirm-dialog'
 import { AddAccountDialog } from './AddAccountDialog'
 import { EditAccountDialog } from './EditAccountDialog'
 import { PruneAccountsDialog } from './PruneAccountsDialog'
@@ -24,7 +28,7 @@ import {
   BookOpen,
 } from 'lucide-react'
 import type { BASAccount } from '@/types'
-import { isStandardBASAccount, type BASReferenceAccount } from '@/lib/bookkeeping/bas-reference'
+import { BAS_REFERENCE, isStandardBASAccount, type BASReferenceAccount } from '@/lib/bookkeeping/bas-reference'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,6 +47,8 @@ interface ReferenceAccount extends BASReferenceAccount {
 export default function ChartOfAccountsManager() {
   const { toast } = useToast()
   const t = useTranslations('chart_of_accounts')
+  const tCommon = useTranslations('common')
+  const { dialogProps: confirmDialogProps, confirm } = useDestructiveConfirm()
 
   const classLabel = (cls: number): string => {
     if (cls < 1 || cls > 8) return ''
@@ -69,6 +75,10 @@ export default function ChartOfAccountsManager() {
   const [referenceAccounts, setReferenceAccounts] = useState<ReferenceAccount[]>([])
   const [usageCounts, setUsageCounts] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
+  // The BAS catalog + K2 default are fetched lazily the first time the user
+  // opens that tab, so they never block the default "Mina konton" view.
+  const [referenceLoaded, setReferenceLoaded] = useState(false)
+  const [referenceLoading, setReferenceLoading] = useState(false)
 
   // Dialog state
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -90,10 +100,27 @@ export default function ChartOfAccountsManager() {
     setAccounts(data || [])
   }, [])
 
+  // The server sends only the company's per-account activation status; the BAS
+  // catalog is static and already bundled here, so we merge client-side rather
+  // than re-download ~1,300 catalog rows on every load.
   const fetchReference = useCallback(async () => {
     const res = await fetch('/api/bookkeeping/accounts/reference')
     const { data } = await res.json()
-    setReferenceAccounts(data || [])
+    const userMap = new Map<string, { account_number: string; is_active: boolean; is_system_account: boolean }>(
+      (data || []).map(
+        (a: { account_number: string; is_active: boolean; is_system_account: boolean }) => [a.account_number, a],
+      ),
+    )
+    const merged: ReferenceAccount[] = BAS_REFERENCE.map((ref) => {
+      const userAccount = userMap.get(ref.account_number)
+      return {
+        ...ref,
+        is_activated: !!userAccount,
+        is_active: userAccount?.is_active ?? false,
+        is_system_account: userAccount?.is_system_account ?? false,
+      }
+    })
+    setReferenceAccounts(merged)
   }, [])
 
   // Per-account posting counts — drives the "Verifikat" column. Non-fatal:
@@ -116,33 +143,63 @@ export default function ChartOfAccountsManager() {
     }
   }, [])
 
+  // First paint blocks only on the user's own chart (the default view). Usage
+  // counts drive the informational "Verifikat" column and load in the
+  // background; the BAS catalog + K2 setting are deferred to tab open. This
+  // must NOT depend on hideK2Excluded: doing so re-ran the whole load a second
+  // time once the K2 default was set, doubling every fetch on each visit.
   useEffect(() => {
+    let cancelled = false
     async function load() {
       setLoading(true)
-      await Promise.all([fetchAccounts(), fetchReference(), fetchUsage()])
-      // Set K2 filter default based on company settings (plan_type)
-      if (hideK2Excluded === null) {
-        try {
-          const res = await fetch('/api/settings')
-          if (res.ok) {
-            const { data } = await res.json()
-            // Default to hiding K2-excluded accounts if the company uses K2 (plan_type === 'k1')
-            setHideK2Excluded(data?.plan_type === 'k1')
-          } else {
-            setHideK2Excluded(false)
-          }
-        } catch {
-          setHideK2Excluded(false)
-        }
-      }
-      setLoading(false)
+      await fetchAccounts()
+      if (!cancelled) setLoading(false)
     }
     load()
-  }, [fetchAccounts, fetchReference, fetchUsage, hideK2Excluded])
+    void fetchUsage()
+    return () => {
+      cancelled = true
+    }
+  }, [fetchAccounts, fetchUsage])
+
+  // Loads the BAS catalog and the K2 default on demand, once, the first time
+  // the user opens the "BAS-katalog" tab.
+  const ensureReferenceLoaded = useCallback(async () => {
+    if (referenceLoaded || referenceLoading) return
+    setReferenceLoading(true)
+    try {
+      await Promise.all([
+        fetchReference(),
+        (async () => {
+          if (hideK2Excluded !== null) return
+          try {
+            const res = await fetch('/api/settings')
+            if (res.ok) {
+              const { data } = await res.json()
+              // Default to hiding K2-excluded accounts if the company uses K2 (plan_type === 'k1')
+              setHideK2Excluded(data?.plan_type === 'k1')
+            } else {
+              setHideK2Excluded(false)
+            }
+          } catch {
+            setHideK2Excluded(false)
+          }
+        })(),
+      ])
+      setReferenceLoaded(true)
+    } finally {
+      setReferenceLoading(false)
+    }
+  }, [referenceLoaded, referenceLoading, fetchReference, hideK2Excluded])
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([fetchAccounts(), fetchReference(), fetchUsage()])
-  }, [fetchAccounts, fetchReference, fetchUsage])
+    await Promise.all([
+      fetchAccounts(),
+      fetchUsage(),
+      // Only refresh the catalog if the user has actually opened that tab.
+      ...(referenceLoaded ? [fetchReference()] : []),
+    ])
+  }, [fetchAccounts, fetchUsage, fetchReference, referenceLoaded])
 
   // -------------------------------------------
   // Actions
@@ -166,7 +223,12 @@ export default function ChartOfAccountsManager() {
   }
 
   async function deleteAccount(account: BASAccount) {
-    const confirmed = window.confirm(t('delete_confirm', { number: account.account_number, name: account.account_name }))
+    const confirmed = await confirm({
+      title: t('delete_confirm_title'),
+      description: t('delete_confirm', { number: account.account_number, name: account.account_name }),
+      confirmLabel: t('delete_confirm_action'),
+      cancelLabel: tCommon('cancel'),
+    })
     if (!confirmed) return
     setDeletingAccount(account.account_number)
     try {
@@ -298,8 +360,10 @@ export default function ChartOfAccountsManager() {
         <Tabs
           value={view}
           onValueChange={(v) => {
-            setView(v as 'my-accounts' | 'bas-catalog')
+            const next = v as 'my-accounts' | 'bas-catalog'
+            setView(next)
             setExpandedClasses(new Set())
+            if (next === 'bas-catalog') void ensureReferenceLoaded()
           }}
         >
           <TabsList>
@@ -496,6 +560,14 @@ export default function ChartOfAccountsManager() {
       {/* BAS Catalog view */}
       {view === 'bas-catalog' && (
         <div className="space-y-2">
+          {referenceLoading && referenceAccounts.length === 0 && (
+            <Card>
+              <CardContent className="p-8 text-center text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" />
+                {t('loading')}
+              </CardContent>
+            </Card>
+          )}
           {Object.entries(groupedReference)
             .sort(([a], [b]) => Number(a) - Number(b))
             .map(([cls, classAccounts]) => {
@@ -600,7 +672,7 @@ export default function ChartOfAccountsManager() {
               )
             })}
 
-          {filteredReference.length === 0 && (
+          {!referenceLoading && filteredReference.length === 0 && (
             <Card>
               <CardContent className="p-8 text-center text-muted-foreground">
                 {t('no_matches')}
@@ -611,6 +683,8 @@ export default function ChartOfAccountsManager() {
       )}
 
       {/* Dialogs */}
+      <DestructiveConfirmDialog {...confirmDialogProps} />
+
       <AddAccountDialog
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}

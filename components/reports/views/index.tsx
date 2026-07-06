@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { AlertCircle, ChevronDown, ChevronRight, Percent } from 'lucide-react'
+import { AlertCircle, ChevronDown, ChevronRight, ExternalLink, FileDown, Percent } from 'lucide-react'
 import AgentSparkleButton from '@/components/agent/AgentSparkleButton'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -1042,6 +1042,56 @@ function ReportSectionTable({
 // (räkenskapsår); undefined for monthly/quarterly (calendar periods).
 const VatDrillContext = React.createContext<{ fiscalPeriodId?: string }>({})
 
+// Skatteverket's e-service entry point for manually filing the momsdeklaration.
+// Manual filing needs no connection, so this link is the default path for
+// anyone who hasn't set up (or doesn't want) the direct-submission integration.
+const SKATTEVERKET_MOMS_URL =
+  'https://www.skatteverket.se/foretag/etjansterochblanketter/etjanster/momsocharbetsgivardeklarationer'
+
+/**
+ * Manual-filing affordance shown directly under the calculated momsdeklaration.
+ * The report is generated purely from the bookkeeping and never depends on the
+ * Skatteverket connection, so every user (including core builds with the
+ * skatteverket extension disabled) can file manually. This card makes that
+ * explicit and offers the momsdeklaration as a PDF (in hela kronor) to read off
+ * while filling in the form at skatteverket.se.
+ */
+function VatManualFilingCard({ pdfHref }: { pdfHref: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Lämna in din momsdeklaration</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Deklarationen ovan är klar. Du behöver inte vara ansluten till
+          Skatteverket för att lämna in den, du kan fylla i beloppen direkt hos
+          Skatteverket.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Ladda ner momsdeklarationen som PDF (belopp i hela kronor). Logga sedan
+          in på skatteverket.se med BankID, öppna Moms- och
+          arbetsgivardeklarationer och skriv in rutorna.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" asChild className="gap-2">
+            <a href={pdfHref} target="_blank" rel="noopener noreferrer">
+              <FileDown className="h-4 w-4" />
+              Ladda ner momsdeklaration (PDF)
+            </a>
+          </Button>
+          <Button variant="outline" size="sm" asChild className="gap-2">
+            <a href={SKATTEVERKET_MOMS_URL} target="_blank" rel="noopener noreferrer">
+              <ExternalLink className="h-4 w-4" />
+              Öppna skatteverket.se
+            </a>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function VatDeclarationView() {
   const currentYear = new Date().getFullYear()
   const currentMonth = new Date().getMonth() + 1
@@ -1242,7 +1292,10 @@ export function VatDeclarationView() {
     <VatDrillContext.Provider value={{ fiscalPeriodId: isYearly ? fiscalPeriodId : undefined }}>
     <div className="space-y-4">
       <ReportExportMenu
-        items={[{ format: 'xlsx', href: `/api/reports/vat-declaration/xlsx?${vatQueryString()}` }]}
+        items={[
+          { format: 'pdf', href: `/api/reports/vat-declaration/pdf?${vatQueryString()}` },
+          { format: 'xlsx', href: `/api/reports/vat-declaration/xlsx?${vatQueryString()}` },
+        ]}
       >
         <AgentSparkleButton
           intentId="vat.review"
@@ -1539,6 +1592,10 @@ export function VatDeclarationView() {
               </div>
             </CardContent>
           </Card>
+
+          <VatManualFilingCard
+            pdfHref={`/api/reports/vat-declaration/pdf?${vatQueryString()}`}
+          />
         </div>
       )}
 

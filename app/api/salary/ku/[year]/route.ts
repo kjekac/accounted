@@ -42,7 +42,7 @@ export async function GET(
 
   const { data: settings } = await supabase
     .from('company_settings')
-    .select('org_number, phone, email')
+    .select('company_name, org_number, phone, email')
     .eq('company_id', companyId)
     .single()
 
@@ -121,11 +121,14 @@ export async function GET(
     return NextResponse.json({ error: `Inga bokförda lönekörningar för ${yearNum}` }, { status: 404 })
   }
 
+  // Employer name on the KU10 follows the current company name
+  // (company_settings.company_name), not the frozen onboarding companies.name.
+  const companyName = settings?.company_name || company.name
   const companyData: KU10CompanyData = {
     orgNumber: (settings?.org_number || company.org_number || '').trim(),
-    companyName: company.name,
+    companyName,
     year: yearNum,
-    contactName: (profile?.full_name || company.name || '').trim(),
+    contactName: (profile?.full_name || companyName || '').trim(),
     contactPhone: (settings?.phone || '').trim(),
     contactEmail: (settings?.email || profile?.email || user.email || '').trim(),
   }

@@ -1062,6 +1062,9 @@ export interface RecurringInvoiceSchedule {
   // Monthly cadence, day-of-month 1-31. Clamped to last day of month in
   // shorter months (handled by computeNextRunDate).
   day_of_month: number
+  // Whole hour (0-23) in Europe/Stockholm time at which the schedule sends.
+  // The hourly cron only fires schedules matching the current Stockholm hour.
+  send_hour: number
   payment_terms_days: number
 
   currency: Currency

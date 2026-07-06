@@ -1,18 +1,24 @@
 import { NextResponse } from 'next/server'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { withRouteContext } from '@/lib/api/with-route-context'
-import { BAS_REFERENCE } from '@/lib/bookkeeping/bas-reference'
 
 /**
  * GET /api/bookkeeping/accounts/reference
  *
- * Returns the full BAS reference catalog merged with the user's activation status.
- * Each reference account includes: is_activated (exists in user's chart), is_active, is_system_account, is_custom.
+ * Returns the company's chart-of-accounts activation status: one lightweight
+ * row per account it holds (active or not), shaped
+ * `{ account_number, is_active, is_system_account }`.
+ *
+ * The BAS catalog itself is static and already bundled into the client
+ * (lib/bookkeeping/bas-reference); the kontoplan UI merges this activation
+ * list against that bundled catalog to render the "BAS-katalog" tab. We
+ * deliberately do NOT re-send the full ~1,300-account catalog over the wire on
+ * every page load; the browser already has that payload.
  */
 export const GET = withRouteContext('bookkeeping.accounts.reference', async (_request, ctx) => {
   const { supabase, companyId } = ctx
 
-  // Paginated with a stable unique order — a full-BAS chart exceeds the
+  // Paginated with a stable unique order: a full-BAS chart exceeds the
   // 1000-row page size, and unordered .range() paging can duplicate or skip
   // rows on page boundaries (see fetch-all.ts ordering invariant).
   try {
@@ -25,35 +31,7 @@ export const GET = withRouteContext('bookkeeping.accounts.reference', async (_re
         .range(from, to)
     )
 
-    // Build lookup map
-    const userAccountMap = new Map(
-      userAccounts.map((a) => [a.account_number, a])
-    )
-
-    // Merge reference with user status
-    const merged = BAS_REFERENCE.map((ref) => {
-      const userAccount = userAccountMap.get(ref.account_number)
-      return {
-        ...ref,
-        is_activated: !!userAccount,
-        is_active: userAccount?.is_active ?? false,
-        is_system_account: userAccount?.is_system_account ?? false,
-      }
-    })
-
-    // Also identify custom accounts (in user's chart but not in BAS reference)
-    const basNumbers = new Set(BAS_REFERENCE.map((r) => r.account_number))
-    const customAccounts = userAccounts
-      .filter((a) => !basNumbers.has(a.account_number))
-      .map((a) => ({
-        account_number: a.account_number,
-        is_custom: true,
-        is_activated: true,
-        is_active: a.is_active,
-        is_system_account: a.is_system_account,
-      }))
-
-    return NextResponse.json({ data: merged, customAccounts })
+    return NextResponse.json({ data: userAccounts })
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Failed to fetch accounts' }, { status: 500 })
   }
