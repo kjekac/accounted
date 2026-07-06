@@ -91,6 +91,13 @@ describe('transaction.categorization prompt template', () => {
     expect(out).toContain('Välj kategori från enum-listan')
   })
 
+  it('requires a categorize tool call when underlag and history are enough', () => {
+    const out = renderPrompt({ hasUnderlag: true })
+    expect(out).toContain('ANROPA gnubok_categorize_transaction')
+    expect(out).toContain('Skriv inte bara kategorin i text')
+    expect(out).toContain('exakt transaction_id')
+  })
+
   it('instructs the agent to ask follow-up questions when the underlag is unclear', () => {
     const out = renderPrompt({ hasUnderlag: true })
     expect(out).toContain('FRÅGA användaren först')
@@ -106,6 +113,7 @@ describe('transaction.categorization prompt template', () => {
     expect(out.toLowerCase()).toContain('systembolaget')
     expect(out.toLowerCase()).toContain('restaurang')
     expect(out).toContain('STÄLL en kort följdfråga')
+    expect(out).toContain('gnubok_categorize_transaction FÖRBJUDET')
     expect(out.toLowerCase()).toContain('hellre en fråga än en felaktig bokning')
   })
 
