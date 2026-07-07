@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
+import { useCompany } from '@/contexts/CompanyContext'
 import type { BankFileParseResult } from '@/lib/import/bank-file/types'
 
 interface BankAccount {
@@ -43,13 +44,16 @@ export default function BankFileConfirmStep({
 
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
   const [selectedAccount, setSelectedAccount] = useState('1930')
+  const { company } = useCompany()
 
   useEffect(() => {
-    async function fetchBankAccounts() {
+    if (!company?.id) return
+    async function fetchBankAccounts(companyId: string) {
       const supabase = createClient()
       const { data } = await supabase
         .from('chart_of_accounts')
         .select('account_number, account_name')
+        .eq('company_id', companyId)
         .eq('is_active', true)
         .gte('account_number', '1900')
         .lte('account_number', '1999')
@@ -62,8 +66,8 @@ export default function BankFileConfirmStep({
         if (!has1930) setSelectedAccount(data[0].account_number)
       }
     }
-    fetchBankAccounts()
-  }, [])
+    fetchBankAccounts(company.id)
+  }, [company?.id])
 
   if (isLoading) {
     return (
