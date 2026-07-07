@@ -89,3 +89,27 @@ export const PAID_OPERATION_CAPABILITY_MAP: Readonly<Partial<Record<string, Capa
   submit_vat_declaration: CAPABILITY.skatteverket,
   submit_agi: CAPABILITY.skatteverket,
 } as const
+
+/**
+ * Extension workspace → required capability, keyed by `sector/slug`. This is the
+ * page/nav twin of the API-route gates: an extension whose entire value is a
+ * paid service should not just 403 its writes but be hidden from the sidebar and
+ * blocked at the page so a non-payer never lands on a dead workspace.
+ *
+ * invoice-inbox is fully gated on `ai`: its reason to exist is the AI field
+ * extraction (extractInvoiceFields / gnubok_upload_document), already the paid
+ * chokepoint on every other surface (HTTP upload/attach/retry, the MCP tool).
+ * Both the sidebar item and the /e/[sector]/[slug] page read this map so the two
+ * surfaces can never drift apart.
+ */
+export const EXTENSION_REQUIRED_CAPABILITY: Readonly<Partial<Record<string, CapabilityKey>>> = {
+  'general/invoice-inbox': CAPABILITY.ai,
+} as const
+
+/** Which paid capability (if any) an extension workspace requires to be usable. */
+export function requiredCapabilityForExtension(
+  sector: string,
+  slug: string,
+): CapabilityKey | undefined {
+  return EXTENSION_REQUIRED_CAPABILITY[`${sector}/${slug}`]
+}

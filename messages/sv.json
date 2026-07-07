@@ -3708,6 +3708,9 @@
     "data_source_heading": "Datakälla",
     "reads_from": "Läser från: {tables}",
     "open": "Öppna",
+    "upsell_title": "Uppgradera för att använda {name}",
+    "upsell_description": "Den här funktionen ingår i en betald prenumeration. Uppgradera för att aktivera den.",
+    "upsell_cta": "Uppgradera",
     "breadcrumb": "Tillägg",
     "extension_count": "{count} tillägg",
     "data_pattern_core": "Använder bokföringsdata",
@@ -3742,7 +3745,7 @@
     "ext_skatteverket_long_description": "Anslut till Skatteverket med BankID och skicka din momsdeklaration direkt från accounted. Spara utkast, validera, lås och signera: utan att lämna appen.",
     "ext_invoice_inbox_name": "Dokumentinkorg",
     "ext_invoice_inbox_description": "Vidarebefordra leverantörsfakturor till en unik adress: dokumenten landar här med extraherade fält",
-    "ext_invoice_inbox_long_description": "Varje bolag får en unik fakturainkorg-adress. Fakturor som skickas dit fångas automatiskt och fält som org.nr, OCR, bankgiro, belopp och förfallodatum extraheras deterministiskt från PDF-texten. Inga AI-anrop, inga molntjänster utöver Resend för e-postmottagning."
+    "ext_invoice_inbox_long_description": "Varje bolag får en unik fakturainkorg-adress. Fakturor som skickas dit fångas automatiskt och fält som org.nr, OCR, bankgiro, belopp och förfallodatum läses av med AI. Kräver AI-funktionen i din prenumeration."
   },
   "fiscal_year": {
     "label": "Räkenskapsår",

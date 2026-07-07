@@ -48,6 +48,30 @@ describe('hasCapability', () => {
     expect(await hasCapability(supabase, '11111111-1111-4111-8111-111111111111', CAPABILITY.ai)).toBe(true)
   })
 
+  it('development bypasses the gate (all-on) so gated features are testable without a subscription', async () => {
+    // This is WHY a lapsed company still sees paid surfaces under `npm run dev`.
+    vi.stubEnv('NODE_ENV', 'development')
+    const supabase = makeSupabase({}) // no grant: would be false if the gate ran
+    expect(await hasCapability(supabase, '11111111-1111-4111-8111-111111111111', CAPABILITY.ai)).toBe(true)
+  })
+
+  it('FORCE_PAYWALL=true activates the real gate in development (fail-closed on an expired grant)', async () => {
+    vi.stubEnv('NODE_ENV', 'development') // would otherwise bypass
+    vi.stubEnv('FORCE_PAYWALL', 'true')
+    const supabase = makeSupabase({
+      companies: { data: { team_id: null } },
+      capability_grants: { data: [{ expires_at: iso(-60_000) }] }, // expired
+    })
+    expect(await hasCapability(supabase, '11111111-1111-4111-8111-111111111111', CAPABILITY.ai)).toBe(false)
+  })
+
+  it('FORCE_PAYWALL never overrides self-hosted (stays all-on)', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SELF_HOSTED', 'true')
+    vi.stubEnv('FORCE_PAYWALL', 'true')
+    const supabase = makeSupabase({}) // would resolve null/false if queried
+    expect(await hasCapability(supabase, '11111111-1111-4111-8111-111111111111', CAPABILITY.ai)).toBe(true)
+  })
+
   it('returns true for an unexpired company-scoped grant', async () => {
     const supabase = makeSupabase({
       companies: { data: { team_id: null } },

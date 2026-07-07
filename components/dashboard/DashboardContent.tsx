@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import type { Deadline, OnboardingProgress } from '@/types'
 import type { SuggestedMatch, WorklistCounts } from '@/lib/worklist/types'
+import { visibleWorklistTotalFrom } from '@/lib/worklist/visible-total'
 
 const setupFreshStartKey = (companyId: string) => `erp_setup_fresh_start:${companyId}`
 
@@ -109,10 +110,14 @@ export default function DashboardContent({ companyId, summary, worklist, suggest
     }).format(amount)
   }
 
-  // One number, one source: the worklist total plus expiring bank connections
-  // (dashboard-only, not a lib/worklist category). Must match AttGoraSection's
-  // header so the tile and the section never disagree.
-  const todoCount = worklist.total + (summary.expiringBankConnections?.length ?? 0)
+  // One number, one source (visibleWorklistTotal): the worklist total plus
+  // expiring bank connections (dashboard-only), minus the hidden paid inbox row
+  // for non-payers. Must match AttGoraSection's header off the same helper.
+  const todoCount = visibleWorklistTotalFrom(
+    worklist,
+    hasAi,
+    summary.expiringBankConnections?.length ?? 0,
+  )
 
   return (
     <div className="stagger-enter space-y-8">

@@ -33,8 +33,15 @@ function isSelfHosted(): boolean {
  *     production build. Never set this in a hosted environment.
  */
 function isPaywallBypassed(): boolean {
+  // Self-hosted is genuinely all-on: never gate it.
+  if (isSelfHosted()) return true
+  // Escape hatch to exercise the REAL gate in local dev, where the paywall is
+  // otherwise all-on so every paid feature is testable without a subscription.
+  // Set FORCE_PAYWALL=true to see the paid/non-paid UX (nav hiding, page upsells)
+  // exactly as a non-payer would. Fail-safe: it can only make gating stricter, so
+  // it is harmless if it ever leaks into a hosted env. Wins over the dev bypass.
+  if (process.env.FORCE_PAYWALL === 'true') return false
   return (
-    isSelfHosted() ||
     process.env.NODE_ENV === 'development' ||
     process.env.DISABLE_PAYWALL === 'true'
   )

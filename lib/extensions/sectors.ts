@@ -1,6 +1,8 @@
 import type { Sector, SectorSlug, ExtensionDefinition } from './types'
 import { EXTENSION_DEFINITIONS } from './_generated/sector-definitions'
 import { WORKSPACES } from './_generated/workspace-map'
+import { requiredCapabilityForExtension } from '@/lib/entitlements/keys'
+import type { CapabilityKey } from '@/lib/entitlements/keys'
 
 // ============================================================
 // Sector & Extension Registry
@@ -38,6 +40,17 @@ export function getSector(slug: SectorSlug): Sector | undefined {
 export function getExtensionDefinition(sectorSlug: string, extensionSlug: string): ExtensionDefinition | undefined {
   const sector = SECTORS.find(s => s.slug === sectorSlug)
   return sector?.extensions.find(e => e.slug === extensionSlug)
+}
+
+/**
+ * Paid capability an extension requires, resolved by its registry id (== slug).
+ * The API-route dispatcher keys off this so a paid extension is gated at the
+ * request chokepoint, reusing the same EXTENSION_REQUIRED_CAPABILITY map that
+ * hides its sidebar item and blocks its page (lib/entitlements/keys).
+ */
+export function requiredCapabilityForExtensionId(extensionId: string): CapabilityKey | undefined {
+  const ext = getAllExtensions().find(e => e.slug === extensionId)
+  return ext ? requiredCapabilityForExtension(ext.sector, ext.slug) : undefined
 }
 
 export function getAllExtensions(): ExtensionDefinition[] {

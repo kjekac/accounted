@@ -98,7 +98,7 @@ export const EXTENSION_DEFINITIONS: Record<string, ExtensionDefinition[]> = {
           "icon": "Inbox",
           "dataPattern": "both",
           "description": "Vidarebefordra leverantörsfakturor till en unik adress: dokumenten landar här med extraherade fält",
-          "longDescription": "Varje bolag får en unik fakturainkorg-adress. Fakturor som skickas dit fångas automatiskt och fält som org.nr, OCR, bankgiro, belopp och förfallodatum läses av med AI (kräver AI-funktionen). Utan AI lagras dokumentet ändå och fälten fylls i manuellt.",
+          "longDescription": "Varje bolag får en unik fakturainkorg-adress. Fakturor som skickas dit fångas automatiskt och fält som org.nr, OCR, bankgiro, belopp och förfallodatum läses av med AI. Kräver AI-funktionen i din prenumeration.",
           "readsCoreTables": [
                 "document_attachments",
                 "suppliers"

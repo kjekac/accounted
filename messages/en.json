@@ -3708,6 +3708,9 @@
     "data_source_heading": "Data source",
     "reads_from": "Reads from: {tables}",
     "open": "Open",
+    "upsell_title": "Upgrade to use {name}",
+    "upsell_description": "This feature is included in a paid subscription. Upgrade to enable it.",
+    "upsell_cta": "Upgrade",
     "breadcrumb": "Extensions",
     "extension_count": "{count} extensions",
     "data_pattern_core": "Uses bookkeeping data",
@@ -3742,7 +3745,7 @@
     "ext_skatteverket_long_description": "Connect to Skatteverket with BankID and submit your VAT declaration directly from accounted. Save drafts, validate, lock and sign: without leaving the app.",
     "ext_invoice_inbox_name": "Document inbox",
     "ext_invoice_inbox_description": "Forward supplier invoices to a unique address: documents land here with extracted fields",
-    "ext_invoice_inbox_long_description": "Each company gets a unique invoice inbox address. Invoices sent there are captured automatically and fields such as org. no., OCR, bankgiro, amount and due date are extracted deterministically from the PDF text. No AI calls, no cloud services beyond Resend for email delivery."
+    "ext_invoice_inbox_long_description": "Each company gets a unique invoice inbox address. Invoices sent there are captured automatically and fields such as org. no., OCR, bankgiro, amount and due date are read with AI. Requires the AI feature in your subscription."
   },
   "fiscal_year": {
     "label": "Fiscal year",

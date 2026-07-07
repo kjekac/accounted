@@ -56,6 +56,7 @@ import AgentAvatar from '@/components/agent/AgentAvatar'
 import { useAgentSheet } from '@/components/agent/AgentSheetProvider'
 import { useCompany } from '@/contexts/CompanyContext'
 import { useRealtimeSupabase } from '@/lib/hooks/use-realtime-supabase'
+import { EXTENSION_REQUIRED_CAPABILITY, type CapabilityKey } from '@/lib/entitlements/keys'
 import type { EntityType } from '@/types'
 
 void _ENABLED_EXTENSION_IDS
@@ -146,6 +147,10 @@ interface NavItem {
   // company_settings.dimensions_enabled (UI-visibility gate only; the pages
   // and APIs work regardless, dimensions plan §2).
   requiresDimensions?: boolean
+  // Paywall surfaces: hidden unless the active company holds this paid
+  // capability. Cosmetic only, the page and API gates are the real
+  // enforcement; this just keeps the sidebar honest for non-payers.
+  requiredCapability?: CapabilityKey
   hidden?: boolean
   comingSoon?: boolean
   devBadge?: boolean
@@ -164,7 +169,7 @@ const navItems: NavItem[] = [
   // enskild firma that hires staff gets payroll. Owner self-payroll stays
   // blocked at the engine/DB layer (EF owner takes egna uttag, not lön). #782
   { href: '/bookkeeping', labelKey: 'bookkeeping', icon: BookOpen, group: 'arbeta' },
-  { href: '/e/general/invoice-inbox', labelKey: 'invoice_inbox', icon: Inbox, group: 'arbeta' },
+  { href: '/e/general/invoice-inbox', labelKey: 'invoice_inbox', icon: Inbox, group: 'arbeta', requiredCapability: EXTENSION_REQUIRED_CAPABILITY['general/invoice-inbox'] },
   { href: '/transactions', labelKey: 'transactions', icon: ArrowLeftRight, group: 'arbeta' },
   { href: '/pending', labelKey: 'review', icon: ClipboardCheck, group: 'arbeta' },
   { href: '/invoices', labelKey: 'invoices', icon: ReceiptText, group: 'arbeta' },
@@ -225,7 +230,7 @@ export default function DashboardNav({ companyName: _companyName, entityType, pa
   const pathname = usePathname()
   const router = useRouter()
   const supabase = useRealtimeSupabase()
-  const { company } = useCompany()
+  const { company, capabilities } = useCompany()
   // Agent identity drives the "Assistent" nav icon: when the user has
   // built their assistant we show its chosen avatar instead of the
   // generic Sparkles glyph.
@@ -399,6 +404,10 @@ export default function DashboardNav({ companyName: _companyName, entityType, pa
     // Dimension surfaces are hidden until the company opts in via the
     // bookkeeping settings toggle (company_settings.dimensions_enabled).
     if (item.requiresDimensions && !dimensionsEnabled) return false
+    // Paywalled surfaces (e.g. the AI-only Dokumentinkorg) are hidden unless
+    // the active company holds the capability. The page + API gates enforce
+    // the paywall; this keeps the sidebar from advertising a dead workspace.
+    if (item.requiredCapability && !capabilities.includes(item.requiredCapability)) return false
     // Hide the Assistent (/chat) tab until the agent is built: mirrors the
     // floating AgentTrigger and avoids a nav entry that only bounces to the
     // home checklist (chat/layout redirects unverified users to /).
