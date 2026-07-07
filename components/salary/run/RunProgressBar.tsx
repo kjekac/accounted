@@ -4,6 +4,8 @@ import { useTranslations, useLocale } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { ArrowLeftCircle, Eye, FileDown, Loader2, Send } from 'lucide-react'
 import { formatDateLong } from '@/lib/utils'
+import { useCapability } from '@/contexts/CompanyContext'
+import { CAPABILITY } from '@/lib/entitlements/keys'
 import type { RunDetail } from './types'
 
 type StepState = 'done' | 'active' | 'upcoming'
@@ -45,6 +47,7 @@ export function RunProgressBar(props: RunProgressBarProps) {
   const rank = STATUS_RANK[run.status] ?? 0
   const busy = !!actionLoading
   const deliveries = run.payslip_deliveries_summary
+  const hasEmailSend = useCapability(CAPABILITY.email_send)
 
   function spinnerOr(icon: React.ReactNode, key: string) {
     return actionLoading === key ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : icon
@@ -128,19 +131,25 @@ export function RunProgressBar(props: RunProgressBarProps) {
   const activeStep = steps.find(s => s.state === 'active')
 
   // Payslip send/download — shared by the mobile summary and the desktop bar.
+  // Email send is a paid capability (server 403s without it); the PDF
+  // download alternative right next to it stays free.
   const payslipActions = payslipsAvailable && canWrite && (
     <>
-      <Button
-        size="sm"
-        variant={deliveries && deliveries.sent > 0 ? 'outline' : 'default'}
-        onClick={props.onSendPayslips}
-        disabled={busy}
-      >
-        {spinnerOr(<Send className="mr-2 h-4 w-4" />, 'payslips-send')}
-        {deliveries && deliveries.sent > 0
-          ? t('action_send_payslips_again')
-          : t('action_send_payslips')}
-      </Button>
+      {/* The span carries the tooltip: browsers suppress `title` on
+          disabled elements, and hover events don't fire on them. */}
+      <span title={!hasEmailSend ? t('payslips_send_requires_subscription') : undefined}>
+        <Button
+          size="sm"
+          variant={deliveries && deliveries.sent > 0 ? 'outline' : 'default'}
+          onClick={props.onSendPayslips}
+          disabled={busy || !hasEmailSend}
+        >
+          {spinnerOr(<Send className="mr-2 h-4 w-4" />, 'payslips-send')}
+          {deliveries && deliveries.sent > 0
+            ? t('action_send_payslips_again')
+            : t('action_send_payslips')}
+        </Button>
+      </span>
       <Button variant="ghost" size="sm" onClick={props.onDownloadPayslips} disabled={busy}>
         {spinnerOr(<FileDown className="mr-2 h-4 w-4" />, 'bulk_payslip')}
         {t('action_download_payslips')}

@@ -15,6 +15,9 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { useCapability } from '@/contexts/CompanyContext'
+import { CAPABILITY } from '@/lib/entitlements/keys'
+import { UpgradeNote } from '@/components/billing/UpgradeNote'
 import ApprovalCard from './ApprovalCard'
 
 // Reusable chat surface: used both inside the right-hand AgentSheet and on
@@ -123,6 +126,7 @@ export default function AgentChat({
   const firstTurnFiredRef = useRef(false)
   const conversationIdRef = useRef<string | null>(initialConversationId ?? null)
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? [])
+  const hasAi = useCapability(CAPABILITY.ai)
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -157,6 +161,10 @@ export default function AgentChat({
     // alone closes that race.
     const hasResumeState = !!initialConversationId
     if (hasResumeState) return
+
+    // Paywall: never auto-fire the first invoke without the ai capability;
+    // the composer is already replaced by the upgrade note.
+    if (!hasAi) return
 
     // Seed-message path: render the user's pre-baked starter in the timeline
     // and send it as the first turn's user_message (skips intent.capture +
@@ -339,6 +347,7 @@ export default function AgentChat({
   }
 
   function handleRegenerate() {
+    if (!hasAi) return
     // Re-run the last user message and let the agent produce a fresh
     // response. UI truncates back to the last user message; DB rows are
     // append-only, so the previous assistant turn stays in agent_messages
@@ -361,6 +370,7 @@ export default function AgentChat({
   // user turn so the agent re-proposes inline: no synthetic user bubble (we
   // don't add a user row, and the turn is persisted hidden).
   function handleCorrection(correctionMessage: string) {
+    if (!hasAi) return
     void startTurn({ conversationId, userMessage: correctionMessage, hidden: true })
   }
 
@@ -549,6 +559,7 @@ export default function AgentChat({
               streamingTail={streaming && i === messages.length - 1}
               showRegenerate={
                 !streaming &&
+                hasAi &&
                 i === lastAssistantIdx &&
                 m.role === 'assistant' &&
                 m.text.length > 0
@@ -566,6 +577,14 @@ export default function AgentChat({
         )}
       </div>
 
+      {/* Paywall: /api/agent/invoke 403s without the ai capability. Replace
+          the composer with an upsell so an already-open conversation (or a
+          deep link to /chat/*) never offers an input that can't send. */}
+      {!hasAi ? (
+        <div className="border-t border-border px-5 pt-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)]">
+          <UpgradeNote>AI-assistenten kräver ett abonnemang.</UpgradeNote>
+        </div>
+      ) : (
       <form
         // padding-bottom = base 1rem + safe-area-inset-bottom on phones so
         // the iOS home indicator / Android gesture bar doesn't overlap the
@@ -619,6 +638,7 @@ export default function AgentChat({
           Enter att skicka · Shift+Enter för ny rad
         </p>
       </form>
+      )}
     </div>
   )
 }

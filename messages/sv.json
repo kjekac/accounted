@@ -2754,6 +2754,7 @@
     "validation_min_one_row": "Minst en rad krävs",
     "send_hour_label": "Skicka klockan",
     "send_hour_hint": "Svensk tid",
+    "auto_send_requires_subscription": "Automatiskt utskick kräver ett abonnemang. Fakturorna skapas ändå som utkast varje period.",
     "auto_send_missing_email": "Kunden saknar e-postadress. Lägg till en e-postadress på kundkortet för att kunna skicka automatiskt."
   },
   "invoice_send_dialog": {
@@ -4546,6 +4547,7 @@
     "action_continue": "Fortsätt",
     "action_book": "Bokför",
     "action_send_payslips": "Skicka lönebesked",
+    "payslips_send_requires_subscription": "Utskick av lönebesked via e-post kräver ett abonnemang. Ladda ner PDF:erna gratis.",
     "action_send_payslips_again": "Skicka igen",
     "action_download_payslips": "Ladda ner alla",
     "action_download_agi": "Ladda ner AGI-fil (XML)",

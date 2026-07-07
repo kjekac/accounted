@@ -2754,6 +2754,7 @@
     "validation_min_one_row": "At least one row required",
     "send_hour_label": "Send at",
     "send_hour_hint": "Swedish time",
+    "auto_send_requires_subscription": "Automatic sending requires a subscription. Invoices are still created as drafts each period.",
     "auto_send_missing_email": "The customer has no email address. Add one to the customer to enable automatic sending."
   },
   "invoice_send_dialog": {
@@ -4546,6 +4547,7 @@
     "action_continue": "Continue",
     "action_book": "Post",
     "action_send_payslips": "Send payslips",
+    "payslips_send_requires_subscription": "Emailing payslips requires a subscription. Download the PDFs for free.",
     "action_send_payslips_again": "Send again",
     "action_download_payslips": "Download all",
     "action_download_agi": "Download AGI file (XML)",
