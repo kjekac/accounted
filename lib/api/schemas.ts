@@ -401,9 +401,22 @@ export const CreateInvoiceSchema = z.object({
   // invoice. A plain optional flag (no schema refine) so UpdateInvoiceSchema's
   // .omit() keeps working on this object.
   is_self_billed: z.boolean().optional(),
-  external_invoice_number: z.string().min(1).max(64).optional(),
-  self_billing_agreement_ref: z.string().max(128).optional(),
-  received_date: isoDate.optional(),
+  // The dashboard invoice form always sends these self-billing fields (default
+  // '' in create/edit mode) even for a normal invoice, so an empty string must
+  // read as "not provided", not fail validation. Otherwise a plain
+  // external_invoice_number: '' trips the min(1) and 400s every regular invoice
+  // create. Required-when-self-billed is still enforced in the v1 route via a
+  // falsy check after parse, so normalising '' -> undefined here is safe.
+  external_invoice_number: z
+    .union([z.string().min(1).max(64), z.literal('')])
+    .transform((v) => v || undefined)
+    .optional(),
+  self_billing_agreement_ref: z
+    .string()
+    .max(128)
+    .transform((v) => v || undefined)
+    .optional(),
+  received_date: optionalIsoDate,
   items: z.array(CreateInvoiceItemSchema).min(1, 'At least one item is required'),
 })
 

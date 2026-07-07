@@ -806,6 +806,23 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     )
   }
 
+  // The form always carries the self-billing fields (they default to '' in both
+  // create and edit mode). This editor's normal create/draft/edit flows never
+  // use self-billing, that goes through the dedicated /api/invoices/self-billed
+  // path, so drop these empty carriers before spreading the form data into the
+  // /api/invoices (or PATCH) body: a bare external_invoice_number: '' otherwise
+  // trips the shared CreateInvoiceSchema's min(1). Belt-and-suspenders; the
+  // server schema also coerces '' to undefined for these fields.
+  function stripSelfBillingFields(data: FormData): FormData {
+    const {
+      external_invoice_number: _ein,
+      self_billing_agreement_ref: _sbar,
+      received_date: _rd,
+      ...rest
+    } = data
+    return rest
+  }
+
   // Self-billing path: no review dialog, no PDF, no send: it arrives already
   // booked. POST straight to the dedicated endpoint and open the verifikat.
   async function handleSelfBilledSubmit(data: FormData) {
@@ -943,7 +960,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       return rest
     })
     const sanitizedPayload: CreateInvoiceInput & { default_dimensions: Record<string, string> } = {
-      ...(pendingData as CreateInvoiceInput),
+      ...(stripSelfBillingFields(pendingData) as CreateInvoiceInput),
       ore_rounding: oreRounding,
       // Invoice-level default dims: always sent so an edited draft can clear
       // them; {} means "no defaults".
@@ -1020,7 +1037,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       return rest
     })
     const payload: CreateInvoiceInput & { default_dimensions: Record<string, string> } = {
-      ...(data as CreateInvoiceInput),
+      ...(stripSelfBillingFields(data) as CreateInvoiceInput),
       save_as_draft: true,
       ore_rounding: oreRounding,
       default_dimensions: defaultDims,
@@ -1079,7 +1096,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
       return rest
     })
     const payload: CreateInvoiceInput & { default_dimensions: Record<string, string> } = {
-      ...(data as CreateInvoiceInput),
+      ...(stripSelfBillingFields(data) as CreateInvoiceInput),
       ore_rounding: oreRounding,
       default_dimensions: defaultDims,
       items: sanitizedItems as CreateInvoiceInput['items'],

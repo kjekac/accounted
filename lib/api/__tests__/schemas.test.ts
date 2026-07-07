@@ -384,6 +384,37 @@ describe('CreateInvoiceSchema', () => {
     }))
     expect(result.success).toBe(true)
   })
+
+  // Regression: the dashboard invoice form always sends the self-billing fields
+  // (default '' for a normal invoice). Empty strings must read as "not
+  // provided", not fail min(1)/isoDate, or every regular invoice create 400s.
+  it('treats empty self-billing strings as omitted (not a validation error)', () => {
+    const result = CreateInvoiceSchema.safeParse(validInvoice({
+      external_invoice_number: '',
+      self_billing_agreement_ref: '',
+      received_date: '',
+    }))
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.external_invoice_number).toBeUndefined()
+      expect(result.data.self_billing_agreement_ref).toBeUndefined()
+      expect(result.data.received_date).toBeUndefined()
+    }
+  })
+
+  it('still accepts real self-billing values', () => {
+    const result = CreateInvoiceSchema.safeParse(validInvoice({
+      is_self_billed: true,
+      external_invoice_number: 'CUST-2026-014',
+      self_billing_agreement_ref: 'AVTAL-7',
+      received_date: '2026-07-07',
+    }))
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.external_invoice_number).toBe('CUST-2026-014')
+      expect(result.data.received_date).toBe('2026-07-07')
+    }
+  })
 })
 
 describe('UpdateInvoiceSchema', () => {
