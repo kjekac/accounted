@@ -22,6 +22,10 @@
  *      lineDimensionColumns() from the dimensions JSONB map
  *      (lib/bookkeeping/dimension-resolver.ts): a new direct insert site can
  *      silently diverge the mirror columns. Tracked as a file-set.
+ *   4. pinned-dep    : a dependency pinned to an exact version (PINNED_DEPS)
+ *      whose package.json spec or locked version drifted from the pin. Guards
+ *      against a repeat of the @anthropic-ai/bedrock-sdk 0.32.0 prod outage
+ *      (empty Bedrock stream). No baseline: any drift is a hard failure.
  *
  * Usage:
  *   node scripts/checks/no-new-antipatterns.mjs            # check (CI)
@@ -130,10 +134,44 @@ function countNaiveRound() {
   return count
 }
 
+// Dependencies pinned to an EXACT version on purpose, because a bump broke prod
+// and must not silently return via `npm update`, a dependabot bump, or a manual
+// install. Any drift (in package.json OR the lockfile) fails CI. See DECISIONS.md.
+const PINNED_DEPS = [
+  {
+    name: '@anthropic-ai/bedrock-sdk',
+    version: '0.29.1',
+    reason:
+      '0.32.0 (grouped dependabot bump #884) broke Bedrock streaming in prod: empty stream, ' +
+      '"request ended without sending any chunks", taking down the AI assistant + invoice OCR. ' +
+      'Keep 0.29.1 until 0.32.x streaming is verified against Bedrock.',
+  },
+]
+
+/** Pinned deps whose package.json spec or locked version drifted from the pin. */
+function findPinnedDepViolations() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+  const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8'))
+  const declared = { ...pkg.dependencies, ...pkg.devDependencies }
+  const out = []
+  for (const pin of PINNED_DEPS) {
+    const spec = declared[pin.name]
+    if (spec !== undefined && spec !== pin.version) {
+      out.push({ ...pin, where: 'package.json', actual: spec })
+    }
+    const locked = lock.packages?.[`node_modules/${pin.name}`]?.version
+    if (locked !== undefined && locked !== pin.version) {
+      out.push({ ...pin, where: 'package-lock.json', actual: locked })
+    }
+  }
+  return out
+}
+
 const current = {
   rawRouteAuth: findRawRouteAuth(),
   naiveOreRound: countNaiveRound(),
   directJelInsert: findDirectJelInserts(),
+  pinnedDepViolations: findPinnedDepViolations(),
 }
 
 const isUpdate = process.argv.includes('--update')
@@ -190,6 +228,22 @@ if (current.directJelInsert.length) {
   )
 }
 
+// 1c. pinned-dep: a version-pinned dependency must match its pin EXACTLY, in
+// both package.json and the lockfile. No baseline: any drift is a hard failure.
+if (current.pinnedDepViolations.length) {
+  failed = true
+  console.error(`\n✗ pinned-dep: ${current.pinnedDepViolations.length} version-pinned dependency change(s):`)
+  current.pinnedDepViolations.forEach((v) =>
+    console.error(
+      `    ${v.name} in ${v.where}: found "${v.actual}", must be exactly "${v.version}".\n      ${v.reason}`,
+    ),
+  )
+  console.error(
+    '  → restore the pin (npm install <name>@<version> --save-exact). Only change PINNED_DEPS in\n' +
+      '    this script once the upstream regression is confirmed fixed.',
+  )
+}
+
 // 2. naive-ore-round: count may not increase.
 if (current.naiveOreRound > baseline.naiveOreRound.count) {
   failed = true
@@ -214,5 +268,5 @@ if (failed) {
   process.exit(1)
 }
 console.log(
-  `\n✓ Antipattern guard passed (raw-route-auth: ${current.rawRouteAuth.length}, naive-ore-round: ${current.naiveOreRound}, direct-jel-insert: 0).`,
+  `\n✓ Antipattern guard passed (raw-route-auth: ${current.rawRouteAuth.length}, naive-ore-round: ${current.naiveOreRound}, direct-jel-insert: 0, pinned-dep: 0).`,
 )

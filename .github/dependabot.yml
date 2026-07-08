@@ -49,3 +49,12 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # @anthropic-ai/bedrock-sdk is PINNED to an exact version in package.json.
+      # 0.32.0 arrived inside a grouped minor-and-patch bump (#884) and broke
+      # Bedrock streaming in prod: the SDK returned an empty stream ("request
+      # ended without sending any chunks"), taking down the in-app AI assistant
+      # and invoice OCR. Do NOT let dependabot bump it until 0.32.x streaming is
+      # verified against Bedrock. Enforced by scripts/checks/no-new-antipatterns.mjs
+      # (pinned-dep). See DECISIONS.md (2026-07-08).
+      - dependency-name: "@anthropic-ai/bedrock-sdk"

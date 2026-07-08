@@ -60,6 +60,13 @@ async function insertBookedTransaction(params: {
   )
 }
 
+/** ISO date + n days, as a UTC timestamptz string (for committed_at). */
+function plusDays(isoDate: string, n: number): string {
+  const d = new Date(`${isoDate}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString()
+}
+
 // Posted entry + lines + a booked transaction pointing at it, in one call.
 async function bookMerchant(params: {
   userId: string
@@ -80,6 +87,9 @@ async function bookMerchant(params: {
     status: 'posted',
     voucherNumber: params.voucherNumber,
     sourceType: params.sourceType ?? 'bank_transaction',
+    // Booked 3 days after the transaction: exercises the committed_at-based
+    // lag (entry_date == transaction date would give 0).
+    committedAt: plusDays(params.date, 3),
   })
   await insertLines(entryId, [
     { account: params.expenseAccount, debit: 500, credit: 0 },
@@ -299,6 +309,7 @@ describe('get_ledger_usage_stats', () => {
         userId, companyId, fiscalPeriodId,
         entryDate: d, status: 'posted',
         voucherNumber: rcVoucher++, sourceType: 'bank_transaction',
+        committedAt: plusDays(d, 3),
       })
       await insertLines(rcEntry, [
         { account: '5420', debit: 500, credit: 0 },
@@ -441,8 +452,10 @@ describe('get_ledger_usage_stats', () => {
     const stats = await callRpc(companyId, '2026-04-01')
     expect(stats.vat_treatments_used).toContain('standard_25')
     expect(stats.vat_treatments_used).not.toContain('reverse_charge_eu')
-    // All fixtures book same-day (entry_date = transaction date).
-    expect(stats.median_booking_lag_days).toBe(0)
+    // Every booked fixture sets committed_at = transaction date + 3 days, so
+    // the lag is measured from committed_at (not entry_date, which == the
+    // transaction date and would give a misleading 0).
+    expect(stats.median_booking_lag_days).toBe(3)
   })
 
   it('returns empty sections for a company with no data (isolation)', async () => {

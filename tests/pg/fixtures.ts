@@ -175,13 +175,16 @@ export async function insertDraftJournalEntry(params: {
   sourceType?: string
   sourceId?: string | null
   createdAt?: string
+  // Inserting directly as 'posted' skips the set_committed_at() trigger (it
+  // fires on draft->posted UPDATE), so committed_at stays null unless set here.
+  committedAt?: string | null
 }): Promise<string> {
   const id = randomUUID()
   await getPool().query(
     `INSERT INTO public.journal_entries
        (id, user_id, company_id, fiscal_period_id, voucher_number, voucher_series,
-        entry_date, description, source_type, source_id, status, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::timestamptz, now()))`,
+        entry_date, description, source_type, source_id, status, created_at, committed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::timestamptz, now()), $13::timestamptz)`,
     [
       id,
       params.userId,
@@ -195,6 +198,7 @@ export async function insertDraftJournalEntry(params: {
       params.sourceId ?? null,
       params.status ?? 'draft',
       params.createdAt ?? null,
+      params.committedAt ?? null,
     ],
   )
   return id
