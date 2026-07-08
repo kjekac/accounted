@@ -288,6 +288,30 @@ describe('get_ledger_usage_stats', () => {
     // Outside the window: must not count.
     await bookMerchant({ userId, companyId, fiscalPeriodId, merchantName: 'OLD VENDOR', category: 'expense_other', date: '2026-01-05', expenseAccount: '4010', voucherNumber: 7 })
 
+    // Reverse-charge EU purchase (foreign SaaS): lines are expense (5420) +
+    // calc input VAT (2645) + calc output VAT (2614) + bank (1930), tying at
+    // equal counts. The dominant contra must be the expense 5420, NOT the low
+    // VAT number 2614 that the account_number tiebreak would otherwise pick
+    // (regression for 20260708110000; observed on prod as 2614).
+    let rcVoucher = 20
+    for (const d of ['2026-05-20', '2026-06-18']) {
+      const rcEntry = await insertDraftJournalEntry({
+        userId, companyId, fiscalPeriodId,
+        entryDate: d, status: 'posted',
+        voucherNumber: rcVoucher++, sourceType: 'bank_transaction',
+      })
+      await insertLines(rcEntry, [
+        { account: '5420', debit: 500, credit: 0 },
+        { account: '2645', debit: 125, credit: 0 },
+        { account: '2614', debit: 0, credit: 125 },
+        { account: '1930', debit: 0, credit: 500 },
+      ])
+      await insertBookedTransaction({
+        companyId, userId, journalEntryId: rcEntry,
+        merchantName: 'GOOGLE WO', category: 'expense_software', date: d,
+      })
+    }
+
     // Suppliers: Telia with 3 consistent invoices (one of them multi-line,
     // which must not outvote), one credit note and one reversed invoice that
     // must both be excluded; Blandat with a 1/2 split staying below any
@@ -327,12 +351,17 @@ describe('get_ledger_usage_stats', () => {
       stats.account_usage.map((a) => [a.account_number, a]),
     )
 
-    // 6 posted in-window bank entries each carry a 1930 line; the storno's
-    // 1930 line is excluded by source_type.
-    expect(byAccount['1930'].postings).toBe(6)
+    // 8 posted in-window bank entries each carry a 1930 line (6 simple + 2
+    // reverse-charge); the storno's 1930 line is excluded by source_type.
+    expect(byAccount['1930'].postings).toBe(8)
     expect(byAccount['6570'].postings).toBe(4)
     expect(byAccount['5810'].postings).toBe(2)
     expect(byAccount['5810'].last_used).toBe('2026-06-20')
+    // The reverse-charge fixture's expense and VAT lines all appear in
+    // account_usage (which does not exclude 26xx: it answers "what accounts
+    // are used", not "what characterizes a counterparty").
+    expect(byAccount['5420'].postings).toBe(2)
+    expect(byAccount['2614'].postings).toBe(2)
 
     // Neither the reversed original nor its storno may credit 4010 postings,
     // and the draft line and out-of-window account are absent.
@@ -372,6 +401,16 @@ describe('get_ledger_usage_stats', () => {
     expect(
       stats.counterparty_patterns.find((p) => p.counterparty === 'STORNO VENDOR'),
     ).toBeUndefined()
+  })
+
+  it('picks the expense over a VAT contra for reverse-charge bookings', async () => {
+    const stats = await callRpc(companyId, '2026-04-01')
+    const google = stats.counterparty_patterns.find((p) => p.counterparty_key === 'google')
+    expect(google).toBeDefined()
+    expect(google!.occurrences).toBe(2)
+    // 5420/2645/2614 tie at equal counts; excluding 26xx leaves the expense.
+    // Without the fix the account_number tiebreak would return 2614.
+    expect(google!.dominant_account_number).toBe('5420')
   })
 
   it('orders counterparties by occurrences descending', async () => {
