@@ -88,8 +88,10 @@ export function AccountPickerDialog({
   const [isSaving, setIsSaving] = useState(false)
   const [sieLastDate, setSieLastDate] = useState<string | null>(null)
   const [chartAccounts, setChartAccounts] = useState<ChartAccount[]>([])
+  const [chartError, setChartError] = useState(false)
   const [ledgerByUid, setLedgerByUid] = useState<Record<string, string>>({})
   const [companySettings, setCompanySettings] = useState<Pick<CompanySettings, 'fiscal_year_start_month' | 'entity_type'> | null>(null)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   const [lookbackMode, setLookbackMode] = useState<LookbackMode>('fiscal-year')
   const [customSubMode, setCustomSubMode] = useState<CustomSubMode>('date')
@@ -97,9 +99,17 @@ export function AccountPickerDialog({
 
   const [progressOpen, setProgressOpen] = useState(false)
   const [progressState, setProgressState] = useState<SyncProgressState>({ kind: 'syncing' })
+  // Bumped on each new backfill so the progress dialog is keyed per attempt and
+  // remounts fresh: the dialog stays mounted across attempts, so without this a
+  // second sync would inherit the previous run's elapsed timer for a frame and
+  // briefly compute overGrace/blockClose from stale state.
+  const [syncAttempt, setSyncAttempt] = useState(0)
 
   useEffect(() => {
     if (open) {
+      // Re-arm the "settings loaded" gate each open so the fiscal-year label
+      // doesn't flash last-open's resolved date before this open's fetch lands.
+      setSettingsLoaded(false)
       const initial = new Set<string>(
         accounts.filter(a => a.enabled !== false).map(a => a.uid)
       )
@@ -140,6 +150,7 @@ export function AccountPickerDialog({
         .maybeSingle()
       if (cancelled) return
       setCompanySettings((data as { fiscal_year_start_month?: number; entity_type?: CompanySettings['entity_type'] } | null) as Pick<CompanySettings, 'fiscal_year_start_month' | 'entity_type'> | null)
+      setSettingsLoaded(true)
     })()
     return () => { cancelled = true }
   }, [open, company?.id, supabase])
@@ -174,13 +185,20 @@ export function AccountPickerDialog({
     if (!open || !company?.id) return
     let cancelled = false
     ;(async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('chart_of_accounts')
         .select('account_number, account_name')
         .eq('company_id', company.id)
         .like('account_number', '19%')
         .order('account_number', { ascending: true })
       if (cancelled) return
+      if (error) {
+        // Surface the failure: without the 19xx chart the ledger picker is
+        // silently empty, which reads as "no bank accounts exist".
+        setChartError(true)
+        return
+      }
+      setChartError(false)
       setChartAccounts((data as ChartAccount[] | null) || [])
     })()
     return () => { cancelled = true }
@@ -268,10 +286,18 @@ export function AccountPickerDialog({
 
     setIsSaving(true)
 
+    // Cap the client wait at the route's 300s budget so a hung backfill can't
+    // leave the progress modal in 'syncing' forever. The save+backfill is one
+    // request; on abort we don't know if it finished, so the message stays
+    // neutral and the parent refetch reflects the true state.
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 300_000)
+
     // For the initial-selection path, open the progress modal up-front so the
     // user has visible feedback during the 30-60s backfill. Selection edits
     // (no backfill) keep the existing toast-only feedback.
     if (isInitialSelection) {
+      setSyncAttempt((n) => n + 1)
       setProgressState({ kind: 'syncing' })
       setProgressOpen(true)
       onOpenChange(false)
@@ -294,6 +320,7 @@ export function AccountPickerDialog({
           account_mappings,
           ...(isInitialSelection && lookback.body ? lookback.body : {}),
         }),
+        signal: controller.signal,
       })
 
       const data = await response.json()
@@ -319,17 +346,21 @@ export function AccountPickerDialog({
 
       onSaved()
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Kunde inte spara kontoval'
+      const aborted = controller.signal.aborted
+      const message = aborted
+        ? 'Det tar längre tid än vanligt. Vi slutför i bakgrunden: uppdatera sidan om en stund.'
+        : (error instanceof Error ? error.message : 'Kunde inte spara kontoval')
       if (isInitialSelection) {
         setProgressState({ kind: 'failed', error: { message } })
       } else {
         toast({
-          title: 'Fel',
+          title: aborted ? 'Tar längre tid än vanligt' : 'Fel',
           description: message,
-          variant: 'destructive',
+          variant: aborted ? undefined : 'destructive',
         })
       }
     } finally {
+      clearTimeout(timeout)
       setIsSaving(false)
     }
   }
@@ -372,6 +403,7 @@ export function AccountPickerDialog({
   return (
     <>
     <BankSyncProgressDialog
+      key={syncAttempt}
       open={progressOpen}
       onOpenChange={(next) => {
         setProgressOpen(next)
@@ -459,7 +491,7 @@ export function AccountPickerDialog({
                 <span>
                   <span className="block">Sedan räkenskapsårets början</span>
                   <span className="text-xs text-muted-foreground tabular-nums">
-                    från {fiscalYearStart}
+                    från {settingsLoaded ? fiscalYearStart : '…'}
                   </span>
                 </span>
               </label>
@@ -489,7 +521,7 @@ export function AccountPickerDialog({
                         <SelectContent>
                           <SelectItem value="date">Specifikt datum</SelectItem>
                           <SelectItem value="previous-fiscal-year">
-                            Föregående räkenskapsårets start ({previousFiscalYearStart})
+                            Föregående räkenskapsårets start ({settingsLoaded ? previousFiscalYearStart : '…'})
                           </SelectItem>
                         </SelectContent>
                       </Select>
@@ -555,6 +587,12 @@ export function AccountPickerDialog({
             Varning: samma bokföringskonto används för flera valutor:
             {currencyConflicts.map(c => ` ${c.ledger} (${c.currencies.join(', ')})`).join(';')}.
             Det fungerar tekniskt men gör årsskifte med valutaomvärdering svårare.
+          </div>
+        )}
+
+        {chartError && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+            Kunde inte ladda bokföringskonton (19xx). Ladda om sidan och försök igen innan du sparar kontoval.
           </div>
         )}
 
