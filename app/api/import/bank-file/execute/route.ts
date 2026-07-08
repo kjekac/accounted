@@ -79,7 +79,7 @@ export const POST = withRouteContext(
           status: 'processing',
           date_from: transactions.map((t) => t.date).sort()[0] || null,
           date_to: transactions.map((t) => t.date).sort().reverse()[0] || null,
-        }, { onConflict: 'user_id,file_hash' })
+        }, { onConflict: 'company_id,file_hash' })
         .select()
         .single()
 
