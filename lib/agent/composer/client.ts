@@ -20,9 +20,19 @@ let cached: AnthropicBedrock | null = null
 // API.
 export function getAnthropic(): AnthropicBedrock {
   if (cached) return cached
-  const awsRegion = process.env.AWS_REGION || 'eu-north-1'
-  const awsAccessKey = process.env.AWS_ACCESS_KEY_ID
-  const awsSecretKey = process.env.AWS_SECRET_ACCESS_KEY
+  // Read Bedrock creds from BEDROCK_AWS_* first, falling back to the plain
+  // AWS_* names for local dev. On Vercel the functions run on AWS Lambda, whose
+  // runtime injects its OWN reserved AWS_REGION / AWS_ACCESS_KEY_ID /
+  // AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN for the platform execution role
+  // (wrong account, wrong region, no Bedrock access). Those shadow anything set
+  // in the dashboard, so a hosted deploy MUST use the BEDROCK_AWS_* names or the
+  // stream comes back empty ("request ended without sending any chunks").
+  const awsRegion =
+    process.env.BEDROCK_AWS_REGION || process.env.AWS_REGION || 'eu-north-1'
+  const awsAccessKey =
+    process.env.BEDROCK_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID
+  const awsSecretKey =
+    process.env.BEDROCK_AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY
   // When both static keys are present, pass them. Otherwise omit them so the
   // SDK falls back to the AWS credential provider chain (instance profile,
   // IRSA, EKS pod identity, ...). The two-overload SDK refuses a mix.

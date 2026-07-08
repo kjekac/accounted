@@ -1729,15 +1729,21 @@ export default function JournalEntryForm({
                   {t('clear_all')}
                 </Button>
               )}
-              <Button
-                variant="outline"
-                onClick={handleSaveDraft}
-                disabled={!isBalanced || !description || !selectedPeriod || !!periodMismatch || isSubmitting || isSavingDraft || isUploading || !canWrite}
-                title={!canWrite ? t('read_only_tooltip') : t('save_draft_tooltip')}
-              >
-                {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : isSavingDraft && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {t('save_draft')}
-              </Button>
+              {/* Draft-saving rides on ?as_draft=true, which only the standard
+                  journal-entries endpoint honors. A custom submitUrl (e.g. the
+                  bank-transaction /book route) ignores the flag and commits a
+                  numbered voucher, so the draft button must not render there. */}
+              {!submitUrl && (
+                <Button
+                  variant="outline"
+                  onClick={handleSaveDraft}
+                  disabled={!isBalanced || !description || !selectedPeriod || !!periodMismatch || isSubmitting || isSavingDraft || isUploading || !canWrite}
+                  title={!canWrite ? t('read_only_tooltip') : t('save_draft_tooltip')}
+                >
+                  {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : isSavingDraft && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {t('save_draft')}
+                </Button>
+              )}
               <Button
                 onClick={handleReview}
                 disabled={!isBalanced || !description || !selectedPeriod || !!periodMismatch || isSubmitting || isSavingDraft || isUploading || !canWrite}
