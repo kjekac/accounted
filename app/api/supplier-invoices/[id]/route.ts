@@ -1,28 +1,13 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
+import { withRouteContext } from '@/lib/api/with-route-context'
 import { validateBody } from '@/lib/api/validate'
 import { UpdateSupplierInvoiceSchema } from '@/lib/api/schemas'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
-import { createLogger } from '@/lib/logger'
 
-const log = createLogger('api.supplier_invoices.id')
-
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const supabase = await createClient()
+export const GET = withRouteContext<{ params: Promise<{ id: string }> }>(
+  'supplier_invoice.get',
+  async (_request, { supabase, companyId }, { params }) => {
   const { id } = await params
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const companyId = await requireCompanyId(supabase, user.id)
 
   const { data: invoice, error } = await supabase
     .from('supplier_invoices')
@@ -38,25 +23,13 @@ export async function GET(
   }
 
   return NextResponse.json({ data: invoice })
-}
+  },
+)
 
-export async function PUT(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const supabase = await createClient()
+export const PUT = withRouteContext<{ params: Promise<{ id: string }> }>(
+  'supplier_invoice.update',
+  async (request, { supabase, companyId }, { params }) => {
   const { id } = await params
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
 
   // Only allow editing registered invoices
   const { data: existing } = await supabase
@@ -94,25 +67,14 @@ export async function PUT(
   }
 
   return NextResponse.json({ data })
-}
+  },
+  { requireWrite: true },
+)
 
-export async function DELETE(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const supabase = await createClient()
+export const DELETE = withRouteContext<{ params: Promise<{ id: string }> }>(
+  'supplier_invoice.delete',
+  async (_request, { supabase, companyId, log }, { params }) => {
   const { id } = await params
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
 
   // Only allow deleting registered invoices without journal entries
   const { data: existing } = await supabase
@@ -188,4 +150,6 @@ export async function DELETE(
   }
 
   return NextResponse.json({ success: true })
-}
+  },
+  { requireWrite: true },
+)

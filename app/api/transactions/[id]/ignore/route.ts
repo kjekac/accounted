@@ -1,7 +1,5 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { withRouteContext } from '@/lib/api/with-route-context'
 
 /**
  * POST /api/transactions/[id]/ignore
@@ -15,57 +13,47 @@ import { requireWritePermission } from '@/lib/auth/require-write'
  * Refuses when the transaction is already booked; once a verifikation exists,
  * the proper way to revisit it is /uncategorize (storno).
  */
-export async function POST(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const supabase = await createClient()
-  const { id } = await params
+export const POST = withRouteContext<{ params: Promise<{ id: string }> }>(
+  'transaction.ignore',
+  async (_request, { supabase, companyId }, { params }) => {
+    const { id } = await params
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+    const { data: transaction, error: fetchError } = await supabase
+      .from('transactions')
+      .select('id, journal_entry_id, is_ignored')
+      .eq('id', id)
+      .eq('company_id', companyId)
+      .single()
 
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
+    if (fetchError || !transaction) {
+      return NextResponse.json({ error: 'Transaction not found' }, { status: 404 })
+    }
 
-  const companyId = await requireCompanyId(supabase, user.id)
+    if (transaction.journal_entry_id) {
+      return NextResponse.json(
+        { error: 'Transaktionen är redan bokförd: använd Avmatcha eller backa verifikationen för att ändra status.' },
+        { status: 409 }
+      )
+    }
 
-  const { data: transaction, error: fetchError } = await supabase
-    .from('transactions')
-    .select('id, journal_entry_id, is_ignored')
-    .eq('id', id)
-    .eq('company_id', companyId)
-    .single()
+    if (transaction.is_ignored) {
+      return NextResponse.json({ success: true, already_ignored: true })
+    }
 
-  if (fetchError || !transaction) {
-    return NextResponse.json({ error: 'Transaction not found' }, { status: 404 })
-  }
+    const { error: updateError } = await supabase
+      .from('transactions')
+      .update({ is_ignored: true })
+      .eq('id', id)
+      .eq('company_id', companyId)
 
-  if (transaction.journal_entry_id) {
-    return NextResponse.json(
-      { error: 'Transaktionen är redan bokförd: använd Avmatcha eller backa verifikationen för att ändra status.' },
-      { status: 409 }
-    )
-  }
+    if (updateError) {
+      return NextResponse.json({ error: updateError.message }, { status: 500 })
+    }
 
-  if (transaction.is_ignored) {
-    return NextResponse.json({ success: true, already_ignored: true })
-  }
-
-  const { error: updateError } = await supabase
-    .from('transactions')
-    .update({ is_ignored: true })
-    .eq('id', id)
-    .eq('company_id', companyId)
-
-  if (updateError) {
-    return NextResponse.json({ error: updateError.message }, { status: 500 })
-  }
-
-  return NextResponse.json({ success: true })
-}
+    return NextResponse.json({ success: true })
+  },
+  { requireWrite: true },
+)
 
 /**
  * DELETE /api/transactions/[id]/ignore
@@ -74,32 +62,22 @@ export async function POST(
  * no further side effects: we never created a verifikation, so there's
  * nothing to storno.
  */
-export async function DELETE(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const supabase = await createClient()
-  const { id } = await params
+export const DELETE = withRouteContext<{ params: Promise<{ id: string }> }>(
+  'transaction.unignore',
+  async (_request, { supabase, companyId }, { params }) => {
+    const { id } = await params
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+    const { error: updateError } = await supabase
+      .from('transactions')
+      .update({ is_ignored: false })
+      .eq('id', id)
+      .eq('company_id', companyId)
 
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
+    if (updateError) {
+      return NextResponse.json({ error: updateError.message }, { status: 500 })
+    }
 
-  const companyId = await requireCompanyId(supabase, user.id)
-
-  const { error: updateError } = await supabase
-    .from('transactions')
-    .update({ is_ignored: false })
-    .eq('id', id)
-    .eq('company_id', companyId)
-
-  if (updateError) {
-    return NextResponse.json({ error: updateError.message }, { status: 500 })
-  }
-
-  return NextResponse.json({ success: true })
-}
+    return NextResponse.json({ success: true })
+  },
+  { requireWrite: true },
+)

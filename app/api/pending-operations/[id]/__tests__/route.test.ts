@@ -7,13 +7,19 @@ import {
 } from '@/tests/helpers'
 
 const { supabase: mockSupabase, enqueue, reset } = createQueuedMockSupabase()
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: () => Promise.resolve(mockSupabase),
+
+// The route runs through the real withRouteContext wrapper: mock its auth,
+// company-resolution and write-permission dependencies (getActiveCompanyId,
+// not requireCompanyId, is what the wrapper calls) and inject the queued
+// Supabase mock via requireAuth so the route's own queries stay in sequence.
+const requireAuthMock = vi.fn()
+vi.mock('@/lib/auth/require-auth', () => ({
+  requireAuth: (...args: unknown[]) => requireAuthMock(...args),
 }))
 
-const requireCompanyIdMock = vi.fn()
 vi.mock('@/lib/company/context', () => ({
-  requireCompanyId: (...args: unknown[]) => requireCompanyIdMock(...args),
+  getActiveCompanyId: vi.fn().mockResolvedValue('company-1'),
+  requireCompanyId: vi.fn().mockResolvedValue('company-1'),
 }))
 
 const requireWritePermissionMock = vi.fn()
@@ -42,9 +48,8 @@ const mockUser = { id: 'user-1' }
 beforeEach(() => {
   vi.clearAllMocks()
   reset()
-  mockSupabase.auth.getUser.mockResolvedValue({ data: { user: mockUser } })
+  requireAuthMock.mockResolvedValue({ user: mockUser, supabase: mockSupabase, error: null })
   requireWritePermissionMock.mockResolvedValue({ ok: true })
-  requireCompanyIdMock.mockResolvedValue('company-1')
   mappingMock.mockReturnValue({
     debit_account: '5410',
     credit_account: '1930',
@@ -62,7 +67,12 @@ beforeEach(() => {
 
 describe('PATCH /api/pending-operations/[id]', () => {
   it('returns 401 when not authenticated', async () => {
-    mockSupabase.auth.getUser.mockResolvedValue({ data: { user: null } })
+    const { NextResponse } = await import('next/server')
+    requireAuthMock.mockResolvedValue({
+      user: null,
+      supabase: mockSupabase,
+      error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+    })
     const res = await PATCH(
       createMockRequest('/api/pending-operations/op-1', {
         method: 'PATCH',

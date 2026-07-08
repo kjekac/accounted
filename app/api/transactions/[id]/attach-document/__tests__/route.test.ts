@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { NextResponse } from 'next/server'
 import {
   parseJsonResponse,
   createMockRouteParams,
@@ -6,8 +7,10 @@ import {
 } from '@/tests/helpers'
 
 const { supabase: mockSupabase, enqueue, reset } = createQueuedMockSupabase()
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: () => Promise.resolve(mockSupabase),
+
+const requireAuthMock = vi.fn()
+vi.mock('@/lib/auth/require-auth', () => ({
+  requireAuth: (...args: unknown[]) => requireAuthMock(...args),
 }))
 
 vi.mock('@/lib/company/context', () => ({
@@ -15,8 +18,9 @@ vi.mock('@/lib/company/context', () => ({
   getActiveCompanyId: vi.fn().mockResolvedValue('company-1'),
 }))
 
+const requireWriteMock = vi.fn()
 vi.mock('@/lib/auth/require-write', () => ({
-  requireWritePermission: vi.fn().mockResolvedValue({ ok: true }),
+  requireWritePermission: (...args: unknown[]) => requireWriteMock(...args),
 }))
 
 vi.mock('@/lib/init', () => ({
@@ -30,7 +34,8 @@ const mockUser = { id: 'user-1', email: 'test@test.se' }
 beforeEach(() => {
   vi.clearAllMocks()
   reset()
-  mockSupabase.auth.getUser.mockResolvedValue({ data: { user: mockUser } })
+  requireAuthMock.mockResolvedValue({ user: mockUser, supabase: mockSupabase })
+  requireWriteMock.mockResolvedValue({ ok: true })
 })
 
 function makeReq(body: unknown, method: 'POST' | 'DELETE' = 'POST') {
@@ -43,11 +48,29 @@ function makeReq(body: unknown, method: 'POST' | 'DELETE' = 'POST') {
 
 describe('POST /api/transactions/[id]/attach-document', () => {
   it('returns 401 when not authenticated', async () => {
-    mockSupabase.auth.getUser.mockResolvedValue({ data: { user: null } })
+    requireAuthMock.mockResolvedValue({
+      user: null,
+      supabase: mockSupabase,
+      error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+    })
     const res = await POST(makeReq({ document_id: 'doc-1' }), createMockRouteParams({ id: 'tx-1' }))
     const { status, body } = await parseJsonResponse(res)
     expect(status).toBe(401)
     expect(body).toEqual({ error: 'Unauthorized' })
+  })
+
+  it('returns 403 when the caller is a viewer', async () => {
+    requireWriteMock.mockResolvedValue({
+      ok: false,
+      response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }),
+    })
+    const res = await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    const { status, body } = await parseJsonResponse(res)
+    expect(status).toBe(403)
+    expect(body).toEqual({ error: 'Forbidden' })
   })
 
   it('returns 400 when document_id missing', async () => {
@@ -234,11 +257,26 @@ describe('POST /api/transactions/[id]/attach-document', () => {
 
 describe('DELETE /api/transactions/[id]/attach-document', () => {
   it('returns 401 when not authenticated', async () => {
-    mockSupabase.auth.getUser.mockResolvedValue({ data: { user: null } })
+    requireAuthMock.mockResolvedValue({
+      user: null,
+      supabase: mockSupabase,
+      error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+    })
     const res = await DELETE(makeReq(null, 'DELETE'), createMockRouteParams({ id: 'tx-1' }))
     const { status, body } = await parseJsonResponse(res)
     expect(status).toBe(401)
     expect(body).toEqual({ error: 'Unauthorized' })
+  })
+
+  it('returns 403 when the caller is a viewer', async () => {
+    requireWriteMock.mockResolvedValue({
+      ok: false,
+      response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }),
+    })
+    const res = await DELETE(makeReq(null, 'DELETE'), createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse(res)
+    expect(status).toBe(403)
+    expect(body).toEqual({ error: 'Forbidden' })
   })
 
   it('returns 404 when transaction not in company', async () => {

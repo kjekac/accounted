@@ -3336,7 +3336,8 @@
     "source_label_supplier_invoice_paid": "Supplier payment",
     "source_label_supplier_invoice_cash_payment": "Cash payment",
     "source_label_currency_revaluation": "Currency revaluation",
-    "source_label_reminder_fee": "Reminder fee"
+    "source_label_reminder_fee": "Reminder fee",
+    "source_label_vat_settlement": "VAT settlement"
   },
   "journal_correction": {
     "title": "Correction chain",
@@ -4387,6 +4388,7 @@
     "download_pdf": "Download PDF",
     "download_excel": "Download Excel",
     "download_csv": "Download CSV",
+    "download_xml": "Download XML file",
     "export": "Export",
     "recent_heading": "Recently opened",
     "back_to_library": "Reports",

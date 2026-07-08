@@ -1,6 +1,5 @@
-import { createClient } from '@/lib/supabase/server'
+import { withRouteContext } from '@/lib/api/with-route-context'
 import { NextResponse } from 'next/server'
-import { requireCompanyId } from '@/lib/company/context'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { parseDimensionFilterParams } from '@/lib/reports/dimension-filter'
 import type { ReportSourceLine } from '@/lib/reports/source-lines'
@@ -17,18 +16,9 @@ import type { ReportSourceLine } from '@/lib/reports/source-lines'
  */
 const PAGE_LIMIT = 500
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ accountNumber: string }> }
-) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const companyId = await requireCompanyId(supabase, user.id)
+export const GET = withRouteContext<{ params: Promise<{ accountNumber: string }> }>(
+  'report.trial_balance.account_sources',
+  async (request, { supabase, companyId }, { params }) => {
   const { accountNumber } = await params
 
   const { searchParams } = new URL(request.url)
@@ -179,4 +169,4 @@ export async function GET(
       next_cursor,
     },
   })
-}
+})

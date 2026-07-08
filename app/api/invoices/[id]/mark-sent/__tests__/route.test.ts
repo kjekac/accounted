@@ -10,8 +10,10 @@ import {
 } from '@/tests/helpers'
 
 const { supabase: mockSupabase, enqueue, reset } = createQueuedMockSupabase()
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: () => Promise.resolve(mockSupabase),
+
+const requireAuthMock = vi.fn()
+vi.mock('@/lib/auth/require-auth', () => ({
+  requireAuth: (...args: unknown[]) => requireAuthMock(...args),
 }))
 
 vi.mock('@/lib/init', () => ({
@@ -89,7 +91,7 @@ describe('POST /api/invoices/[id]/mark-sent: PDF archival', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     reset()
-    mockSupabase.auth.getUser.mockResolvedValue({ data: { user: mockUser } })
+    requireAuthMock.mockResolvedValue({ user: mockUser, supabase: mockSupabase, error: null })
     mockRenderToBuffer.mockResolvedValue(Buffer.from('fake-pdf'))
     mockUploadDocument.mockResolvedValue({ id: 'doc-1' })
   })

@@ -1,6 +1,7 @@
-import { createClient, createServiceClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
+import { requireAuth } from '@/lib/auth/require-auth'
 import { validateBody } from '@/lib/api/validate'
 import { createLogger } from '@/lib/logger'
 
@@ -49,14 +50,8 @@ const SetPasswordSchema = z.object({
  * more time, but a retry will re-flip the flag.
  */
 export async function POST(request: Request) {
-  const supabase = await createClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const { user, supabase, error: authError } = await requireAuth()
+  if (authError) return authError
 
   const result = await validateBody(request, SetPasswordSchema)
   if (!result.success) return result.response

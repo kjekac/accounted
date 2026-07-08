@@ -1,5 +1,6 @@
-import { createClient, createServiceClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { requireAuth } from '@/lib/auth/require-auth'
 import { hashInviteToken } from '@/lib/auth/invite-tokens'
 
 /**
@@ -54,11 +55,8 @@ export async function GET(request: NextRequest) {
  * Team invitations are disabled: teams are single-user.
  */
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const { user, error } = await requireAuth()
+  if (error) return error
 
   const body = await request.json()
   const token = body.token as string

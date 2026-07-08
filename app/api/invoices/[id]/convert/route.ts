@@ -1,9 +1,7 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { withRouteContext } from '@/lib/api/with-route-context'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import type { Invoice } from '@/types'
 
@@ -20,23 +18,10 @@ ensureInitialized()
  * cancelled, so a partial failure in any earlier step rolls back the orphan
  * row without leaking a number.
  */
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export const POST = withRouteContext<{ params: Promise<{ id: string }> }>(
+  'invoice.convert',
+  async (request, { supabase, user, companyId }, { params }) => {
   const { id } = await params
-  const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
 
   const { data: proforma, error: proformaError } = await supabase
     .from('invoices')
@@ -168,4 +153,6 @@ export async function POST(
   }
 
   return NextResponse.json({ data: completeInvoice })
-}
+  },
+  { requireWrite: true },
+)

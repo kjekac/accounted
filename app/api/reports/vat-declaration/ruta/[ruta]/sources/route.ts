@@ -1,6 +1,5 @@
-import { createClient } from '@/lib/supabase/server'
+import { withRouteContext } from '@/lib/api/with-route-context'
 import { NextResponse } from 'next/server'
-import { requireCompanyId } from '@/lib/company/context'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import {
   ACCOUNT_RUTA,
@@ -24,18 +23,9 @@ import type { VatDeclarationRutor, VatPeriodType } from '@/types'
  */
 const PAGE_LIMIT = 500
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ ruta: string }> }
-) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const companyId = await requireCompanyId(supabase, user.id)
+export const GET = withRouteContext<{ params: Promise<{ ruta: string }> }>(
+  'report.vat_declaration.ruta_sources',
+  async (request, { supabase, companyId }, { params }) => {
   const { ruta: rutaParam } = await params
 
   const { searchParams } = new URL(request.url)
@@ -193,4 +183,4 @@ export async function GET(
       next_cursor,
     },
   })
-}
+})

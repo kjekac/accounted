@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { NextResponse } from 'next/server'
 import {
   createMockRequest,
   parseJsonResponse,
@@ -8,8 +9,10 @@ import {
 } from '@/tests/helpers'
 
 const { supabase: mockSupabase, enqueue, reset } = createQueuedMockSupabase()
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: () => Promise.resolve(mockSupabase),
+
+const requireAuthMock = vi.fn()
+vi.mock('@/lib/auth/require-auth', () => ({
+  requireAuth: (...args: unknown[]) => requireAuthMock(...args),
 }))
 
 vi.mock('@/lib/init', () => ({
@@ -43,11 +46,15 @@ describe('POST /api/supplier-invoices/[id]/uncredit', () => {
     vi.clearAllMocks()
     reset()
     eventBus.clear()
-    mockSupabase.auth.getUser.mockResolvedValue({ data: { user: mockUser } })
+    requireAuthMock.mockResolvedValue({ user: mockUser, supabase: mockSupabase, error: null })
   })
 
   it('returns 401 when not authenticated', async () => {
-    mockSupabase.auth.getUser.mockResolvedValue({ data: { user: null } })
+    requireAuthMock.mockResolvedValue({
+      user: null,
+      supabase: mockSupabase,
+      error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+    })
 
     const request = createMockRequest('/api/supplier-invoices/inv-1/uncredit', { method: 'POST' })
     const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))

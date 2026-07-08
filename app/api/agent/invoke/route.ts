@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { ensureInitialized } from '@/lib/init'
+import { requireAuth } from '@/lib/auth/require-auth'
 import { getActiveCompanyId } from '@/lib/company/context'
 import { getIntent } from '@/lib/agent/intents/registry'
 import { checkAgentRateLimit, agentRateLimitResponseBody } from '@/lib/rate-limits/agent'
@@ -68,9 +69,8 @@ const BodySchema = z.object({
 //
 // Plan ref: dev_docs/specialized-agent-plan.md §9 (chat loop).
 export async function POST(request: Request) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const { user, supabase, error } = await requireAuth()
+  if (error) return error
 
   // Generous per-user rate limit: bounds runaway Bedrock spend (loop-firing
   // sessions). Fails open on infra error.

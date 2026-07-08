@@ -179,4 +179,5 @@ export const POST = withRouteContext(
       })
     }
   },
+  { requireWrite: true },
 )

@@ -1,5 +1,5 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
+import { requireAuth } from '@/lib/auth/require-auth'
 import { extractBearerToken, validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { validateQuery } from '@/lib/api/validate'
 import { EventsQuerySchema } from '@/lib/api/schemas'
@@ -39,12 +39,12 @@ export async function GET(request: Request) {
     keyCompanyId = authResult.companyId
     supabase = createServiceClientNoCookies()
   } else {
-    supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-    userId = user.id
+    // Session auth: requireAuth enforces MFA (AAL2) on hosted, unlike a bare
+    // getUser call which skips the assurance-level check.
+    const auth = await requireAuth()
+    if (auth.error) return auth.error
+    supabase = auth.supabase
+    userId = auth.user.id
   }
 
   // Session auth resolves the active company; API-key auth uses the key's bound company.

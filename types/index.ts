@@ -1366,6 +1366,7 @@ export type JournalEntrySourceType =
   | 'accrual'
   | 'result_appropriation'
   | 'rot_rut_payout'
+  | 'vat_settlement'
 
 // Journal entry status
 export type JournalEntryStatus = 'draft' | 'posted' | 'reversed' | 'cancelled'

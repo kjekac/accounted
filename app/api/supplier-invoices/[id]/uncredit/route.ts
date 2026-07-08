@@ -1,7 +1,7 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
+import { withRouteContext } from '@/lib/api/with-route-context'
 import { reverseEntry } from '@/lib/bookkeeping/engine'
 import {
   bookkeepingErrorResponse,
@@ -9,29 +9,14 @@ import {
   EntryAlreadyReversedError,
 } from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
 import type { SupplierInvoice, SupplierInvoicePayment } from '@/types'
 
 ensureInitialized()
 
-export async function POST(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const supabase = await createClient()
+export const POST = withRouteContext<{ params: Promise<{ id: string }> }>(
+  'supplier_invoice.uncredit',
+  async (_request, { supabase, user, companyId }, { params }) => {
   const { id } = await params
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
 
   const { data: original, error: fetchError } = await supabase
     .from('supplier_invoices')
@@ -172,4 +157,6 @@ export async function POST(
     data: restored,
     reversal_entry_id: reversalEntryId,
   })
-}
+  },
+  { requireWrite: true },
+)

@@ -3336,7 +3336,8 @@
     "source_label_supplier_invoice_paid": "Leverantörsbetalning",
     "source_label_supplier_invoice_cash_payment": "Kontantbetalning",
     "source_label_currency_revaluation": "Valutaomvärdering",
-    "source_label_reminder_fee": "Påminnelseavgift"
+    "source_label_reminder_fee": "Påminnelseavgift",
+    "source_label_vat_settlement": "Momsredovisning"
   },
   "journal_correction": {
     "title": "Ändringskedja",
@@ -4387,6 +4388,7 @@
     "download_pdf": "Ladda ner PDF",
     "download_excel": "Ladda ner Excel",
     "download_csv": "Ladda ner CSV",
+    "download_xml": "Ladda ner XML-fil",
     "export": "Exportera",
     "recent_heading": "Senast öppnade",
     "back_to_library": "Rapporter",

@@ -1,8 +1,6 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { withRouteContext } from '@/lib/api/with-route-context'
 
 ensureInitialized()
 
@@ -13,10 +11,9 @@ ensureInitialized()
  * Skattekontot transactions can also flip this flag automatically (handled
  * elsewhere via the Skattekonto sync).
  */
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ period: string }> }
-) {
+export const POST = withRouteContext<{ params: Promise<{ period: string }> }>(
+  'tax_payment.mark_paid',
+  async (request, { supabase, companyId }, { params }) => {
   const { period } = await params
   const periodMatch = /^(\d{4})-(\d{2})$/.exec(period)
   if (!periodMatch) {
@@ -27,15 +24,6 @@ export async function POST(
   }
   const periodYear = parseInt(periodMatch[1], 10)
   const periodMonth = parseInt(periodMatch[2], 10)
-
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
 
   const { data: agi } = await supabase
     .from('agi_declarations')
@@ -62,4 +50,6 @@ export async function POST(
   }
 
   return NextResponse.json({ data: { ok: true } })
-}
+  },
+  { requireWrite: true },
+)

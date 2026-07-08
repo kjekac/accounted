@@ -22,6 +22,42 @@ const OUTPUT_VAT_RUTOR: (keyof VatDeclarationRutor)[] = [
 ]
 
 /**
+ * The rutor exactly as they are filed at Skatteverket: every ruta truncated to
+ * a whole krona (öretal faller bort per SFL 22 kap 1 §: dropped, not rounded to
+ * nearest) and the ruta 49 net recomputed from those truncated output/input
+ * rutor rather than from the pre-computed öre value, so the arithmetic ties out
+ * exactly to what is filed. This is NOT bookkeeping math (nothing here is
+ * posted), so the öre-precision money rule (Math.round(x*100)/100) does not
+ * apply; it mirrors the SRU income-tax path, which drops öre under the same
+ * statute.
+ *
+ * This is the single source of truth for the whole-krona amounts shared by the
+ * manual-filing PDF (buildManualFilingRows) and the eSKD XML file
+ * (lib/reports/vat-eskd-file.ts), so the two can never disagree.
+ */
+export function buildFiledAmounts(rutor: VatDeclarationRutor): {
+  /** Every ruta truncated to whole kronor. ruta49 carries its sign (negative = återfå). */
+  amounts: Record<keyof VatDeclarationRutor, number>
+  /** The recomputed ruta 49 net, signed: positive = att betala, negative = att återfå. */
+  net: number
+} {
+  // Truncate toward zero: öretal faller bort (SFL 22 kap 1 §), never round up.
+  const kr = (key: keyof VatDeclarationRutor): number => Math.trunc(rutor[key] ?? 0)
+
+  const outputVat = OUTPUT_VAT_RUTOR.reduce((sum, key) => sum + kr(key), 0)
+  const net = outputVat - kr('ruta48')
+
+  const amounts = {} as Record<keyof VatDeclarationRutor, number>
+  for (const key of Object.keys(VAT_RUTA_LABELS) as (keyof VatDeclarationRutor)[]) {
+    amounts[key] = kr(key)
+  }
+  // ruta49 is the recomputed net, not the source öre value.
+  amounts.ruta49 = net
+
+  return { amounts, net }
+}
+
+/**
  * Builds the momsdeklaration rows for manual filing at skatteverket.se, in
  * hela kronor.
  *
@@ -43,11 +79,7 @@ const OUTPUT_VAT_RUTOR: (keyof VatDeclarationRutor)[] = [
  * which stay Swedish in both locales.
  */
 export function buildManualFilingRows(rutor: VatDeclarationRutor): ManualFilingRow[] {
-  // Truncate toward zero: öretal faller bort (SFL 22 kap 1 §), never round up.
-  const kr = (key: keyof VatDeclarationRutor): number => Math.trunc(rutor[key] ?? 0)
-
-  const outputVat = OUTPUT_VAT_RUTOR.reduce((sum, key) => sum + kr(key), 0)
-  const net = outputVat - kr('ruta48')
+  const { amounts, net } = buildFiledAmounts(rutor)
 
   // Every ruta except 49, in ascending form order; 49 is appended last below.
   const keys = (Object.keys(VAT_RUTA_LABELS) as (keyof VatDeclarationRutor)[])
@@ -56,7 +88,7 @@ export function buildManualFilingRows(rutor: VatDeclarationRutor): ManualFilingR
 
   const rows: ManualFilingRow[] = []
   for (const key of keys) {
-    const amount = kr(key)
+    const amount = amounts[key]
     // Always surface ruta 48 (deductible input VAT); otherwise only populated
     // rutor so the reference stays short.
     if (key !== 'ruta48' && amount === 0) continue

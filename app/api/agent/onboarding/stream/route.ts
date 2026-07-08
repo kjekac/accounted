@@ -1,6 +1,6 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
+import { requireAuth } from '@/lib/auth/require-auth'
 import { getActiveCompanyId } from '@/lib/company/context'
 import { guardSandbox } from '@/lib/sandbox/guard'
 import { requireCapability } from '@/lib/entitlements/has-capability'
@@ -64,9 +64,8 @@ interface ProfilePayload {
 //
 // Response: application/x-ndjson, one JSON event per line.
 export async function POST(request: Request) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const { user, supabase, error } = await requireAuth()
+  if (error) return error
 
   // Generous per-user rate limit: bounds reload-spam of the onboarding build
   // (each run fires 2 LLM calls). Fails open on infra error.

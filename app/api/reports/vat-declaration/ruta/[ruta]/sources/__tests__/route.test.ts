@@ -1,27 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { NextResponse } from 'next/server'
 import { createMockRequest, createMockRouteParams } from '@/tests/helpers'
 
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: vi.fn(),
+const requireAuthMock = vi.fn()
+vi.mock('@/lib/auth/require-auth', () => ({
+  requireAuth: (...args: unknown[]) => requireAuthMock(...args),
 }))
 
 vi.mock('@/lib/company/context', () => ({
+  getActiveCompanyId: vi.fn().mockResolvedValue('company-1'),
   requireCompanyId: vi.fn().mockResolvedValue('company-1'),
 }))
 
-import { createClient } from '@/lib/supabase/server'
 import { GET } from '../route'
 
-const mockCreateClient = vi.mocked(createClient)
+interface SupabaseShape {
+  from: ReturnType<typeof vi.fn>
+}
 
 function buildSupabase(
-  user: { id: string } | null,
   linesResult: { data: unknown; error: unknown }
-) {
+): SupabaseShape {
   return {
-    auth: {
-      getUser: vi.fn().mockResolvedValue({ data: { user } }),
-    },
     from: vi.fn().mockImplementation(() => ({
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
@@ -39,15 +39,25 @@ function buildSupabase(
   }
 }
 
+function authOk(supabase: SupabaseShape) {
+  requireAuthMock.mockResolvedValue({ user: { id: 'user-1' }, supabase, error: null })
+}
+
+function authFail(supabase: SupabaseShape) {
+  requireAuthMock.mockResolvedValue({
+    user: null,
+    supabase,
+    error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+  })
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
 
 describe('GET /api/reports/vat-declaration/ruta/[ruta]/sources', () => {
   it('returns 401 when not authenticated', async () => {
-    mockCreateClient.mockResolvedValue(
-      buildSupabase(null, { data: [], error: null }) as never
-    )
+    authFail(buildSupabase({ data: [], error: null }))
     const req = createMockRequest(
       '/api/reports/vat-declaration/ruta/10/sources',
       { searchParams: { periodType: 'monthly', year: '2026', period: '5' } }
@@ -57,9 +67,7 @@ describe('GET /api/reports/vat-declaration/ruta/[ruta]/sources', () => {
   })
 
   it('returns 400 when period params are missing', async () => {
-    mockCreateClient.mockResolvedValue(
-      buildSupabase({ id: 'user-1' }, { data: [], error: null }) as never
-    )
+    authOk(buildSupabase({ data: [], error: null }))
     const req = createMockRequest(
       '/api/reports/vat-declaration/ruta/10/sources'
     )
@@ -68,9 +76,7 @@ describe('GET /api/reports/vat-declaration/ruta/[ruta]/sources', () => {
   })
 
   it('returns 404 when ruta has no underlying BAS accounts', async () => {
-    mockCreateClient.mockResolvedValue(
-      buildSupabase({ id: 'user-1' }, { data: [], error: null }) as never
-    )
+    authOk(buildSupabase({ data: [], error: null }))
     const req = createMockRequest(
       '/api/reports/vat-declaration/ruta/99/sources',
       { searchParams: { periodType: 'monthly', year: '2026', period: '5' } }
@@ -96,9 +102,7 @@ describe('GET /api/reports/vat-declaration/ruta/[ruta]/sources', () => {
         },
       },
     ]
-    mockCreateClient.mockResolvedValue(
-      buildSupabase({ id: 'user-1' }, { data: linesData, error: null }) as never
-    )
+    authOk(buildSupabase({ data: linesData, error: null }))
 
     const req = createMockRequest(
       '/api/reports/vat-declaration/ruta/10/sources',
@@ -123,9 +127,7 @@ describe('GET /api/reports/vat-declaration/ruta/[ruta]/sources', () => {
   it('returns 400 when the cursor date component is not a structural ISO date', async () => {
     // Defense-in-depth (ASVS V1.2): the cursor is applied in JS, but a
     // malformed date component must still be rejected structurally.
-    mockCreateClient.mockResolvedValue(
-      buildSupabase({ id: 'user-1' }, { data: [], error: null }) as never
-    )
+    authOk(buildSupabase({ data: [], error: null }))
     const req = createMockRequest(
       '/api/reports/vat-declaration/ruta/10/sources',
       {
@@ -189,9 +191,7 @@ describe('GET /api/reports/vat-declaration/ruta/[ruta]/sources', () => {
         },
       },
     ]
-    mockCreateClient.mockResolvedValue(
-      buildSupabase({ id: 'user-1' }, { data: linesData, error: null }) as never
-    )
+    authOk(buildSupabase({ data: linesData, error: null }))
 
     const req = createMockRequest(
       '/api/reports/vat-declaration/ruta/10/sources',

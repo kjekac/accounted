@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { AlertCircle, ChevronDown, ChevronRight, ExternalLink, FileDown, Percent } from 'lucide-react'
+import { AlertCircle, ChevronDown, ChevronRight, ExternalLink, FileCode, FileDown, Percent } from 'lucide-react'
 import AgentSparkleButton from '@/components/agent/AgentSparkleButton'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -1052,11 +1052,12 @@ const SKATTEVERKET_MOMS_URL =
  * Manual-filing affordance shown directly under the calculated momsdeklaration.
  * The report is generated purely from the bookkeeping and never depends on the
  * Skatteverket connection, so every user (including core builds with the
- * skatteverket extension disabled) can file manually. This card makes that
- * explicit and offers the momsdeklaration as a PDF (in hela kronor) to read off
- * while filling in the form at skatteverket.se.
+ * skatteverket extension disabled) can file manually. Two paths are offered:
+ * an eSKD XML file to upload directly under "Deklarera via fil" (the fast path),
+ * and a PDF (in hela kronor) to read off if the user would rather type the
+ * boxes into the form. A PDF cannot be uploaded to Skatteverket, only the XML.
  */
-function VatManualFilingCard({ pdfHref }: { pdfHref: string }) {
+function VatManualFilingCard({ xmlHref, pdfHref }: { xmlHref: string; pdfHref: string }) {
   return (
     <Card>
       <CardHeader>
@@ -1065,15 +1066,21 @@ function VatManualFilingCard({ pdfHref }: { pdfHref: string }) {
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Deklarationen ovan är klar. Du behöver inte vara ansluten till
-          Skatteverket för att lämna in den, du kan fylla i beloppen direkt hos
-          Skatteverket.
+          Skatteverket för att lämna in den.
         </p>
         <p className="text-sm text-muted-foreground">
-          Ladda ner momsdeklarationen som PDF (belopp i hela kronor). Logga sedan
-          in på skatteverket.se med BankID, öppna Moms- och
-          arbetsgivardeklarationer och skriv in rutorna.
+          Enklast: ladda ner filen (XML), logga in på skatteverket.se med BankID,
+          öppna Moms- och arbetsgivardeklarationer och välj Deklarera via fil.
+          Ladda upp filen, granska och signera. Vill du hellre fylla i rutorna
+          för hand laddar du ner PDF:en och skriver av beloppen (i hela kronor).
         </p>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" asChild className="gap-2">
+            <a href={xmlHref} target="_blank" rel="noopener noreferrer">
+              <FileCode className="h-4 w-4" />
+              Ladda ner fil för uppladdning (XML)
+            </a>
+          </Button>
           <Button variant="outline" size="sm" asChild className="gap-2">
             <a href={pdfHref} target="_blank" rel="noopener noreferrer">
               <FileDown className="h-4 w-4" />
@@ -1293,6 +1300,7 @@ export function VatDeclarationView() {
     <div className="space-y-4">
       <ReportExportMenu
         items={[
+          { format: 'xml', href: `/api/reports/vat-declaration/eskd?${vatQueryString()}` },
           { format: 'pdf', href: `/api/reports/vat-declaration/pdf?${vatQueryString()}` },
           { format: 'xlsx', href: `/api/reports/vat-declaration/xlsx?${vatQueryString()}` },
         ]}
@@ -1594,6 +1602,7 @@ export function VatDeclarationView() {
           </Card>
 
           <VatManualFilingCard
+            xmlHref={`/api/reports/vat-declaration/eskd?${vatQueryString()}`}
             pdfHref={`/api/reports/vat-declaration/pdf?${vatQueryString()}`}
           />
         </div>
