@@ -1,4 +1,7 @@
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
+import { createLogger } from '@/lib/logger'
+
+const log = createLogger('agent-bedrock-client')
 
 let cached: AnthropicBedrock | null = null
 
@@ -20,19 +23,32 @@ let cached: AnthropicBedrock | null = null
 // API.
 export function getAnthropic(): AnthropicBedrock {
   if (cached) return cached
-  // Read Bedrock creds from BEDROCK_AWS_* first, falling back to the plain
-  // AWS_* names for local dev. On Vercel the functions run on AWS Lambda, whose
-  // runtime injects its OWN reserved AWS_REGION / AWS_ACCESS_KEY_ID /
-  // AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN for the platform execution role
-  // (wrong account, wrong region, no Bedrock access). Those shadow anything set
-  // in the dashboard, so a hosted deploy MUST use the BEDROCK_AWS_* names or the
-  // stream comes back empty ("request ended without sending any chunks").
-  const awsRegion =
-    process.env.BEDROCK_AWS_REGION || process.env.AWS_REGION || 'eu-north-1'
-  const awsAccessKey =
-    process.env.BEDROCK_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID
-  const awsSecretKey =
-    process.env.BEDROCK_AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY
+  const awsRegion = process.env.AWS_REGION || 'eu-north-1'
+  const awsAccessKey = process.env.AWS_ACCESS_KEY_ID
+  const awsSecretKey = process.env.AWS_SECRET_ACCESS_KEY
+
+  // Startup diagnostic: make a hosted misconfiguration visible in the logs
+  // instead of it surfacing only as an opaque "request ended without sending
+  // any chunks" at stream time. Runs once per cold start (the client is cached).
+  // Never logs a secret: only the region, presence booleans, and the 4-char
+  // access-key-id PREFIX (AKIA = long-term IAM user key; ASIA = STS/temporary
+  // role credential, i.e. a platform-injected one rather than ours).
+  if (!awsAccessKey || !awsSecretKey) {
+    log.error('agent Bedrock credentials not loaded from env', undefined, {
+      region: awsRegion,
+      hasAccessKeyId: !!awsAccessKey,
+      hasSecretAccessKey: !!awsSecretKey,
+      regionFromEnv: !!process.env.AWS_REGION,
+    })
+  } else {
+    log.info('agent Bedrock client init', {
+      region: awsRegion,
+      keyPrefix: awsAccessKey.slice(0, 4),
+      hasSessionToken: !!process.env.AWS_SESSION_TOKEN,
+      regionFromEnv: !!process.env.AWS_REGION,
+    })
+  }
+
   // When both static keys are present, pass them. Otherwise omit them so the
   // SDK falls back to the AWS credential provider chain (instance profile,
   // IRSA, EKS pod identity, ...). The two-overload SDK refuses a mix.

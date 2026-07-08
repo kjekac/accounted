@@ -301,11 +301,42 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
       // Surface as a chat error so the UI clears its streaming state. Re-throw
       // to let the route's outer try/catch persist the failure if needed.
       // Normalize Bedrock throttling/timeout/5xx into a friendly Swedish line.
+      //
+      // Extract status/code/cause/stack explicitly: the logger keeps only
+      // name/message/code from an Error and drops the stack in production, so
+      // the real failure was invisible (every prod log just said "request ended
+      // without sending any chunks"). These fields tell us whether the empty
+      // stream is auth (403), bad model/region (400), throttling (429), or a
+      // genuine transport cut. No secrets: AWS/SDK errors carry none, and the
+      // logger still redacts personnummer/UUIDs from any string.
+      const bedrockErr = err as {
+        status?: number
+        code?: string
+        cause?: unknown
+        stack?: string
+      }
+      let errCause: string | undefined
+      try {
+        errCause =
+          bedrockErr?.cause != null
+            ? String(
+                bedrockErr.cause instanceof Error
+                  ? `${bedrockErr.cause.name}: ${bedrockErr.cause.message}`
+                  : bedrockErr.cause,
+              ).slice(0, 300)
+            : undefined
+      } catch {
+        errCause = '[uninspectable cause]'
+      }
       log.error('Bedrock stream failed', err, {
         conversationId,
         companyId,
         model,
         iterations,
+        errStatus: typeof bedrockErr?.status === 'number' ? bedrockErr.status : undefined,
+        errCode: typeof bedrockErr?.code === 'string' ? bedrockErr.code : undefined,
+        errCause,
+        errStack: typeof bedrockErr?.stack === 'string' ? bedrockErr.stack.slice(0, 1200) : undefined,
       })
       emit({ kind: 'error', message: friendlyModelError(err) })
       throw err

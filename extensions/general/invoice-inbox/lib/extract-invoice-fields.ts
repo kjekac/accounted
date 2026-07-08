@@ -246,18 +246,7 @@ export async function extractInvoiceFields(
     return { data: emptyResult(), rawText: null }
   }
 
-  // Prefer BEDROCK_AWS_* over the plain AWS_* names: on Vercel/Lambda the
-  // platform injects its own reserved AWS_* execution-role vars that shadow
-  // whatever is configured, so a hosted deploy must use the BEDROCK_AWS_* names
-  // (see lib/agent/composer/client.ts for the full explanation).
-  const awsRegion =
-    process.env.BEDROCK_AWS_REGION || process.env.AWS_REGION || 'eu-north-1'
-  const awsAccessKey =
-    process.env.BEDROCK_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID
-  const awsSecretKey =
-    process.env.BEDROCK_AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY
-
-  if (!awsAccessKey || !awsSecretKey) {
+  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
     log.warn('AWS Bedrock credentials missing: returning empty extraction', {
       file_name_hash: createHash('sha256').update(input.fileName).digest('hex').slice(0, 12),
     })
@@ -265,9 +254,9 @@ export async function extractInvoiceFields(
   }
 
   const client = new AnthropicBedrock({
-    awsRegion,
-    awsAccessKey,
-    awsSecretKey,
+    awsRegion: process.env.AWS_REGION || 'eu-north-1',
+    awsAccessKey: process.env.AWS_ACCESS_KEY_ID,
+    awsSecretKey: process.env.AWS_SECRET_ACCESS_KEY,
   })
 
   let rawText: string | null = null
