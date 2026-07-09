@@ -1175,6 +1175,20 @@ describe('UpdateSettingsSchema', () => {
     expect(result.success).toBe(true)
   })
 
+  it('accepts a positive next_arrival_number (supplier-invoice start floor)', () => {
+    const result = UpdateSettingsSchema.safeParse({ next_arrival_number: 248 })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.next_arrival_number).toBe(248)
+    }
+  })
+
+  it('rejects a non-positive next_arrival_number', () => {
+    expect(UpdateSettingsSchema.safeParse({ next_arrival_number: 0 }).success).toBe(false)
+    expect(UpdateSettingsSchema.safeParse({ next_arrival_number: -5 }).success).toBe(false)
+    expect(UpdateSettingsSchema.safeParse({ next_arrival_number: 1.5 }).success).toBe(false)
+  })
+
   it('accepts vat_registered: true with required vat_number and moms_period', () => {
     const result = UpdateSettingsSchema.safeParse({
       vat_registered: true,
@@ -2029,6 +2043,25 @@ describe('UpdateAccountSchema', () => {
   it('rejects non-boolean is_active', () => {
     const result = UpdateAccountSchema.safeParse({ is_active: 'yes' })
     expect(result.success).toBe(false)
+  })
+
+  it('accepts a valid default_vat_rate (0/0.06/0.12/0.25/null)', () => {
+    expect(UpdateAccountSchema.safeParse({ default_vat_rate: 0 }).success).toBe(true)
+    expect(UpdateAccountSchema.safeParse({ default_vat_rate: 0.06 }).success).toBe(true)
+    expect(UpdateAccountSchema.safeParse({ default_vat_rate: 0.12 }).success).toBe(true)
+    expect(UpdateAccountSchema.safeParse({ default_vat_rate: 0.25 }).success).toBe(true)
+    expect(UpdateAccountSchema.safeParse({ default_vat_rate: null }).success).toBe(true)
+  })
+
+  it('rejects a default_vat_rate outside the allowed set', () => {
+    expect(UpdateAccountSchema.safeParse({ default_vat_rate: 0.2 }).success).toBe(false)
+    expect(CreateAccountSchema.safeParse({
+      account_number: '3740',
+      account_name: 'Öres- och kronutjämning',
+      account_type: 'revenue',
+      normal_balance: 'debit',
+      default_vat_rate: 0.5,
+    }).success).toBe(false)
   })
 })
 

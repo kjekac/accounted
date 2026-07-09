@@ -697,6 +697,18 @@ export default function NewSupplierInvoiceForm({
       const desc = getAccountDescription(accountNumber)
       if (desc) setValue(`items.${index}.description`, desc.name)
     }
+    // Auto-fill the rad's moms from the konto's configured default (e.g.
+    // öresavrundning 3740 = ingen moms), so a rounding line stops inheriting
+    // the 25 % rad-default. Only when the konto carries an explicit default;
+    // otherwise the user's current rate stands. Reverse charge uses its own
+    // rate field, so leave that flow untouched. PostgREST serialises numeric
+    // columns as strings, so coerce: strict === comparisons on vat_rate
+    // (inferVatTreatment) expect a number.
+    const acct = accounts.find((a) => a.account_number === accountNumber)
+    const defaultRate = acct?.default_vat_rate == null ? null : Number(acct.default_vat_rate)
+    if (!watchedReverseCharge && defaultRate != null && Number.isFinite(defaultRate)) {
+      setValue(`items.${index}.vat_rate`, defaultRate, { shouldDirty: true })
+    }
   }
 
   // Periodisering per rad: kräver faktureringsmetoden; eget utlägg bokar

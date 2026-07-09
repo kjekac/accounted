@@ -1340,6 +1340,8 @@
     "prefix_label": "Fakturaprefix",
     "prefix_placeholder": "t.ex. F-",
     "next_number_label": "Nästa fakturanummer",
+    "arrival_start_label": "Startnummer för leverantörsfakturor",
+    "arrival_start_help": "Ankomstnumret som din första leverantörsfaktura får. Sätt det en gång för att fortsätta serien från ett tidigare system, till exempel Fortnox. Därefter räknas numret upp automatiskt.",
     "default_days_label": "Betalningsvillkor (dagar)",
     "default_notes_label": "Standardtext på fakturor",
     "default_notes_placeholder": "T.ex. betalningsvillkor, leveransinfo...",

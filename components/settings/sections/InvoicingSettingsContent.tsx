@@ -45,6 +45,7 @@ export function InvoicingSettingsContent() {
       swish: normaliseSwish(formData.get('swish') as string) || null,
       invoice_prefix: (formData.get('invoice_prefix') as string) || null,
       next_invoice_number: parseInt(formData.get('next_invoice_number') as string) || 1,
+      next_arrival_number: parseInt(formData.get('next_arrival_number') as string) || 1,
       invoice_default_days: parseInt(formData.get('invoice_default_days') as string) || 30,
       invoice_default_notes: (formData.get('invoice_default_notes') as string) || null,
       default_our_reference: (formData.get('default_our_reference') as string) || null,

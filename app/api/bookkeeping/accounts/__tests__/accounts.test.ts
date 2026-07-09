@@ -131,6 +131,29 @@ describe('POST /api/bookkeeping/accounts', () => {
     expect(status).toBe(409)
     expect(body.error).toContain('5010')
   })
+
+  it('forwards default_vat_rate into the insert', async () => {
+    const { supabase, calls } = createCapturingSupabase([
+      { data: { account_number: '3740', default_vat_rate: 0 } },
+    ])
+    auth(supabase)
+    const req = createMockRequest('/api/bookkeeping/accounts', {
+      method: 'POST',
+      body: {
+        account_number: '3740',
+        account_name: 'Öres- och kronutjämning',
+        account_type: 'revenue',
+        normal_balance: 'debit',
+        default_vat_rate: 0,
+      },
+    })
+    const { status } = await parseJsonResponse(await createPOST(req, routeParams))
+    expect(status).toBe(200)
+    const insertArg = calls.find((c) => c.method === 'insert')?.args[0] as {
+      default_vat_rate?: number | null
+    }
+    expect(insertArg?.default_vat_rate).toBe(0)
+  })
 })
 
 describe('DELETE /api/bookkeeping/accounts/[number]', () => {
@@ -217,6 +240,25 @@ describe('PUT /api/bookkeeping/accounts/[number]', () => {
     )
     expect(status).toBe(200)
     expect(body.data.account_name).toBe('Nytt namn')
+  })
+
+  it('forwards default_vat_rate into the update', async () => {
+    const { supabase, calls } = createCapturingSupabase([
+      { data: { account_number: '3740', default_vat_rate: 0 } },
+    ])
+    auth(supabase)
+    const req = createMockRequest('/api/bookkeeping/accounts/3740', {
+      method: 'PUT',
+      body: { default_vat_rate: 0 },
+    })
+    const { status } = await parseJsonResponse(
+      await PUT(req, { params: Promise.resolve({ number: '3740' }) })
+    )
+    expect(status).toBe(200)
+    const updateArg = calls.find((c) => c.method === 'update')?.args[0] as {
+      default_vat_rate?: number | null
+    }
+    expect(updateArg?.default_vat_rate).toBe(0)
   })
 })
 

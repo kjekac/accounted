@@ -1368,6 +1368,7 @@ export const UpdateSettingsSchema = z.object({
   accounting_method: AccountingMethodSchema.optional(),
   invoice_prefix: z.string().nullable().optional(),
   next_invoice_number: z.number().int().positive().optional(),
+  next_arrival_number: z.number().int().positive().optional(),
   invoice_default_days: z.number().int().positive().optional(),
   invoice_default_notes: z.string().nullable().optional(),
   default_our_reference: z.string().max(200).nullable().optional(),
@@ -1540,6 +1541,13 @@ export const CreateDeadlineSchema = z.object({
 // Account schemas
 // ============================================================
 
+// Per-account default VAT rate: the sats the booking UI understands, as a
+// decimal fraction. Mirrors the DB CHECK on chart_of_accounts.default_vat_rate.
+const defaultVatRate = z
+  .union([z.literal(0), z.literal(0.06), z.literal(0.12), z.literal(0.25)])
+  .nullable()
+  .optional()
+
 export const CreateAccountSchema = z.object({
   account_number: accountNumber,
   account_name: z.string().min(1, 'Account name is required'),
@@ -1548,6 +1556,7 @@ export const CreateAccountSchema = z.object({
   plan_type: z.enum(['k1', 'full_bas']).optional(),
   description: z.string().nullable().optional(),
   default_vat_code: z.string().nullable().optional(),
+  default_vat_rate: defaultVatRate,
   sru_code: z.string().nullable().optional(),
 })
 
@@ -1556,6 +1565,7 @@ export const UpdateAccountSchema = z.object({
   is_active: z.boolean().optional(),
   description: z.string().nullable().optional(),
   default_vat_code: z.string().nullable().optional(),
+  default_vat_rate: defaultVatRate,
   sru_code: z.string().nullable().optional(),
 })
 

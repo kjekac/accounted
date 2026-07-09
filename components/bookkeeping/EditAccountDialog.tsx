@@ -59,7 +59,12 @@ export function EditAccountDialog({ open, onOpenChange, account, onSaved }: Edit
   const { toast } = useToast()
   const [accountName, setAccountName] = useState(account.account_name)
   const [description, setDescription] = useState(account.description || '')
-  const [defaultVatCode, setDefaultVatCode] = useState(account.default_vat_code || '')
+  // "Standard moms": the moms-sats a booking line defaults to when this konto is
+  // picked (currently the leverantörsfaktura-rad). 'none' = no default. Stored
+  // as a decimal fraction; SelectItem values are the stringified decimals.
+  const [defaultVatRate, setDefaultVatRate] = useState(
+    account.default_vat_rate != null ? String(account.default_vat_rate) : 'none',
+  )
   const [sruCode, setSruCode] = useState(account.sru_code || '')
   const [isActive, setIsActive] = useState(account.is_active)
   const [isSaving, setIsSaving] = useState(false)
@@ -250,7 +255,7 @@ export function EditAccountDialog({ open, onOpenChange, account, onSaved }: Edit
         body: JSON.stringify({
           account_name: accountName,
           description: description || null,
-          default_vat_code: defaultVatCode || null,
+          default_vat_rate: defaultVatRate === 'none' ? null : parseFloat(defaultVatRate),
           sru_code: sruCode || null,
           is_active: isActive,
         }),
@@ -310,12 +315,19 @@ export function EditAccountDialog({ open, onOpenChange, account, onSaved }: Edit
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>Standard momskod</Label>
-              <Input
-                value={defaultVatCode}
-                onChange={(e) => setDefaultVatCode(e.target.value)}
-                placeholder="T.ex. MP1"
-              />
+              <Label>Standard moms</Label>
+              <Select value={defaultVatRate} onValueChange={setDefaultVatRate}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Ingen standard</SelectItem>
+                  <SelectItem value="0">Ingen moms</SelectItem>
+                  <SelectItem value="0.25">25 %</SelectItem>
+                  <SelectItem value="0.12">12 %</SelectItem>
+                  <SelectItem value="0.06">6 %</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label>SRU-kod</Label>

@@ -79,6 +79,7 @@ export const POST = withRouteContext(
         is_system_account: false,
         description: body.description || null,
         default_vat_code: body.default_vat_code || null,
+        default_vat_rate: body.default_vat_rate ?? null,
         sru_code: body.sru_code || null,
         sort_order: parseInt(body.account_number),
       })

@@ -1340,6 +1340,8 @@
     "prefix_label": "Invoice prefix",
     "prefix_placeholder": "e.g. F-",
     "next_number_label": "Next invoice number",
+    "arrival_start_label": "Supplier invoice start number",
+    "arrival_start_help": "The arrival number (ankomstnummer) your first supplier invoice gets. Set it once to continue the series from a previous system such as Fortnox. After that it increments automatically.",
     "default_days_label": "Payment terms (days)",
     "default_notes_label": "Default invoice text",
     "default_notes_placeholder": "E.g. payment terms, delivery info...",

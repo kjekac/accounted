@@ -258,6 +258,10 @@ export interface CompanySettings {
   // Invoice settings
   invoice_prefix: string | null
   next_invoice_number: number
+  // Starting ankomstnummer for the supplier-invoice (leverantorsfaktura)
+  // series. Acts as a floor: get_next_arrival_number returns
+  // GREATEST(MAX(arrival_number)+1, next_arrival_number). Defaults to 1.
+  next_arrival_number: number
   next_delivery_note_number: number
   invoice_default_days: number
   invoice_default_notes: string | null
@@ -1394,6 +1398,9 @@ export interface BASAccount {
   is_active: boolean
   is_system_account: boolean
   default_vat_code: string | null
+  // Per-account default VAT rate for booking lines (0/0.06/0.12/0.25).
+  // null = no default (line keeps its own rate). Öresavrundning (3740) = 0.
+  default_vat_rate: number | null
   description: string | null
   sru_code: string | null
   k2_excluded: boolean

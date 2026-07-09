@@ -538,6 +538,7 @@ export function makeCompanySettings(
     accounting_method: 'accrual',
     invoice_prefix: 'F',
     next_invoice_number: 1,
+    next_arrival_number: 1,
     next_delivery_note_number: 1,
     invoice_default_days: 30,
     invoice_default_notes: null,

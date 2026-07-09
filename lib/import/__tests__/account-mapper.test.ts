@@ -31,6 +31,7 @@ function makeBASAccount(number: string, name: string): BASAccount {
     is_active: true,
     is_system_account: false,
     default_vat_code: null,
+    default_vat_rate: null,
     description: null,
     sru_code: null,
     k2_excluded: false,
