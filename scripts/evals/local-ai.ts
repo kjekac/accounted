@@ -32,7 +32,7 @@ import type { ComposerInputs, AtomRegistryIndexRow } from '../../lib/agent/compo
 import { transactionCategorization } from '../../lib/agent/intents/transaction-categorization'
 import type { AgentTool } from '../../lib/agent/tools/types'
 
-type EvalGroup = 'smoke' | 'composer' | 'transaction'
+type EvalGroup = 'smoke' | 'composer' | 'transaction' | 'classification'
 
 interface CliOptions {
   models: string[]
@@ -72,6 +72,7 @@ interface EvalTransaction {
   amount: number | null
   currency: string | null
   counterparty_name: string | null
+  direction: 'in' | 'out' | 'zero' | 'unknown'
 }
 
 interface EvalUnderlag {
@@ -124,6 +125,15 @@ const SmokeStructuredSchema = z.object({
   needs_review: z.boolean(),
 })
 
+const QueuedClassificationSchema = z.object({
+  transaction_id: z.string(),
+  action: z.enum(['categorize', 'needs_review']),
+  category: z.enum(TRANSACTION_CATEGORIES).nullable(),
+  vat_treatment: z.enum(VAT_TREATMENTS).nullable(),
+  confidence: z.number().min(0).max(1),
+  review_reason: z.string().nullable(),
+})
+
 const SMOKE_STRUCTURED_TOOL_SCHEMA: StructuredSchema = {
   name: 'classify_transaction_contract_smoke',
   description: 'Return one strict classification decision.',
@@ -136,6 +146,46 @@ const SMOKE_STRUCTURED_TOOL_SCHEMA: StructuredSchema = {
       needs_review: { type: 'boolean' },
     },
     required: ['transaction_id', 'category', 'needs_review'],
+  },
+}
+
+const QUEUED_CLASSIFICATION_TOOL_SCHEMA: StructuredSchema = {
+  name: 'classify_transaction_for_queue',
+  description: 'Return one conservative queued transaction classification decision.',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      transaction_id: { type: 'string' },
+      action: { type: 'string', enum: ['categorize', 'needs_review'] },
+      category: {
+        anyOf: [
+          { type: 'string', enum: [...TRANSACTION_CATEGORIES] },
+          { type: 'null' },
+        ],
+      },
+      vat_treatment: {
+        anyOf: [
+          { type: 'string', enum: [...VAT_TREATMENTS] },
+          { type: 'null' },
+        ],
+      },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+      review_reason: {
+        anyOf: [
+          { type: 'string' },
+          { type: 'null' },
+        ],
+      },
+    },
+    required: [
+      'transaction_id',
+      'action',
+      'category',
+      'vat_treatment',
+      'confidence',
+      'review_reason',
+    ],
   },
 }
 
@@ -324,6 +374,7 @@ const TRANSACTION_FIXTURES = [
     id: 'transaction_known_software_subscription',
     expectedTransactionId: 'tx_software_001',
     expectedCategory: 'expense_software',
+    expectedVatTreatment: 'reverse_charge',
     mustCallCategorize: true,
     messages: transactionMessages({
       transaction: {
@@ -333,6 +384,7 @@ const TRANSACTION_FIXTURES = [
         amount: -247.5,
         currency: 'SEK',
         counterparty_name: 'OpenAI',
+        direction: 'out',
       },
       underlag: [{
         kind: 'receipt',
@@ -365,6 +417,7 @@ const TRANSACTION_FIXTURES = [
     id: 'transaction_restaurant_requires_context',
     expectedTransactionId: 'tx_restaurant_001',
     expectedCategory: null,
+    expectedVatTreatment: null,
     mustCallCategorize: false,
     messages: [
       textMessage(
@@ -380,6 +433,7 @@ const TRANSACTION_FIXTURES = [
               amount: -842,
               currency: 'SEK',
               counterparty_name: 'Bistro Svea',
+              direction: 'out',
             },
             underlag: [{
               kind: 'receipt',
@@ -397,6 +451,69 @@ const TRANSACTION_FIXTURES = [
         }),
       ),
     ],
+  },
+]
+
+const QUEUED_CLASSIFICATION_FIXTURES = [
+  {
+    id: 'classification_known_software_subscription_reverse_charge',
+    expectedTransactionId: 'txq_software_001',
+    expectedAction: 'categorize',
+    expectedCategory: 'expense_software',
+    expectedVatTreatment: 'reverse_charge',
+    prompt: [
+      'Transaction txq_software_001',
+      'Company: Swedish VAT-registered IT consultancy AB.',
+      'Bank row: OPENAI CHATGPT SUBSCRIPTION, amount -247.50 SEK, counterparty OpenAI.',
+      'Receipt: OpenAI, LLC, supplier country US, digital software subscription, total 247.50 SEK, VAT amount 0 SEK.',
+      'History: previous OpenAI subscriptions were booked as software subscriptions.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_bank_fee_exempt',
+    expectedTransactionId: 'txq_bank_fee_001',
+    expectedAction: 'categorize',
+    expectedCategory: 'expense_bank_fees',
+    expectedVatTreatment: 'exempt',
+    prompt: [
+      'Transaction txq_bank_fee_001',
+      'Company: Swedish VAT-registered AB.',
+      'Bank row: BANKGIRO SERVICEAVGIFT, amount -59 SEK, counterparty Bankgirot.',
+      'Receipt/support: bank fee notice, no VAT charged.',
+      'History: previous Bankgirot service fees were bank fees.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_restaurant_requires_review',
+    expectedTransactionId: 'txq_restaurant_001',
+    expectedAction: 'needs_review',
+    expectedCategory: null,
+    expectedVatTreatment: null,
+    prompt: [
+      'Transaction txq_restaurant_001',
+      'Company: Swedish VAT-registered IT consultancy AB.',
+      'Bank row: BISTRO SVEA STOCKHOLM, amount -842 SEK.',
+      'Receipt: Bistro Svea, lunch and drinks, total 842 SEK, VAT amount 90.21 SEK, restaurant=true.',
+      'No attendee, customer, staff, travel, or business purpose is visible.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_systembolaget_requires_review',
+    expectedTransactionId: 'txq_systembolaget_001',
+    expectedAction: 'needs_review',
+    expectedCategory: null,
+    expectedVatTreatment: null,
+    prompt: [
+      'Transaction txq_systembolaget_001',
+      'Company: Swedish VAT-registered AB.',
+      'Bank row: SYSTEMBOLAGET 0134, amount -318 SEK.',
+      'Receipt: wine and beer, total 318 SEK, VAT amount 63.60 SEK, systembolaget=true.',
+      'No event, representation purpose, gift purpose, or attendees are visible.',
+      'Classify for queued staging.',
+    ].join('\n'),
   },
 ]
 
@@ -434,6 +551,11 @@ async function main() {
     if (options.groups.has('transaction')) {
       for (const fixture of TRANSACTION_FIXTURES) {
         results.push(await runTransactionFixture(provider, model, fixture))
+      }
+    }
+    if (options.groups.has('classification')) {
+      for (const fixture of QUEUED_CLASSIFICATION_FIXTURES) {
+        results.push(await runQueuedClassificationFixture(provider, model, fixture))
       }
     }
   }
@@ -575,11 +697,13 @@ async function runTransactionFixture(
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
-    valid_tool_call: false,
+    valid_tool_call: !fixture.mustCallCategorize,
     allowed_tool_name: true,
     correct_transaction_id: true,
     expected_category: true,
+    expected_vat_treatment: true,
     respected_review_boundary: true,
+    requested_context_or_question: fixture.mustCallCategorize,
   }
 
   try {
@@ -599,9 +723,10 @@ async function runTransactionFixture(
       thinkingBudgetTokens: transactionCategorization.thinking?.budgetTokens,
     })
     const toolCalls = response.content.filter(isToolCall)
-    checks.valid_tool_call = toolCalls.length > 0
     checks.allowed_tool_name = toolCalls.every((call) => ALLOWED_TRANSACTION_TOOLS.has(call.name))
     const categorizeCalls = toolCalls.filter((call) => call.name === 'gnubok_categorize_transaction')
+    checks.valid_tool_call = fixture.mustCallCategorize ? categorizeCalls.length > 0 : true
+    const text = responseText(response.content)
 
     if (fixture.mustCallCategorize && categorizeCalls.length === 0) {
       checks.expected_category = false
@@ -619,16 +744,23 @@ async function runTransactionFixture(
       if (fixture.expectedCategory && call.input.category !== fixture.expectedCategory) {
         checks.expected_category = false
       }
+      if (fixture.expectedVatTreatment && call.input.vat_treatment !== fixture.expectedVatTreatment) {
+        checks.expected_vat_treatment = false
+      }
+    }
+
+    if (!fixture.mustCallCategorize) {
+      checks.requested_context_or_question =
+        categorizeCalls.length === 0 &&
+        (toolCalls.some((call) =>
+          call.name === 'gnubok_query_journal' || call.name === 'gnubok_get_document_content'
+        ) ||
+          textLooksLikeFollowUpQuestion(text))
     }
 
     if (toolCalls.length > 0) {
       notes.push(`tools=${toolCalls.map((call) => `${call.name}(${JSON.stringify(call.input)})`).join(' | ')}`)
     } else {
-      const text = response.content
-        .filter((block): block is Extract<ModelContentBlock, { kind: 'text' }> => block.kind === 'text')
-        .map((block) => block.text)
-        .join('')
-        .trim()
       notes.push(`text=${text.slice(0, 500) || '(empty)'}`)
     }
   } catch (err) {
@@ -638,6 +770,65 @@ async function runTransactionFixture(
   }
 
   return result(model, 'transaction', fixture.id, started, checks, notes)
+}
+
+async function runQueuedClassificationFixture(
+  provider: ModelProvider,
+  model: string,
+  fixture: (typeof QUEUED_CLASSIFICATION_FIXTURES)[number],
+): Promise<EvalResult> {
+  const started = performance.now()
+  const notes: string[] = []
+  const checks: Record<string, boolean> = {
+    valid_structured_output: false,
+    correct_transaction_id: false,
+    expected_action: false,
+    expected_category: false,
+    expected_vat_treatment: false,
+    conservative_review_boundary: false,
+  }
+
+  try {
+    const output = await provider.generateStructured<unknown>({
+      model: SONNET_MODEL,
+      maxTokens: 512,
+      system: [
+        'Du klassificerar svenska företagstransaktioner för köad granskning.',
+        'Returnera endast ett strukturerat beslut via verktyget.',
+        'Kategorisera bara när bankrad, underlag och historik räcker för en säker kategori.',
+        'Sätt action=needs_review när syftet saknas eller avgör privat, representation, alkohol, restaurang, resor, gåvor, blandade inköp eller oklar affärsnytta.',
+        'För utländska B2B-mjukvarutjänster till svenskt momsregistrerat bolag används vat_treatment=reverse_charge, inte standard_25.',
+        'När action=needs_review ska category och vat_treatment vara null och review_reason ska kort säga vad som saknas.',
+      ].join('\n'),
+      messages: [textMessage('user', fixture.prompt)],
+    }, QUEUED_CLASSIFICATION_TOOL_SCHEMA)
+
+    const parsed = QueuedClassificationSchema.safeParse(output)
+    checks.valid_structured_output = parsed.success
+    if (!parsed.success) {
+      notes.push(parsed.error.message)
+    } else {
+      checks.correct_transaction_id = parsed.data.transaction_id === fixture.expectedTransactionId
+      checks.expected_action = parsed.data.action === fixture.expectedAction
+      checks.expected_category = parsed.data.category === fixture.expectedCategory
+      checks.expected_vat_treatment = parsed.data.vat_treatment === fixture.expectedVatTreatment
+      checks.conservative_review_boundary =
+        fixture.expectedAction === 'needs_review'
+          ? parsed.data.category === null &&
+            parsed.data.vat_treatment === null &&
+            typeof parsed.data.review_reason === 'string' &&
+            parsed.data.review_reason.trim().length > 0
+          : parsed.data.action === 'categorize' &&
+            parsed.data.category !== null &&
+            parsed.data.vat_treatment !== null &&
+            parsed.data.confidence >= 0.6
+      notes.push(`decision=${JSON.stringify(parsed.data)}`)
+    }
+  } catch (err) {
+    notes.push(errorMessage(err))
+  }
+
+  return result(model, 'classification', fixture.id, started, checks, notes)
 }
 
 function transactionMessages(input: {
@@ -741,6 +932,20 @@ function isToolCall(
   return block.kind === 'tool_call'
 }
 
+function responseText(content: ModelContentBlock[]): string {
+  return content
+    .filter((block): block is Extract<ModelContentBlock, { kind: 'text' }> => block.kind === 'text')
+    .map((block) => block.text)
+    .join('')
+    .trim()
+}
+
+function textLooksLikeFollowUpQuestion(text: string): boolean {
+  const lower = text.toLowerCase()
+  return text.includes('?') ||
+    /\b(vilket|vilka|vad|kan du|behöver|saknas|syfte|representation|privat|affärsnytta)\b/.test(lower)
+}
+
 function summarize(results: EvalResult[]): ModelSummary[] {
   const byModel = new Map<string, EvalResult[]>()
   for (const r of results) {
@@ -792,7 +997,7 @@ function printHumanSummary(results: EvalResult[]) {
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const groups = new Set<EvalGroup>(['smoke', 'composer', 'transaction'])
+  const groups = new Set<EvalGroup>(['smoke', 'composer', 'transaction', 'classification'])
   const models: string[] = []
   let json = false
 
@@ -832,13 +1037,20 @@ function splitList(value: string): string[] {
 }
 
 function parseGroup(value: string): EvalGroup {
-  if (value === 'smoke' || value === 'composer' || value === 'transaction') return value
-  throw new Error(`Unknown group "${value}". Expected smoke, composer, or transaction.`)
+  if (
+    value === 'smoke' ||
+    value === 'composer' ||
+    value === 'transaction' ||
+    value === 'classification'
+  ) {
+    return value
+  }
+  throw new Error(`Unknown group "${value}". Expected smoke, composer, transaction, or classification.`)
 }
 
 function printHelp() {
   console.log([
-    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,transaction] [--json]',
+    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,transaction,classification] [--json]',
     '',
     'Environment:',
     '  LOCAL_AI_BASE_URL   OpenAI-compatible /v1 base URL or /chat/completions URL',

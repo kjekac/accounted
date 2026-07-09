@@ -19,10 +19,12 @@
           f (import nixpkgs { inherit system; }));
 
       defaultLocalAiModels = [
-        "qwen2.5:14b"
-        "qwen2.5:32b"
-        "llama3.1:8b"
-        "mistral-nemo:12b"
+        "qwen3:32b"
+        "qwen3:30b"
+        "gpt-oss:20b"
+        "mistral-small3.1:24b"
+        "command-r:35b"
+        "deepseek-r1:32b"
       ];
 
       localAiModelsEnv = nixpkgs.lib.concatStringsSep " " defaultLocalAiModels;
