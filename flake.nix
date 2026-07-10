@@ -25,9 +25,12 @@
         "mistral-small3.1:24b"
         "command-r:35b"
         "deepseek-r1:32b"
+        "llama3.3:70b"
+        "hermes3:70b"
       ];
 
       localAiModelsEnv = nixpkgs.lib.concatStringsSep " " defaultLocalAiModels;
+      localAiModelsCsv = nixpkgs.lib.concatStringsSep "," defaultLocalAiModels;
 
       nodeDeps = pkgs: pkgs.writeShellApplication {
         name = "accounted-node-deps";
@@ -105,20 +108,30 @@
           set -euo pipefail
 
           original_arg_count="$#"
+          original_args=("$@")
           export AI_PROVIDER=local
           export LOCAL_AI_BASE_URL="''${LOCAL_AI_BASE_URL:-http://127.0.0.1:11434/v1}"
           export LOCAL_AI_TIMEOUT_MS="''${LOCAL_AI_TIMEOUT_MS:-120000}"
 
-          models="''${ACCOUNTED_LOCAL_AI_MODELS:-${localAiModelsEnv}}"
+          models="${localAiModelsEnv}"
+          models_csv="${localAiModelsCsv}"
           wants_help=0
+          wants_dry_run=0
+          has_models_arg=0
           for arg in "$@"; do
             if [ "''${arg}" = "--help" ] || [ "''${arg}" = "-h" ]; then
               wants_help=1
             fi
+            if [ "''${arg}" = "--dry-run" ]; then
+              wants_dry_run=1
+            fi
+            if [ "''${arg}" = "--models" ] || [[ "''${arg}" == --models=* ]]; then
+              has_models_arg=1
+            fi
           done
 
           accounted-node-deps
-          if [ "''${wants_help}" != "1" ]; then
+          if [ "''${wants_help}" != "1" ] && [ "''${wants_dry_run}" != "1" ]; then
             if [ "''${ACCOUNTED_LOCAL_AI_SKIP_PREPARE:-0}" != "1" ]; then
               accounted-local-ai-prepare
             else
@@ -131,10 +144,34 @@
             # shellcheck disable=SC2086
             set -- ''${models}
             export LOCAL_AI_MODEL="$1"
+          else
+            first_model="$(printf '%s\n' "''${first_model}" | awk 'NF { print $1; exit }')"
+            export LOCAL_AI_MODEL="''${first_model}"
           fi
 
           if [ "''${original_arg_count}" -ne 0 ]; then
-            npm run eval:local-ai -- "$@"
+            if [ "''${wants_dry_run}" = "1" ] && [ "''${has_models_arg}" != "1" ]; then
+              npm run eval:local-ai -- --models "''${models_csv}" "''${original_args[@]}"
+              exit 0
+            fi
+            if [ "''${wants_help}" = "1" ] || [ "''${has_models_arg}" = "1" ]; then
+              npm run eval:local-ai -- "''${original_args[@]}"
+              exit 0
+            fi
+            # shellcheck disable=SC2086
+            set -- ''${models}
+            while [ "$#" -gt 0 ]; do
+              current_model="$1"
+              shift
+              echo "Evaluating current model: ''${current_model}"
+              export LOCAL_AI_MODEL="''${current_model}"
+              npm run eval:local-ai -- --models "''${current_model}" "''${original_args[@]}"
+            done
+            exit 0
+          fi
+
+          if [ "''${wants_help}" = "1" ]; then
+            npm run eval:local-ai -- "''${original_args[@]}"
             exit 0
           fi
 
@@ -214,8 +251,8 @@
               export AI_PROVIDER=local
               export LOCAL_AI_BASE_URL="''${LOCAL_AI_BASE_URL:-http://127.0.0.1:11434/v1}"
               export LOCAL_AI_TIMEOUT_MS="''${LOCAL_AI_TIMEOUT_MS:-120000}"
-              export ACCOUNTED_LOCAL_AI_MODELS="''${ACCOUNTED_LOCAL_AI_MODELS:-${localAiModelsEnv}}"
-              export LOCAL_AI_MODEL="''${LOCAL_AI_MODEL:-$(printf '%s\n' $ACCOUNTED_LOCAL_AI_MODELS | awk '{print $1}')}"
+              export ACCOUNTED_LOCAL_AI_MODELS="${localAiModelsEnv}"
+              export LOCAL_AI_MODEL="''${LOCAL_AI_MODEL:-$(printf '%s\n' $ACCOUNTED_LOCAL_AI_MODELS | awk 'NF { print $1; exit }')}"
 
               echo "Accounted local-AI eval shell"
               echo "  endpoint: $LOCAL_AI_BASE_URL"

@@ -16,7 +16,7 @@ import { config } from 'dotenv'
 config({ path: '.env.local' })
 
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, appendFile } from 'node:fs/promises'
+import { mkdir, readFile, appendFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { z } from 'zod'
@@ -52,6 +52,7 @@ type EvalGroup = 'smoke' | 'composer' | 'assistant' | 'transaction' | 'classific
 type AssistantEvalMode = 'oracle-context' | 'end-to-end'
 
 const CASE_PREIMAGE_VERSION = 1
+const LOGICAL_CASE_PREIMAGE_VERSION = 1
 const SCORING_VERSION = 1
 const DEFAULT_RESULTS_DIR = join('scripts', 'evals', 'results')
 
@@ -62,6 +63,8 @@ interface CliOptions {
   runs: number
   resultsDir: string
   persist: boolean
+  resume: boolean
+  dryRun: boolean
 }
 
 type FailureSeverity = 'hard' | 'severe' | 'mild'
@@ -75,7 +78,9 @@ interface EvalFailure {
 interface EvalResult {
   runId: string
   attemptId: string
+  resumeKey: string
   caseHash: string
+  logicalCaseHash: string
   model: string
   group: EvalGroup
   id: string
@@ -86,15 +91,35 @@ interface EvalResult {
   checks: Record<string, boolean>
   failures: EvalFailure[]
   notes: string[]
+  evalContext?: EvalContext
   stages?: Record<string, unknown>
 }
+
+interface EvalSkip {
+  kind: 'skip'
+  reason: 'completed'
+  model: string
+  group: EvalGroup
+  id: string
+  run: number
+  variant: string
+  caseHash: string
+  logicalCaseHash: string
+  resumeKey: string
+  priorAttemptId: string | null
+}
+
+type EvalOutcome = EvalResult | EvalSkip
 
 interface EvalCaseDefinition {
   caseId: string
   group: EvalGroup
   caseHash: string
+  logicalCaseHash: string
   runId: string
   preimage: Record<string, unknown>
+  logicalPreimage: Record<string, unknown>
+  evalContext?: EvalContext
 }
 
 interface EvalPersistence {
@@ -104,6 +129,29 @@ interface EvalPersistence {
   manifestPath: string
   attemptsPath: string
   seenCaseHashes: Set<string>
+  completedAttempts: Map<string, CompletedAttempt>
+}
+
+interface CompletedAttempt {
+  attemptId: string | null
+  caseHash: string
+  logicalCaseHash: string
+}
+
+interface EvalContext {
+  today?: string
+  today_source?: 'current' | 'historical' | 'none'
+  date_policy?: 'agnostic' | 'fixed' | 'none'
+}
+
+interface PlannedCase {
+  model: string
+  group: EvalGroup
+  id: string
+  run: number
+  variant: string
+  logicalCaseHash: string
+  resumeKey: string
 }
 
 interface ModelSummary {
@@ -1201,27 +1249,44 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.models.length === 0) {
     const configured = process.env.LOCAL_AI_MODEL?.trim()
-    if (configured) options.models.push(configured)
+    if (configured) options.models.push(firstModelToken(configured))
   }
   if (options.models.length === 0) {
     throw new Error('Set LOCAL_AI_MODEL or pass --models model-a,model-b.')
   }
-  if (!process.env.LOCAL_AI_BASE_URL?.trim()) {
+  if (!options.dryRun && !process.env.LOCAL_AI_BASE_URL?.trim()) {
     throw new Error('Set LOCAL_AI_BASE_URL to an OpenAI-compatible local endpoint.')
   }
   process.env.AI_PROVIDER = 'local'
 
-  const persistence = options.persist ? await initPersistence(options.resultsDir) : null
+  const persistence = options.persist ? await initPersistence(options.resultsDir, options.resume) : null
+  const planned = planCases(options)
+  if (options.dryRun) {
+    printDryRunPlan(planned, persistence)
+    return
+  }
   if (persistence && !options.json) {
     console.log(`Persisting eval results to ${persistence.attemptsPath}`)
     console.log(`Case manifest: ${persistence.manifestPath}`)
+    if (options.resume) {
+      console.log(`Resume index: ${persistence.completedAttempts.size} completed attempts`)
+    }
   }
 
   const results: EvalResult[] = []
-  const collect = async (promise: Promise<EvalResult>) => {
+  const skips: EvalSkip[] = []
+  const collect = async (promise: Promise<EvalOutcome>) => {
     const row = await promise
-    results.push(row)
-    await appendAttemptResult(persistence, row)
+    if ('kind' in row && row.kind === 'skip') {
+      skips.push(row)
+      if (!options.json) {
+        console.log(`SKIP ${row.model} ${row.group}/${row.id} run=${row.run} variant=${row.variant}`)
+      }
+      return
+    }
+    const result = row as EvalResult
+    results.push(result)
+    await appendAttemptResult(persistence, result)
   }
 
   for (const model of options.models) {
@@ -1262,10 +1327,13 @@ async function main() {
   }
 
   if (options.json) {
-    console.log(JSON.stringify({ summaries: summarize(results), results }, null, 2))
+    console.log(JSON.stringify({ summaries: summarize(results), results, skipped: skips }, null, 2))
     return
   }
 
+  if (skips.length > 0) {
+    console.log(`\nSkipped completed attempts: ${skips.length}`)
+  }
   printHumanSummary(results)
 }
 
@@ -1275,7 +1343,7 @@ async function runSmokeStructured(
   run: number,
   variant: EvalVariant,
   persistence: EvalPersistence | null,
-): Promise<EvalResult> {
+): Promise<EvalOutcome> {
   const request = {
     model: SONNET_MODEL,
     maxTokens: 256,
@@ -1299,6 +1367,8 @@ async function runSmokeStructured(
     },
     scoring: ['valid_structured_output', 'correct_transaction_id', 'correct_category'],
   })
+  const skipped = skippedCompletedAttempt(persistence, model, caseDef, run, variant)
+  if (skipped) return skipped
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -1330,7 +1400,7 @@ async function runSmokeTool(
   run: number,
   variant: EvalVariant,
   persistence: EvalPersistence | null,
-): Promise<EvalResult> {
+): Promise<EvalOutcome> {
   const request = {
     model: SONNET_MODEL,
     maxTokens: 512,
@@ -1355,6 +1425,8 @@ async function runSmokeTool(
     },
     scoring: ['valid_tool_call', 'allowed_tool_name', 'correct_transaction_id', 'correct_category'],
   })
+  const skipped = skippedCompletedAttempt(persistence, model, caseDef, run, variant)
+  if (skipped) return skipped
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -1390,7 +1462,7 @@ async function runComposerFixture(
   run: number,
   variant: EvalVariant,
   persistence: EvalPersistence | null,
-): Promise<EvalResult> {
+): Promise<EvalOutcome> {
   const caseDef = await defineCase(persistence, 'composer', fixture.id, variant, {
     system: ATOM_SELECTION_SYSTEM_PROMPT,
     user_prompt: buildAtomSelectionUserPrompt(fixture.inputs),
@@ -1415,6 +1487,8 @@ async function runComposerFixture(
       'final_unknown_atoms_absent',
     ],
   })
+  const skipped = skippedCompletedAttempt(persistence, model, caseDef, run, variant)
+  if (skipped) return skipped
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -1479,7 +1553,7 @@ async function runAssistantFixture(
   run: number,
   variant: EvalVariant,
   persistence: EvalPersistence | null,
-): Promise<EvalResult> {
+): Promise<EvalOutcome> {
   const intent = getIntent(fixture.intentId)
   if (!intent) throw new Error(`Assistant fixture ${fixture.id} references unknown intent ${fixture.intentId}.`)
 
@@ -1497,6 +1571,7 @@ async function runAssistantFixture(
     profileSummary: fixture.company.profileSummary,
     activeMemory: fixture.company.memory.map((m) => ({ content: m.content })),
   })
+  const evalToday = swedishToday()
   const systemPrompt = await buildSystemPrompt({
     intent,
     companyId: fixture.company.companyId,
@@ -1505,11 +1580,12 @@ async function runAssistantFixture(
     profileSummary: fixture.company.profileSummary,
     rankedMemory: fixture.company.memory,
     vatStatus: fixture.company.vatStatus,
-    today: swedishToday(),
+    today: evalToday,
     supabase: supabase as never,
   })
   const exposedTools = fixtureAssistantTools(intent, fixture.turns[0]?.toolResults)
   const caseDef = await defineCase(persistence, 'assistant', `${fixture.id}:${mode}`, variant, {
+    eval_context: assistantEvalContext(evalToday),
     mode,
     description: fixture.description,
     request_context: {
@@ -1543,7 +1619,28 @@ async function runAssistantFixture(
       'grounded_in_atoms',
       'manual_review_payload_emitted',
     ],
+  }, {
+    evalContext: assistantEvalContext(evalToday),
+    logicalPreimage: assistantLogicalPreimageFromRendered({
+      group: 'assistant',
+      caseId: `${fixture.id}:${mode}`,
+      mode,
+      description: fixture.description,
+      requestContext: {
+        intent_id: intent.id,
+        intent_args: fixture.intentArgs,
+        company: fixture.company,
+        tools: exposedTools.map(normalizeTool),
+      },
+      scenarioTurns: fixture.turns,
+      expected: {
+        selected_atoms: fixture.expectedSelectedAtoms,
+        oracle_atoms: fixture.oracleAtoms,
+      },
+    }),
   })
+  const skipped = skippedCompletedAttempt(persistence, model, caseDef, run, { id: `${variant.id}:${mode}` })
+  if (skipped) return skipped
 
   const started = performance.now()
   const checks: Record<string, boolean> = {
@@ -1638,7 +1735,7 @@ async function runTransactionFixture(
   run: number,
   variant: EvalVariant,
   persistence: EvalPersistence | null,
-): Promise<EvalResult> {
+): Promise<EvalOutcome> {
   const messages = perturbTransactionMessages(fixture.messages, variant)
   const system = [{
     kind: 'text' as const,
@@ -1675,6 +1772,8 @@ async function runTransactionFixture(
       'queried_history_when_required',
     ],
   })
+  const skipped = skippedCompletedAttempt(persistence, model, caseDef, run, variant)
+  if (skipped) return skipped
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -1758,7 +1857,7 @@ async function runQueuedClassificationFixture(
   run: number,
   variant: EvalVariant,
   persistence: EvalPersistence | null,
-): Promise<EvalResult> {
+): Promise<EvalOutcome> {
   const system = [
     'Du klassificerar svenska företagstransaktioner för köad granskning.',
     'Returnera endast ett strukturerat beslut via verktyget.',
@@ -1790,6 +1889,8 @@ async function runQueuedClassificationFixture(
       'conservative_review_boundary',
     ],
   })
+  const skipped = skippedCompletedAttempt(persistence, model, caseDef, run, variant)
+  if (skipped) return skipped
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -1815,7 +1916,7 @@ async function runQueuedClassificationFixture(
     checks.valid_structured_output = parsed.success
     if (!parsed.success) {
       notes.push(parsed.error.message)
-      return result(model, caseDef, run, variant, started, checks, notes, {
+        return result(model, caseDef, run, variant, started, checks, notes, {
         failures: [{
           code: 'invalid_structured_output',
           severity: 'hard',
@@ -2601,51 +2702,142 @@ function queuedClassificationFailures(
   return failures
 }
 
-async function initPersistence(resultsDir: string): Promise<EvalPersistence> {
+async function initPersistence(resultsDir: string, resume: boolean): Promise<EvalPersistence> {
   const runId = new Date().toISOString().replace(/[:.]/g, '-') + `-${randomUUID().slice(0, 8)}`
   const manifestPath = join(resultsDir, 'case-manifest.jsonl')
   const attemptsPath = join(resultsDir, `attempt-results-${runId}.jsonl`)
   await mkdir(resultsDir, { recursive: true })
+  const manifests = await readCaseManifest(manifestPath)
   return {
     runId,
     startedAt: new Date().toISOString(),
     resultsDir,
     manifestPath,
     attemptsPath,
-    seenCaseHashes: await readManifestHashes(manifestPath),
+    seenCaseHashes: new Set(manifests.keys()),
+    completedAttempts: resume ? await readCompletedAttempts(resultsDir, manifests) : new Map(),
   }
 }
 
-async function readManifestHashes(manifestPath: string): Promise<Set<string>> {
+async function readCaseManifest(manifestPath: string): Promise<Map<string, Record<string, unknown>>> {
   try {
     const text = await readFile(manifestPath, 'utf8')
-    const hashes = new Set<string>()
+    const manifests = new Map<string, Record<string, unknown>>()
     for (const line of text.split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
       try {
-        const row = JSON.parse(trimmed) as { case_hash?: unknown }
-        if (typeof row.case_hash === 'string') hashes.add(row.case_hash)
+        const row = JSON.parse(trimmed) as { case_hash?: unknown; preimage?: unknown }
+        if (typeof row.case_hash === 'string' && isRecord(row.preimage)) {
+          manifests.set(row.case_hash, row.preimage)
+        }
       } catch {
         // Ignore malformed historical rows. The append path below will still
         // record any missing hash encountered during this run.
       }
     }
-    return hashes
+    return manifests
   } catch (err) {
     if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
-      return new Set()
+      return new Map()
     }
     throw err
   }
+}
+
+async function readCompletedAttempts(
+  resultsDir: string,
+  manifests: Map<string, Record<string, unknown>>,
+): Promise<Map<string, CompletedAttempt>> {
+  const completed = new Map<string, CompletedAttempt>()
+  let names: string[]
+  try {
+    names = await readdir(resultsDir)
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return completed
+    throw err
+  }
+
+  for (const name of names) {
+    if (!name.startsWith('attempt-results-') || !name.endsWith('.jsonl')) continue
+    const path = join(resultsDir, name)
+    let text: string
+    try {
+      text = await readFile(path, 'utf8')
+    } catch {
+      continue
+    }
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const row = JSON.parse(trimmed) as Record<string, unknown>
+        const completedAttempt = completedAttemptFromHistoricalRow(row, manifests)
+        if (!completedAttempt) continue
+        completed.set(completedAttempt.key, {
+          attemptId: completedAttempt.attemptId,
+          caseHash: completedAttempt.caseHash,
+          logicalCaseHash: completedAttempt.logicalCaseHash,
+        })
+      } catch {
+        // Ignore malformed historical attempts. They remain audit artifacts,
+        // but cannot safely drive resume decisions.
+      }
+    }
+  }
+
+  return completed
+}
+
+function completedAttemptFromHistoricalRow(
+  row: Record<string, unknown>,
+  manifests: Map<string, Record<string, unknown>>,
+): (CompletedAttempt & { key: string }) | null {
+  const model = typeof row.model === 'string' ? row.model : null
+  const caseHash = typeof row.caseHash === 'string'
+    ? row.caseHash
+    : typeof row.case_hash === 'string'
+      ? row.case_hash
+      : null
+  const run = typeof row.run === 'number' ? row.run : null
+  if (!model || !caseHash || !run) return null
+
+  const logicalCaseHash = typeof row.logicalCaseHash === 'string'
+    ? row.logicalCaseHash
+    : logicalCaseHashForHistoricalAttempt(row, manifests.get(caseHash))
+  if (!logicalCaseHash) return null
+
+  const key = resumeKeyParts(model, logicalCaseHash, run)
+  return {
+    key,
+    attemptId: typeof row.attemptId === 'string' ? row.attemptId : null,
+    caseHash,
+    logicalCaseHash,
+  }
+}
+
+function logicalCaseHashForHistoricalAttempt(
+  row: Record<string, unknown>,
+  preimage: Record<string, unknown> | undefined,
+): string | null {
+  if (!preimage) return null
+  if (preimage.group === 'assistant') {
+    const logical = assistantLogicalPreimageFromHistorical(preimage)
+    return logical ? hashLogicalPreimage(logical) : null
+  }
+  return hashLogicalPreimage(defaultLogicalPreimage(preimage))
 }
 
 async function defineCase(
   persistence: EvalPersistence | null,
   group: EvalGroup,
   caseId: string,
-  variant: EvalVariant,
+  _variant: EvalVariant,
   preimage: Record<string, unknown>,
+  options: {
+    logicalPreimage?: Record<string, unknown>
+    evalContext?: EvalContext
+  } = {},
 ): Promise<EvalCaseDefinition> {
   const fullPreimage = {
     harness: 'local-ai',
@@ -2653,11 +2845,21 @@ async function defineCase(
     scoring_version: SCORING_VERSION,
     group,
     case_id: caseId,
-    variant: normalizeVariant(variant),
     ...preimage,
   }
   const caseHash = `sha256:${sha256Hex(canonicalJson(fullPreimage))}`
-  const definition = { caseId, group, caseHash, runId: persistence?.runId ?? 'memory-only', preimage: fullPreimage }
+  const logicalPreimage = options.logicalPreimage ?? defaultLogicalPreimage(fullPreimage)
+  const logicalCaseHash = hashLogicalPreimage(logicalPreimage)
+  const definition = {
+    caseId,
+    group,
+    caseHash,
+    logicalCaseHash,
+    runId: persistence?.runId ?? 'memory-only',
+    preimage: fullPreimage,
+    logicalPreimage,
+    evalContext: options.evalContext,
+  }
   await appendCaseManifest(persistence, definition)
   return definition
 }
@@ -2672,6 +2874,9 @@ async function appendCaseManifest(
     case_id: definition.caseId,
     group: definition.group,
     scoring_version: SCORING_VERSION,
+    logical_case_hash: definition.logicalCaseHash,
+    logical_preimage: definition.logicalPreimage,
+    ...(definition.evalContext ? { eval_context: definition.evalContext } : {}),
     preimage: definition.preimage,
     created_at: new Date().toISOString(),
   }
@@ -2686,12 +2891,414 @@ async function appendAttemptResult(
   if (!persistence) return
   await appendJsonLine(persistence.attemptsPath, {
     ...result,
+    logical_case_hash: result.logicalCaseHash,
+    resume_key: result.resumeKey,
     completed_at: new Date().toISOString(),
+  })
+  persistence.completedAttempts.set(resumeKeyParts(result.model, result.logicalCaseHash, result.run), {
+    attemptId: result.attemptId,
+    caseHash: result.caseHash,
+    logicalCaseHash: result.logicalCaseHash,
   })
 }
 
 async function appendJsonLine(path: string, value: unknown): Promise<void> {
   await appendFile(path, `${JSON.stringify(value)}\n`, 'utf8')
+}
+
+function skippedCompletedAttempt(
+  persistence: EvalPersistence | null,
+  model: string,
+  caseDef: EvalCaseDefinition,
+  run: number,
+  variant: EvalVariant,
+): EvalSkip | null {
+  if (!persistence) return null
+  const key = resumeKey(model, caseDef, run, variant)
+  const prior = persistence.completedAttempts.get(key)
+  if (!prior) return null
+  return {
+    kind: 'skip',
+    reason: 'completed',
+    model,
+    group: caseDef.group,
+    id: caseDef.caseId,
+    run,
+    variant: variant.id,
+    caseHash: caseDef.caseHash,
+    logicalCaseHash: caseDef.logicalCaseHash,
+    resumeKey: resumeKeyDisplay(key),
+    priorAttemptId: prior.attemptId,
+  }
+}
+
+function assistantEvalContext(today: string): EvalContext {
+  return {
+    today,
+    today_source: 'current',
+    date_policy: 'agnostic',
+  }
+}
+
+function assistantLogicalPreimageFromRendered(input: {
+  group: EvalGroup
+  caseId: string
+  mode: AssistantEvalMode
+  description: string
+  requestContext: {
+    intent_id: unknown
+    intent_args: unknown
+    company: unknown
+    tools: unknown
+  }
+  scenarioTurns: unknown
+  expected: unknown
+}): Record<string, unknown> {
+  return {
+    harness: 'local-ai',
+    logical_case_preimage_version: LOGICAL_CASE_PREIMAGE_VERSION,
+    scoring_version: SCORING_VERSION,
+    group: input.group,
+    case_id: input.caseId,
+    date_policy: 'agnostic',
+    mode: input.mode,
+    description: input.description,
+    request_context: {
+      intent_id: input.requestContext.intent_id,
+      intent_args: input.requestContext.intent_args,
+      company: input.requestContext.company,
+      tool_names: toolNames(input.requestContext.tools),
+    },
+    scenario_turns: input.scenarioTurns,
+    expected: input.expected,
+  }
+}
+
+function assistantLogicalPreimageFromHistorical(preimage: Record<string, unknown>): Record<string, unknown> | null {
+  if (!isRecord(preimage.request_context)) return null
+  const caseId = typeof preimage.case_id === 'string' ? preimage.case_id : null
+  if (!caseId) return null
+  return assistantLogicalPreimageFromRendered({
+    group: 'assistant',
+    caseId,
+    mode: preimage.mode === 'end-to-end' ? 'end-to-end' : 'oracle-context',
+    description: typeof preimage.description === 'string' ? preimage.description : '',
+    requestContext: {
+      intent_id: preimage.request_context.intent_id,
+      intent_args: preimage.request_context.intent_args,
+      company: preimage.request_context.company,
+      tools: preimage.request_context.tools,
+    },
+    scenarioTurns: preimage.scenario_turns,
+    expected: preimage.expected,
+  })
+}
+
+function toolNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((tool) => isRecord(tool) && typeof tool.name === 'string' ? tool.name : null)
+    .filter((name): name is string => !!name)
+    .sort()
+}
+
+function hashLogicalPreimage(preimage: Record<string, unknown>): string {
+  return `sha256:${sha256Hex(canonicalJson(preimage))}`
+}
+
+function planCases(options: CliOptions): PlannedCase[] {
+  const planned: PlannedCase[] = []
+  for (const model of options.models) {
+    for (let run = 1; run <= options.runs; run++) {
+      const variant = EVAL_VARIANTS[(run - 1) % EVAL_VARIANTS.length]
+      if (options.groups.has('smoke')) {
+        planned.push(plannedCase(model, 'smoke', 'smoke_generate_structured', run, variant, smokeStructuredLogicalPreimage(variant)))
+        planned.push(plannedCase(model, 'smoke', 'smoke_stream_with_tools', run, variant, smokeToolLogicalPreimage(variant)))
+      }
+      if (options.groups.has('composer')) {
+        for (const fixture of COMPOSER_FIXTURES) {
+          planned.push(plannedCase(model, 'composer', fixture.id, run, variant, composerLogicalPreimage(fixture, variant)))
+        }
+      }
+      if (options.groups.has('assistant')) {
+        for (const fixture of ASSISTANT_FIXTURES) {
+          planned.push(plannedAssistantCase(model, fixture, 'oracle-context', run, variant))
+          planned.push(plannedAssistantCase(model, fixture, 'end-to-end', run, variant))
+        }
+      }
+      if (options.groups.has('transaction')) {
+        for (const fixture of TRANSACTION_FIXTURES) {
+          planned.push(plannedCase(model, 'transaction', fixture.id, run, variant, transactionLogicalPreimage(fixture, variant)))
+        }
+      }
+      if (options.groups.has('classification')) {
+        for (const fixture of QUEUED_CLASSIFICATION_FIXTURES) {
+          planned.push(plannedCase(model, 'classification', fixture.id, run, variant, queuedClassificationLogicalPreimage(fixture, variant)))
+        }
+      }
+    }
+  }
+  return planned
+}
+
+function plannedCase(
+  model: string,
+  group: EvalGroup,
+  id: string,
+  run: number,
+  variant: EvalVariant,
+  logicalPreimage: Record<string, unknown>,
+): PlannedCase {
+  const logicalCaseHash = hashLogicalPreimage(logicalPreimage)
+  const displayVariant = group === 'assistant' ? variant.id : variant.id
+  return {
+    model,
+    group,
+    id,
+    run,
+    variant: displayVariant,
+    logicalCaseHash,
+    resumeKey: resumeKeyDisplay(resumeKeyParts(model, logicalCaseHash, run)),
+  }
+}
+
+function plannedAssistantCase(
+  model: string,
+  fixture: AssistantFixture,
+  mode: AssistantEvalMode,
+  run: number,
+  variant: EvalVariant,
+): PlannedCase {
+  const intent = getIntent(fixture.intentId)
+  if (!intent) throw new Error(`Assistant fixture ${fixture.id} references unknown intent ${fixture.intentId}.`)
+  const caseId = `${fixture.id}:${mode}`
+  const displayVariant = `${variant.id}:${mode}`
+  const exposedTools = fixtureAssistantTools(intent, fixture.turns[0]?.toolResults)
+  const logicalPreimage = assistantLogicalPreimageFromRendered({
+    group: 'assistant',
+    caseId,
+    mode,
+    description: fixture.description,
+    requestContext: {
+      intent_id: intent.id,
+      intent_args: fixture.intentArgs,
+      company: fixture.company,
+      tools: exposedTools.map(normalizeTool),
+    },
+    scenarioTurns: fixture.turns,
+    expected: {
+      selected_atoms: fixture.expectedSelectedAtoms,
+      oracle_atoms: fixture.oracleAtoms,
+    },
+  })
+  const logicalCaseHash = hashLogicalPreimage(logicalPreimage)
+  return {
+    model,
+    group: 'assistant',
+    id: caseId,
+    run,
+    variant: displayVariant,
+    logicalCaseHash,
+    resumeKey: resumeKeyDisplay(resumeKeyParts(model, logicalCaseHash, run)),
+  }
+}
+
+function printDryRunPlan(planned: PlannedCase[], persistence: EvalPersistence | null): void {
+  let skipped = 0
+  let runnable = 0
+  for (const item of planned) {
+    const prior = persistence?.completedAttempts.get(resumeKeyParts(item.model, item.logicalCaseHash, item.run))
+    if (prior) {
+      skipped++
+      console.log(`SKIP ${item.model} ${item.group}/${item.id} run=${item.run} variant=${item.variant}`)
+      console.log(`  prior: ${prior.attemptId ?? prior.caseHash}`)
+    } else {
+      runnable++
+      console.log(`RUN  ${item.model} ${item.group}/${item.id} run=${item.run} variant=${item.variant}`)
+      console.log(`  logical: ${item.logicalCaseHash}`)
+    }
+  }
+  console.log(`\nDry run: ${skipped} skipped, ${runnable} would run, ${planned.length} total.`)
+}
+
+function baseLogicalPreimage(
+  group: EvalGroup,
+  caseId: string,
+  _variant: EvalVariant,
+  preimage: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    harness: 'local-ai',
+    case_preimage_version: CASE_PREIMAGE_VERSION,
+    logical_case_preimage_version: LOGICAL_CASE_PREIMAGE_VERSION,
+    scoring_version: SCORING_VERSION,
+    group,
+    case_id: caseId,
+    ...preimage,
+  }
+}
+
+function defaultLogicalPreimage(fullPreimage: Record<string, unknown>): Record<string, unknown> {
+  const { variant: _variant, ...rest } = fullPreimage
+  return {
+    logical_case_preimage_version: LOGICAL_CASE_PREIMAGE_VERSION,
+    ...rest,
+  }
+}
+
+function smokeStructuredLogicalPreimage(variant: EvalVariant): Record<string, unknown> {
+  return baseLogicalPreimage('smoke', 'smoke_generate_structured', variant, {
+    request: {
+      maxTokens: 256,
+      system: [
+        'You are testing a strict model-provider contract.',
+        'Use the provided tool exactly once. Do not write prose.',
+      ].join('\n'),
+      messages: [
+        textMessage(
+          'user',
+          'Classify transaction tx_smoke_software. Description: "Linear.app subscription". Amount: -120 SEK. Return category expense_software and needs_review false.',
+        ),
+      ],
+    },
+    structured_schema: SMOKE_STRUCTURED_TOOL_SCHEMA,
+    expected: {
+      transaction_id: 'tx_smoke_software',
+      category: 'expense_software',
+    },
+    scoring: ['valid_structured_output', 'correct_transaction_id', 'correct_category'],
+  })
+}
+
+function smokeToolLogicalPreimage(variant: EvalVariant): Record<string, unknown> {
+  return baseLogicalPreimage('smoke', 'smoke_stream_with_tools', variant, {
+    request: {
+      maxTokens: 512,
+      system: [{ kind: 'text' as const, text: 'Call gnubok_categorize_transaction exactly once. Do not answer in prose.' }],
+      messages: [
+        textMessage(
+          'user',
+          'Transaction tx_smoke_tool is a -59 SEK bank fee. Stage it as expense_bank_fees.',
+        ),
+      ],
+      tools: [CATEGORIZE_TOOL].map(normalizeTool),
+    },
+    expected: {
+      tool_name: 'gnubok_categorize_transaction',
+      transaction_id: 'tx_smoke_tool',
+      category: 'expense_bank_fees',
+    },
+    scoring: ['valid_tool_call', 'allowed_tool_name', 'correct_transaction_id', 'correct_category'],
+  })
+}
+
+function composerLogicalPreimage(
+  fixture: (typeof COMPOSER_FIXTURES)[number],
+  variant: EvalVariant,
+): Record<string, unknown> {
+  return baseLogicalPreimage('composer', fixture.id, variant, {
+    system: ATOM_SELECTION_SYSTEM_PROMPT,
+    user_prompt: buildAtomSelectionUserPrompt(fixture.inputs),
+    structured_schema: {
+      name: 'compose_agent_profile',
+      schema: ATOM_SELECTION_TOOL_SCHEMA,
+    },
+    expected: {
+      required_atoms: fixture.requiredAtoms,
+      forbidden_atoms: fixture.forbiddenAtoms,
+      forbidden_question_words: fixture.forbiddenQuestionWords,
+    },
+    scoring: [
+      'raw_valid_structured_output',
+      'final_valid_structured_output',
+      'raw_required_atoms_present',
+      'final_required_atoms_present',
+      'raw_forbidden_atoms_absent',
+      'final_forbidden_atoms_absent',
+      'no_redundant_questions',
+      'raw_unknown_atoms_absent',
+      'final_unknown_atoms_absent',
+    ],
+  })
+}
+
+function transactionLogicalPreimage(
+  fixture: (typeof TRANSACTION_FIXTURES)[number],
+  variant: EvalVariant,
+): Record<string, unknown> {
+  const messages = perturbTransactionMessages(fixture.messages, variant)
+  const system = [{
+    kind: 'text' as const,
+    text: [
+      'Du är Accounteds lokala bokföringsassistent.',
+      'Använd bara de verktyg du fått. Hitta inte på verktyg, kategorier, BAS-konton eller transaction_id.',
+      'När information saknas ska du fråga användaren kort i stället för att staga en bokning.',
+    ].join('\n'),
+  }]
+  return baseLogicalPreimage('transaction', fixture.id, variant, {
+    request: {
+      maxTokens: (transactionCategorization.thinking?.budgetTokens ?? 0) + 2048,
+      system,
+      messages,
+      tools: TRANSACTION_TOOLS.map(normalizeTool),
+      thinkingBudgetTokens: transactionCategorization.thinking?.budgetTokens,
+    },
+    expected: {
+      transaction_id: fixture.expectedTransactionId,
+      category: fixture.expectedCategory,
+      vat_treatment: fixture.expectedVatTreatment,
+      must_call_categorize: fixture.mustCallCategorize,
+      must_call_query_journal: fixture.mustCallQueryJournal,
+      must_ask_or_retrieve: fixture.mustAskOrRetrieve,
+    },
+    scoring: [
+      'valid_tool_call',
+      'allowed_tool_name',
+      'correct_transaction_id',
+      'expected_category',
+      'expected_vat_treatment',
+      'respected_review_boundary',
+      'requested_context_or_question',
+      'queried_history_when_required',
+    ],
+  })
+}
+
+function queuedClassificationLogicalPreimage(
+  fixture: (typeof QUEUED_CLASSIFICATION_FIXTURES)[number],
+  variant: EvalVariant,
+): Record<string, unknown> {
+  const system = [
+    'Du klassificerar svenska företagstransaktioner för köad granskning.',
+    'Returnera endast ett strukturerat beslut via verktyget.',
+    'Kategorisera bara när bankrad, underlag och historik räcker för en säker kategori.',
+    'Sätt action=needs_review när syftet saknas eller avgör privat, representation, alkohol, restaurang, resor, gåvor, blandade inköp eller oklar affärsnytta.',
+    'För utländska B2B-mjukvarutjänster till svenskt momsregistrerat bolag används vat_treatment=reverse_charge, inte standard_25.',
+    'När action=needs_review ska category och vat_treatment vara null och review_reason ska kort säga vad som saknas.',
+  ].join('\n')
+  const prompt = perturbClassificationPrompt(fixture.prompt, variant)
+  return baseLogicalPreimage('classification', fixture.id, variant, {
+    request: {
+      maxTokens: 512,
+      system,
+      messages: [textMessage('user', prompt)],
+    },
+    structured_schema: QUEUED_CLASSIFICATION_TOOL_SCHEMA,
+    expected: {
+      transaction_id: fixture.expectedTransactionId,
+      action: fixture.expectedAction,
+      category: fixture.expectedCategory,
+      vat_treatment: fixture.expectedVatTreatment,
+    },
+    scoring: [
+      'valid_structured_output',
+      'correct_transaction_id',
+      'expected_action',
+      'expected_category',
+      'expected_vat_treatment',
+      'conservative_review_boundary',
+    ],
+  })
 }
 
 function normalizeVariant(variant: EvalVariant): Record<string, unknown> {
@@ -2744,6 +3351,22 @@ function attemptId(model: string, caseDef: EvalCaseDefinition, run: number, vari
   ].join(':')
 }
 
+function resumeKey(model: string, caseDef: EvalCaseDefinition, run: number, _variant: EvalVariant): string {
+  return resumeKeyParts(model, caseDef.logicalCaseHash, run)
+}
+
+function resumeKeyParts(model: string, logicalCaseHash: string, run: number): string {
+  return [
+    `model=${model}`,
+    `logical=${logicalCaseHash}`,
+    `run=${run}`,
+  ].join('\0')
+}
+
+function resumeKeyDisplay(key: string): string {
+  return key.replaceAll('\0', ':')
+}
+
 function result(
   model: string,
   caseDef: EvalCaseDefinition,
@@ -2761,7 +3384,9 @@ function result(
   return {
     runId: caseDef.runId,
     attemptId: attemptId(model, caseDef, run, variant),
+    resumeKey: resumeKeyDisplay(resumeKey(model, caseDef, run, variant)),
     caseHash: caseDef.caseHash,
+    logicalCaseHash: caseDef.logicalCaseHash,
     model,
     group: caseDef.group,
     id: caseDef.caseId,
@@ -2772,6 +3397,7 @@ function result(
     checks,
     failures,
     notes,
+    ...(caseDef.evalContext ? { evalContext: caseDef.evalContext } : {}),
     ...(options.stages ? { stages: options.stages } : {}),
   }
 }
@@ -2906,6 +3532,8 @@ function parseArgs(argv: string[]): CliOptions {
   let runs = 3
   let resultsDir = DEFAULT_RESULTS_DIR
   let persist = true
+  let resume = true
+  let dryRun = false
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -2934,6 +3562,11 @@ function parseArgs(argv: string[]): CliOptions {
       resultsDir = arg.slice('--results-dir='.length)
     } else if (arg === '--no-persist') {
       persist = false
+      resume = false
+    } else if (arg === '--no-resume') {
+      resume = false
+    } else if (arg === '--dry-run') {
+      dryRun = true
     } else if (arg === '--help' || arg === '-h') {
       printHelp()
       process.exit(0)
@@ -2945,8 +3578,11 @@ function parseArgs(argv: string[]): CliOptions {
   if (persist && !resultsDir.trim()) {
     throw new Error('--results-dir must not be empty when persistence is enabled.')
   }
+  if (dryRun && !persist) {
+    resume = false
+  }
 
-  return { models, groups, json, runs, resultsDir, persist }
+  return { models, groups, json, runs, resultsDir, persist, resume, dryRun }
 }
 
 function splitList(value: string): string[] {
@@ -2954,6 +3590,10 @@ function splitList(value: string): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
+}
+
+function firstModelToken(value: string): string {
+  return value.split(/\s+/).find(Boolean) ?? ''
 }
 
 function parseGroup(value: string): EvalGroup {
@@ -2979,7 +3619,7 @@ function parsePositiveInteger(value: string, flag: string): number {
 
 function printHelp() {
   console.log([
-    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,assistant,transaction,classification] [--runs n] [--results-dir path] [--no-persist] [--json]',
+    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,assistant,transaction,classification] [--runs n] [--results-dir path] [--dry-run] [--no-resume] [--no-persist] [--json]',
     '',
     'Environment:',
     '  LOCAL_AI_BASE_URL   OpenAI-compatible /v1 base URL or /chat/completions URL',
@@ -2990,6 +3630,8 @@ function printHelp() {
     'Options:',
     '  --runs n           Repeat every selected fixture n times, default 3',
     `  --results-dir path Write case manifest and attempt JSONL, default ${DEFAULT_RESULTS_DIR}`,
+    '  --dry-run          Print which attempts would run or be skipped without calling the model',
+    '  --no-resume        Ignore prior attempt JSONL rows and run selected attempts again',
     '  --no-persist       Disable JSONL persistence and only print stdout output',
   ].join('\n'))
 }

@@ -76,19 +76,13 @@ nix develop .#local-ai
 Default candidates:
 
 ```bash
-qwen3:32b qwen3:30b gpt-oss:20b mistral-small3.1:24b command-r:35b deepseek-r1:32b
+qwen3:32b qwen3:30b gpt-oss:20b mistral-small3.1:24b command-r:35b deepseek-r1:32b llama3.3:70b hermes3:70b
 ```
 
-Override the candidate list before entering the shell:
+Override the candidate list for a single run:
 
 ```bash
-ACCOUNTED_LOCAL_AI_MODELS="qwen3:32b gpt-oss:20b" nix develop .#local-ai
-```
-
-Optional heavier candidates for offline runs:
-
-```bash
-ACCOUNTED_LOCAL_AI_MODELS="llama3.3:70b hermes3:70b" nix develop .#local-ai
+accounted-local-ai-eval --models qwen3:32b,gpt-oss:20b
 ```
 
 Skip npm install or Ollama startup when you already prepared them:
@@ -127,6 +121,8 @@ npm run eval:local-ai -- --groups assistant
 npm run eval:local-ai -- --groups smoke,transaction
 npm run eval:local-ai -- --groups classification
 npm run eval:local-ai -- --runs 5
+npm run eval:local-ai -- --dry-run
+npm run eval:local-ai -- --no-resume
 npm run eval:local-ai -- --results-dir /tmp/accounted-local-ai-results
 npm run eval:local-ai -- --json
 ```
@@ -142,14 +138,29 @@ attempts and the exact case definitions already seen. By default it writes to
 
 Each case hash is computed from a canonical preimage containing the effective
 prompt/messages, resolved assistant context, selected atoms, tool or
-structured-output schema, fixture expectations, variant wording, and
-scoring-policy version. For assistant cases, every attempt persists the full
-turn transcript, resolved context, selected atoms, tool calls, tool results,
-final response, latency, scoring result, and a structured manual-review rubric.
+structured-output schema, fixture expectations, and scoring-policy version.
+Variant metadata is not hashed by itself; if a variant changes a prompt or
+message, that changed effective input is what changes the hash. For assistant
+cases, every attempt persists the full turn transcript, resolved context,
+selected atoms, tool calls, tool results, final response, latency, scoring
+result, and a structured manual-review rubric.
 If a fixture name stays the same but the prompt, resolved context, atom
 selection, or expected behavior changes, the hash changes. The manifest stores
 the preimage the first time the hash is encountered so old results remain
 auditable after the TypeScript fixtures evolve.
+
+Resume mode is enabled by default. On startup the harness parses existing
+attempt JSONL files in memory and skips attempts whose resume key has already
+completed. The resume key includes the model tag, logical case hash, and run
+number. The model tag is intentionally used as the local eval identity so
+short-lived runs can reuse results already accumulated in `scripts/evals/results`.
+
+Assistant logical hashes use a date-agnostic fixture identity so completed
+assistant attempts can be reused across runs made on different dates, while the
+exact materialized case hash still records the rendered prompt date for audit.
+
+Use `--dry-run` to print which attempts would run or be skipped without calling
+the model. Use `--no-resume` to ignore prior attempt rows.
 
 Use `--no-persist` for stdout-only probing.
 
