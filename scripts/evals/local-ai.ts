@@ -22,12 +22,16 @@ import { performance } from 'node:perf_hooks'
 import { z } from 'zod'
 import {
   getModelProvider,
+  setModelProviderForTest,
   textMessage,
   type ModelContentBlock,
   type ModelMessage,
+  type ModelSystemBlock,
   type ModelProvider,
   type StructuredSchema,
 } from '../../lib/agent/model-provider'
+import { runChatTurn, type StreamEvent } from '../../lib/agent/chat/run-turn'
+import { buildSystemPrompt } from '../../lib/agent/chat/system-prompt'
 import { SONNET_MODEL } from '../../lib/agent/composer/client'
 import {
   buildAtomSelectionUserPrompt,
@@ -38,9 +42,14 @@ import {
 import { ATOM_SELECTION_TOOL_SCHEMA, AtomSelectionSchema, type AtomSelection } from '../../lib/agent/composer/schemas'
 import type { ComposerInputs, AtomRegistryIndexRow } from '../../lib/agent/composer/inputs'
 import { transactionCategorization } from '../../lib/agent/intents/transaction-categorization'
+import { getIntent } from '../../lib/agent/intents/registry'
+import type { AgentIntent } from '../../lib/agent/intents/types'
+import { agentToolRegistry, registerAgentTools } from '../../lib/agent/tools/registry'
 import type { AgentTool } from '../../lib/agent/tools/types'
+import { swedishToday } from '../../lib/utils'
 
-type EvalGroup = 'smoke' | 'composer' | 'transaction' | 'classification'
+type EvalGroup = 'smoke' | 'composer' | 'assistant' | 'transaction' | 'classification'
+type AssistantEvalMode = 'oracle-context' | 'end-to-end'
 
 const CASE_PREIMAGE_VERSION = 1
 const SCORING_VERSION = 1
@@ -110,6 +119,13 @@ interface ModelSummary {
   unnecessaryClarification: number
   failures: Record<FailureSeverity, number>
   transactionRouting: 'eligible' | 'blocked'
+  eligibility: {
+    assistantOracleContext: 'eligible' | 'blocked'
+    assistantEndToEnd: 'eligible' | 'blocked'
+    transactionCategorization: 'eligible' | 'blocked'
+    queuedClassification: 'eligible' | 'blocked'
+    composer: 'eligible' | 'blocked'
+  }
   latencyMs: {
     min: number
     median: number
@@ -145,6 +161,51 @@ interface EvalVariant {
   classificationPrefix?: string
   classificationSuffix?: string
   transactionReminder?: string
+}
+
+interface AssistantExpectedConcept {
+  id: string
+  anyOf: string[]
+}
+
+interface AssistantFixture {
+  id: string
+  description: string
+  intentId: string
+  intentArgs: Record<string, unknown>
+  company: AssistantCompanyFixture
+  turns: AssistantTurnFixture[]
+  oracleAtoms: {
+    vertical: string[]
+    modifiers: string[]
+  }
+  expectedSelectedAtoms?: string[]
+}
+
+interface AssistantCompanyFixture {
+  companyId: string
+  companyName: string
+  firstName: string | null
+  profileSummary: string
+  vatStatus: { vat_registered: boolean; vat_number: string | null }
+  memory: { id: string; content: string; kind: string }[]
+  composerInputs: ComposerInputs
+}
+
+interface AssistantTurnFixture {
+  user: string
+  seedHistory?: ModelMessage[]
+  toolResults?: Record<string, unknown>
+  allowedTools?: string[]
+  requiredTools?: string[]
+  forbiddenTools?: string[]
+  requiredToolArgs?: Record<string, Record<string, unknown>>
+  forbiddenActions?: string[]
+  clarificationRequired?: boolean
+  shouldIncorporate?: string[]
+  requiredConcepts?: AssistantExpectedConcept[]
+  forbiddenClaims?: string[]
+  acceptableOutcomes?: string[]
 }
 
 const TRANSACTION_CATEGORIES = [
@@ -348,6 +409,7 @@ const EVAL_VARIANTS: EvalVariant[] = [
 
 const ATOM_INDEX: AtomRegistryIndexRow[] = [
   atom('horizontal/swedish-vat', 'horizontal', 'Svensk moms', 'Momsregler, avdragsrätt, omvänd skattskyldighet och momssatser.'),
+  atom('horizontal/swedish-accounting-compliance', 'horizontal', 'Bokföringskrav', 'Bokföringsskyldighet, verifikationer, underlag och arkivering.'),
   atom('horizontal/swedish-invoice-compliance', 'horizontal', 'Fakturakrav', 'Svenska faktura- och underlagskrav.'),
   atom('horizontal/swedish-year-end-closing', 'horizontal', 'Bokslut', 'Periodisering, bokslut och årsavslut.'),
   atom('horizontal/financial-reporting', 'horizontal', 'Finansiell rapportering', 'Årsredovisning och rapportering för aktiebolag.'),
@@ -360,6 +422,119 @@ const ATOM_INDEX: AtomRegistryIndexRow[] = [
   atom('modifier/small-employer', 'modifier', 'Liten arbetsgivare', 'Arbetsgivare med 1 till 9 anställda.'),
   atom('modifier/enskild-firma', 'modifier', 'Enskild firma', 'Enskild näringsidkare.'),
 ]
+
+const ASSISTANT_ATOM_BODIES: Record<string, string> = {
+  'horizontal/swedish-vat': [
+    '# Svensk moms',
+    'För ett svenskt momsregistrerat aktiebolag är normal svensk ingående moms avdragsgill när inköpet hör till momspliktig verksamhet och underlaget visar svensk moms.',
+    'Utländska B2B-programvarutjänster utan debiterad moms hanteras normalt med omvänd skattskyldighet när köparen är momsregistrerad.',
+    'Om företaget inte är momsregistrerat ska inköp bokas brutto utan ingående eller utgående moms.',
+    'Representation kräver affärssamband, deltagare och syfte. Saknas de uppgifterna ska assistenten be om komplettering i stället för att ge en definitiv behandling.',
+  ].join('\n'),
+  'horizontal/swedish-accounting-compliance': [
+    '# Svensk bokföring',
+    'En verifikation måste ha tillräckligt underlag för affärshändelsen. När avgörande fakta saknas ska svaret avgränsas eller följas av en konkret fråga.',
+    'Assistenten får förklara principer utan att stagea eller utföra en bokföringsåtgärd.',
+  ].join('\n'),
+  'horizontal/swedish-invoice-compliance': [
+    '# Fakturakrav',
+    'En leverantörsfaktura bör innehålla leverantör, datum, belopp, momsuppgift och vad inköpet avser. Saknas nyckelfält ska underlag läsas eller komplettering efterfrågas.',
+  ].join('\n'),
+  'vertical/konsult-it': [
+    '# IT-konsult',
+    'För ett IT-konsultbolag är SaaS, utvecklarverktyg och molntjänster normalt rörelsekostnader för programvara när de används i uppdrag eller intern drift.',
+  ].join('\n'),
+  'vertical/restaurant': [
+    '# Restaurang',
+    'Restaurangbolag har ofta livsmedelsinköp och försäljning med reducerade momssatser. Bolagets bransch kan därför ändra vilken fråga som är relevant.',
+  ].join('\n'),
+  'modifier/single-shareholder-ab-fmb': [
+    '# Ensamägt fåmansbolag',
+    'I ett ensamägt aktiebolag ska privata kostnader och ägarrelaterade förmåner hållas tydligt isär från bolagets kostnader.',
+  ].join('\n'),
+  'modifier/small-employer': [
+    '# Liten arbetsgivare',
+    'Ett bolag med anställda behöver skilja personalkostnader från representation och privata kostnader.',
+  ].join('\n'),
+}
+
+const ASSISTANT_TOOL_NAMES = [
+  'gnubok_search_tools',
+  'gnubok_list_skills',
+  'gnubok_load_skill',
+  'gnubok_remember_fact',
+  'gnubok_forget_fact',
+  'gnubok_get_income_statement',
+  'gnubok_get_balance_sheet',
+  'gnubok_get_trial_balance',
+  'gnubok_get_general_ledger',
+  'gnubok_get_kpi_report',
+  'gnubok_get_vat_report',
+  'gnubok_vat_close_check',
+  'gnubok_get_ar_ledger',
+  'gnubok_get_supplier_ledger',
+  'gnubok_get_reconciliation_status',
+  'gnubok_get_salary_journal',
+  'gnubok_year_end_readiness',
+  'gnubok_query_journal',
+  'gnubok_list_uncategorized_transactions',
+  'gnubok_list_transactions_without_documents',
+  'gnubok_list_invoices',
+  'gnubok_list_customers',
+  'gnubok_list_suppliers',
+  'gnubok_list_supplier_invoices',
+  'gnubok_list_accounts',
+  'gnubok_list_fiscal_periods',
+  'gnubok_list_employees',
+  'gnubok_list_inbox_items',
+  'gnubok_list_unmatched_documents',
+  'gnubok_list_voucher_gaps',
+  'gnubok_explain_voucher_gap',
+  'gnubok_get_inbox_item',
+  'gnubok_get_document_content',
+  'gnubok_get_counterparty_templates',
+]
+
+const DEFAULT_ASSISTANT_TOOL_RESULTS: Record<string, unknown> = {
+  gnubok_query_journal: {
+    verifikat: [
+      {
+        id: 'je_openai_2026_05',
+        date: '2026-05-28',
+        description: 'OpenAI ChatGPT subscription',
+        lines: [
+          { account_number: '5420', account_name: 'Programvaror', debit: 247.5, credit: 0 },
+          { account_number: '2645', account_name: 'Beräknad ingående moms på förvärv från utlandet', debit: 61.88, credit: 0 },
+          { account_number: '2614', account_name: 'Utgående moms omvänd skattskyldighet', debit: 0, credit: 61.88 },
+          { account_number: '1930', account_name: 'Företagskonto', debit: 0, credit: 247.5 },
+        ],
+      },
+    ],
+  },
+  gnubok_get_vat_report: {
+    period: { type: 'quarterly', year: 2026, period: 2, label: 'Q2 2026' },
+    boxes: { '05': 210000, '48': 18200, '49': -6400 },
+    summary: 'Q2 visar 210000 kr momspliktig försäljning och 6400 kr att få tillbaka.',
+  },
+  gnubok_vat_close_check: {
+    warnings: [],
+    status: 'ok',
+  },
+  gnubok_list_uncategorized_transactions: {
+    transactions: [
+      { id: 'tx_eval_openai_001', date: '2026-06-28', description: 'OPENAI CHATGPT SUBSCRIPTION', amount: -247.5, document_id: 'doc_eval_openai_001' },
+      { id: 'tx_eval_bistro_001', date: '2026-06-30', description: 'BISTRO SVEA STOCKHOLM', amount: -842, document_id: null },
+    ],
+  },
+  gnubok_get_document_content: {
+    document_id: 'doc_eval_openai_001',
+    text: 'Receipt from OpenAI, LLC. Service: ChatGPT subscription. Supplier country US. VAT charged 0. Total 247.50 SEK.',
+  },
+  gnubok_load_skill: {
+    id: 'horizontal/swedish-vat',
+    body: ASSISTANT_ATOM_BODIES['horizontal/swedish-vat'],
+  },
+}
 
 const COMPOSER_FIXTURES = [
   {
@@ -441,6 +616,259 @@ const COMPOSER_FIXTURES = [
     requiredAtoms: ['horizontal/swedish-payroll', 'modifier/small-employer'],
     forbiddenAtoms: ['modifier/single-shareholder-ab-fmb'],
     forbiddenQuestionWords: ['momsperiod', 'hur många anställda', 'vem äger'],
+  },
+]
+
+const ASSISTANT_COMPANIES = {
+  itConsult: assistantCompany({
+    companyId: 'company_assistant_it',
+    companyName: 'Klara Kod AB',
+    firstName: 'Klara',
+    profileSummary: 'Svenskt momsregistrerat aktiebolag. IT-konsult inom systemutveckling. Kvartalsmoms. En verksam ägare.',
+    vatStatus: { vat_registered: true, vat_number: 'SE559999999901' },
+    memory: [
+      { id: 'mem_openai', kind: 'pattern', content: 'OpenAI används som utvecklarverktyg och har tidigare bokförts som programvara med omvänd skattskyldighet.' },
+    ],
+    composerInputs: composerInput({
+      companyId: 'company_assistant_it',
+      companyName: 'Klara Kod AB',
+      entityType: 'aktiebolag',
+      companySettings: {
+        city: 'Stockholm',
+        moms_period: 'quarterly',
+        fiscal_year_start_month: 1,
+        f_skatt: true,
+        vat_registered: true,
+        employee_count: 0,
+        has_employees: false,
+        pays_salaries: false,
+        accounting_method: 'accrual',
+      },
+      ticSnapshot: {
+        legalEntityType: 'AB',
+        purpose: 'Konsultverksamhet inom systemutveckling och IT.',
+        registration: { fTax: true, vat: true, payroll: true },
+        employeeRange: '0 anställda',
+        sniCodes: [{ code: '62010', name: 'Dataprogrammering' }],
+        beneficialOwners: [{ name: 'Klara Test', extentDescription: 'Mer än 75 procent' }],
+        payrolls: [],
+        fiscalYear: { startMonthDay: '01-01', endMonthDay: '12-31' },
+      },
+      bankingSummary: {
+        monthly_volume: 95_000,
+        unbooked_count: 2,
+        top_counterparties: [{ name: 'OpenAI', abs_amount: 2475, direction: 'out', has_unbooked: true }],
+      },
+    }),
+  }),
+  nonVat: assistantCompany({
+    companyId: 'company_assistant_nonvat',
+    companyName: 'Nollmoms Design AB',
+    firstName: 'Nora',
+    profileSummary: 'Svenskt aktiebolag som inte är momsregistrerat enligt company_settings. Konsultverksamhet i liten skala.',
+    vatStatus: { vat_registered: false, vat_number: null },
+    memory: [],
+    composerInputs: composerInput({
+      companyId: 'company_assistant_nonvat',
+      companyName: 'Nollmoms Design AB',
+      entityType: 'aktiebolag',
+      companySettings: {
+        city: 'Göteborg',
+        moms_period: 'yearly',
+        fiscal_year_start_month: 1,
+        f_skatt: true,
+        vat_registered: false,
+        employee_count: 0,
+        has_employees: false,
+        pays_salaries: false,
+        accounting_method: 'cash',
+      },
+      ticSnapshot: {
+        legalEntityType: 'AB',
+        purpose: 'Konsultverksamhet inom design och kommunikation.',
+        registration: { fTax: true, vat: false, payroll: false },
+        employeeRange: '0 anställda',
+        sniCodes: [{ code: '74102', name: 'Grafisk designverksamhet' }],
+        beneficialOwners: [{ name: 'Nora Test', extentDescription: 'Mer än 75 procent' }],
+        payrolls: [],
+        fiscalYear: { startMonthDay: '01-01', endMonthDay: '12-31' },
+      },
+      bankingSummary: null,
+    }),
+  }),
+}
+
+const ASSISTANT_FIXTURES: AssistantFixture[] = [
+  {
+    id: 'assistant_straightforward_vat_answer',
+    description: 'Straight accounting question answerable from supplied VAT and company atoms.',
+    intentId: 'vat.review',
+    intentArgs: { period_type: 'quarterly', year: 2026, period: 2 },
+    company: ASSISTANT_COMPANIES.itConsult,
+    oracleAtoms: { vertical: ['vertical/konsult-it'], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    expectedSelectedAtoms: ['horizontal/swedish-vat', 'vertical/konsult-it', 'modifier/single-shareholder-ab-fmb'],
+    turns: [{
+      user: 'Kan jag dra av svensk moms på ett kontorsinköp som hör till konsultverksamheten?',
+      requiredConcepts: [
+        { id: 'vat_registered_required', anyOf: ['momsregistrerat', 'momsregistrerad'] },
+        { id: 'deductible_input_vat', anyOf: ['avdragsgill', 'dra av', 'ingående moms'] },
+      ],
+      forbiddenClaims: ['inte momsregistrerat', 'brutto utan moms'],
+      forbiddenTools: ['gnubok_approve_supplier_invoice', 'gnubok_categorize_transaction'],
+    }],
+  },
+  {
+    id: 'assistant_missing_representation_clarification',
+    description: 'Missing representation facts should trigger one focused clarification.',
+    intentId: 'general.help',
+    intentArgs: { route: '/transactions' },
+    company: ASSISTANT_COMPANIES.itConsult,
+    oracleAtoms: { vertical: ['vertical/konsult-it'], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    turns: [{
+      user: 'Jag betalade lunch på Bistro Svea för 842 kr. Hur ska det hanteras?',
+      clarificationRequired: true,
+      requiredConcepts: [
+        { id: 'asks_purpose_or_attendees', anyOf: ['syfte', 'deltagare', 'vem', 'kund'] },
+      ],
+      forbiddenClaims: ['definitivt avdragsgill', 'bokför den som representation', 'stagead'],
+      forbiddenTools: ['gnubok_remember_fact'],
+    }],
+  },
+  {
+    id: 'assistant_second_turn_completes_after_clarification',
+    description: 'Second turn supplies missing representation facts and answer should incorporate them.',
+    intentId: 'general.help',
+    intentArgs: { route: '/transactions' },
+    company: ASSISTANT_COMPANIES.itConsult,
+    oracleAtoms: { vertical: ['vertical/konsult-it'], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    turns: [
+      {
+        user: 'Jag betalade lunch på Bistro Svea för 842 kr. Hur ska det hanteras?',
+        clarificationRequired: true,
+        requiredConcepts: [{ id: 'asks_purpose_or_attendees', anyOf: ['syfte', 'deltagare', 'kund'] }],
+        forbiddenClaims: ['definitivt avdragsgill', 'bokför den som representation'],
+      },
+      {
+        user: 'Det var projektkickoff med kunden ACME, två från oss och två från kunden.',
+        shouldIncorporate: ['ACME', 'projektkickoff'],
+        requiredConcepts: [
+          { id: 'representation_possible', anyOf: ['representation', 'affärssamband'] },
+          { id: 'still_no_staging', anyOf: ['kan inte stagea härifrån', 'rätt vy', 'underlag'] },
+        ],
+        forbiddenClaims: ['saknas syfte', 'saknas deltagare'],
+      },
+    ],
+  },
+  {
+    id: 'assistant_user_corrects_premise',
+    description: 'Correction in a later turn must override an earlier premise.',
+    intentId: 'general.help',
+    intentArgs: { route: '/chat' },
+    company: ASSISTANT_COMPANIES.itConsult,
+    oracleAtoms: { vertical: ['vertical/konsult-it'], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    turns: [
+      {
+        user: 'Jag köpte Adobe för privat bruk med bolagskortet. Är det en programvarukostnad?',
+        requiredConcepts: [{ id: 'private_not_software', anyOf: ['privat', 'inte som programvara', 'ägarkostnad'] }],
+        forbiddenClaims: ['programvarukostnad för bolaget'],
+      },
+      {
+        user: 'Rättelse: det var inte privat, det är licensen vi använder i kundprojekt.',
+        shouldIncorporate: ['kundprojekt', 'inte privat'],
+        requiredConcepts: [{ id: 'corrected_to_business', anyOf: ['programvara', 'rörelsekostnad', 'bolagets kostnad'] }],
+        forbiddenClaims: ['privat bruk', 'inte avdragsgill för bolaget'],
+      },
+    ],
+  },
+  {
+    id: 'assistant_tool_call_interpretation',
+    description: 'Requires a read tool call and interpretation of its result.',
+    intentId: 'general.help',
+    intentArgs: { route: '/reports' },
+    company: ASSISTANT_COMPANIES.itConsult,
+    oracleAtoms: { vertical: ['vertical/konsult-it'], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    turns: [{
+      user: 'Vad visar momsrapporten för Q2 2026?',
+      toolResults: {
+        gnubok_get_vat_report: DEFAULT_ASSISTANT_TOOL_RESULTS.gnubok_get_vat_report,
+      },
+      allowedTools: ['gnubok_get_vat_report', 'gnubok_vat_close_check'],
+      requiredTools: ['gnubok_get_vat_report'],
+      requiredToolArgs: { gnubok_get_vat_report: { period_type: 'quarterly', year: 2026, period: 2 } },
+      requiredConcepts: [
+        { id: 'q2_period', anyOf: ['Q2 2026', 'kvartal 2'] },
+        { id: 'vat_result', anyOf: ['6400', '6 400', 'få tillbaka'] },
+      ],
+    }],
+  },
+  {
+    id: 'assistant_explanation_no_action',
+    description: 'Explanation request must not stage or execute accounting action.',
+    intentId: 'general.help',
+    intentArgs: { route: '/chat' },
+    company: ASSISTANT_COMPANIES.itConsult,
+    oracleAtoms: { vertical: ['vertical/konsult-it'], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    turns: [{
+      user: 'Förklara skillnaden mellan ingående och utgående moms. Gör ingen bokning.',
+      forbiddenActions: ['staged_operation'],
+      forbiddenTools: ['gnubok_approve_supplier_invoice', 'gnubok_categorize_transaction'],
+      requiredConcepts: [
+        { id: 'input_vat', anyOf: ['ingående moms'] },
+        { id: 'output_vat', anyOf: ['utgående moms'] },
+      ],
+    }],
+  },
+  {
+    id: 'assistant_company_context_changes_answer',
+    description: 'Company VAT status changes the VAT answer.',
+    intentId: 'vat.review',
+    intentArgs: { period_type: 'quarterly', year: 2026, period: 2 },
+    company: ASSISTANT_COMPANIES.nonVat,
+    oracleAtoms: { vertical: [], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    turns: [{
+      user: 'Kan jag lyfta ingående moms på ett svenskt inköp?',
+      requiredConcepts: [
+        { id: 'non_vat_registered', anyOf: ['inte momsregistrerat', 'inte momsregistrerad'] },
+        { id: 'gross_booking', anyOf: ['brutto', 'ingen ingående moms', 'utan momsrad'] },
+      ],
+      forbiddenClaims: ['dra av ingående moms', 'avdragsgill ingående moms'],
+    }],
+  },
+  {
+    id: 'assistant_irrelevant_history_ignored',
+    description: 'Irrelevant conversation history must not alter the answer.',
+    intentId: 'general.help',
+    intentArgs: { route: '/chat' },
+    company: ASSISTANT_COMPANIES.itConsult,
+    oracleAtoms: { vertical: ['vertical/konsult-it'], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    turns: [{
+      seedHistory: [
+        textMessage('user', 'Min kompis driver frisörsalong och pratade om hårvårdsprodukter.'),
+        textMessage('assistant', 'Det låter som en annan verksamhet än ditt bolag.'),
+      ],
+      user: 'Hur brukar OpenAI-kostnaden hanteras för mitt bolag?',
+      requiredConcepts: [
+        { id: 'openai_software', anyOf: ['programvara', 'utvecklarverktyg', 'SaaS'] },
+        { id: 'reverse_charge_or_history', anyOf: ['omvänd skattskyldighet', 'tidigare bokförts'] },
+      ],
+      forbiddenClaims: ['frisör', 'hårvård', 'salong'],
+    }],
+  },
+  {
+    id: 'assistant_declines_definite_when_insufficient',
+    description: 'Must explicitly decline a definite treatment when production context is insufficient.',
+    intentId: 'general.help',
+    intentArgs: { route: '/transactions' },
+    company: ASSISTANT_COMPANIES.itConsult,
+    oracleAtoms: { vertical: ['vertical/konsult-it'], modifiers: ['modifier/single-shareholder-ab-fmb'] },
+    turns: [{
+      user: 'Amazon MKTPL drog 1437 kr och jag har inget kvitto. Säg exakt konto och moms.',
+      clarificationRequired: true,
+      requiredConcepts: [
+        { id: 'declines_definite', anyOf: ['kan inte säga exakt', 'räcker inte', 'behöver underlag', 'kan inte ge en säker'] },
+      ],
+      forbiddenClaims: ['konto 5410', 'standard_25', '25 % moms', 'definitivt'],
+    }],
   },
 ]
 
@@ -814,6 +1242,12 @@ async function main() {
           await collect(runComposerFixture(provider, model, fixture, run, variant, persistence))
         }
       }
+      if (options.groups.has('assistant')) {
+        for (const fixture of ASSISTANT_FIXTURES) {
+          await collect(runAssistantFixture(provider, model, fixture, 'oracle-context', run, variant, persistence))
+          await collect(runAssistantFixture(provider, model, fixture, 'end-to-end', run, variant, persistence))
+        }
+      }
       if (options.groups.has('transaction')) {
         for (const fixture of TRANSACTION_FIXTURES) {
           await collect(runTransactionFixture(provider, model, fixture, run, variant, persistence))
@@ -1033,6 +1467,166 @@ async function runComposerFixture(
 
   return result(model, caseDef, run, variant, started, checks, notes, {
     failures: composerFailures(checks),
+    stages,
+  })
+}
+
+async function runAssistantFixture(
+  provider: ModelProvider,
+  model: string,
+  fixture: AssistantFixture,
+  mode: AssistantEvalMode,
+  run: number,
+  variant: EvalVariant,
+  persistence: EvalPersistence | null,
+): Promise<EvalResult> {
+  const intent = getIntent(fixture.intentId)
+  if (!intent) throw new Error(`Assistant fixture ${fixture.id} references unknown intent ${fixture.intentId}.`)
+
+  const notes: string[] = []
+  const stages: Record<string, unknown> = { mode, turns: [] }
+  const selectedAtoms = await resolveAssistantAtoms(provider, fixture, mode, stages, notes)
+  const supabase = new FixtureSupabase(fixture, selectedAtoms)
+  const captured = await intent.capture(fixture.intentArgs, {
+    supabase: supabase as never,
+    userId: 'user_eval',
+    companyId: fixture.company.companyId,
+  })
+  const promptMessage = intent.promptTemplate({
+    captured,
+    profileSummary: fixture.company.profileSummary,
+    activeMemory: fixture.company.memory.map((m) => ({ content: m.content })),
+  })
+  const systemPrompt = await buildSystemPrompt({
+    intent,
+    companyId: fixture.company.companyId,
+    companyName: fixture.company.companyName,
+    firstName: fixture.company.firstName,
+    profileSummary: fixture.company.profileSummary,
+    rankedMemory: fixture.company.memory,
+    vatStatus: fixture.company.vatStatus,
+    today: swedishToday(),
+    supabase: supabase as never,
+  })
+  const exposedTools = fixtureAssistantTools(intent, fixture.turns[0]?.toolResults)
+  const caseDef = await defineCase(persistence, 'assistant', `${fixture.id}:${mode}`, variant, {
+    mode,
+    description: fixture.description,
+    request_context: {
+      intent_id: intent.id,
+      intent_args: fixture.intentArgs,
+      captured,
+      system: normalizeSystemBlocks(systemPrompt.blocks),
+      prompt_hash: systemPrompt.promptHash,
+      atoms_loaded: systemPrompt.atomsLoaded,
+      initial_user_prompt: promptMessage,
+      company: fixture.company,
+      selected_atoms: selectedAtoms,
+      tools: exposedTools.map(normalizeTool),
+    },
+    scenario_turns: fixture.turns,
+    expected: {
+      selected_atoms: fixture.expectedSelectedAtoms,
+      oracle_atoms: fixture.oracleAtoms,
+    },
+    scoring: [
+      'assistant_context_built',
+      'selected_atoms_valid',
+      'allowed_tool_calls',
+      'required_tool_calls',
+      'correct_tool_args',
+      'forbidden_actions_absent',
+      'clarification_behavior',
+      'later_turn_incorporated',
+      'required_facts_present',
+      'forbidden_claims_absent',
+      'grounded_in_atoms',
+      'manual_review_payload_emitted',
+    ],
+  })
+
+  const started = performance.now()
+  const checks: Record<string, boolean> = {
+    assistant_context_built: true,
+    selected_atoms_valid: selectedAtoms.every((id) => ASSISTANT_ATOM_BODIES[id] || id.startsWith('horizontal/')),
+    allowed_tool_calls: true,
+    required_tool_calls: true,
+    correct_tool_args: true,
+    forbidden_actions_absent: true,
+    clarification_behavior: true,
+    later_turn_incorporated: true,
+    required_facts_present: true,
+    forbidden_claims_absent: true,
+    grounded_in_atoms: true,
+    manual_review_payload_emitted: true,
+  }
+
+  const previousProvider = getModelProvider()
+  const previousTools = agentToolRegistry.getAll()
+  try {
+    setModelProviderForTest(provider)
+    agentToolRegistry.clear()
+
+    for (let i = 0; i < fixture.turns.length; i++) {
+      const turn = fixture.turns[i]
+      if (turn.seedHistory) supabase.seedConversation(`conv_${fixture.id}`, turn.seedHistory)
+      registerAgentTools(fixtureAssistantTools(intent, turn.toolResults))
+
+      const turnEvents: StreamEvent[] = []
+      const turnStarted = performance.now()
+      await runChatTurn({
+        supabase: supabase as never,
+        userId: 'user_eval',
+        companyId: fixture.company.companyId,
+        companyName: fixture.company.companyName,
+        firstName: fixture.company.firstName,
+        intent,
+        conversationId: `conv_${fixture.id}`,
+        userMessage: i === 0 ? `${promptMessage}\n\nAnvändarens fråga: ${turn.user}` : turn.user,
+        persist: true,
+        userMessageHidden: i === 0,
+        emit: (event) => {
+          turnEvents.push(event)
+          return true
+        },
+      })
+      const persisted = supabase.conversationMessages(`conv_${fixture.id}`)
+      const finalResponse = latestAssistantText(persisted, turnEvents)
+      const toolCalls = turnEvents.filter((event): event is Extract<StreamEvent, { kind: 'tool_use' }> => event.kind === 'tool_use')
+      const toolResults = turnEvents.filter((event): event is Extract<StreamEvent, { kind: 'tool_result' }> => event.kind === 'tool_result')
+      const staged = turnEvents.filter((event) => event.kind === 'staged_operation')
+      const turnStage = {
+        index: i + 1,
+        user: turn.user,
+        final_response: finalResponse,
+        tool_calls: toolCalls,
+        tool_results: toolResults,
+        staged_operations: staged,
+        persisted_messages: persisted,
+        latency_ms: Math.round(performance.now() - turnStarted),
+        token_usage: {
+          available: false,
+          reason: 'runChatTurn does not expose provider token usage on StreamEvent.',
+        },
+        manual_review: manualReviewRubric(fixture, turn, finalResponse, toolCalls),
+      }
+      ;(stages.turns as unknown[]).push(turnStage)
+
+      const turnGrade = gradeAssistantTurn(turn, finalResponse, toolCalls, staged)
+      mergeAssistantChecks(checks, turnGrade.checks)
+      notes.push(...turnGrade.notes.map((note) => `turn ${i + 1}: ${note}`))
+    }
+  } catch (err) {
+    notes.push(errorMessage(err))
+    checks.assistant_context_built = false
+  } finally {
+    setModelProviderForTest(previousProvider)
+    agentToolRegistry.clear()
+    registerAgentTools(previousTools)
+  }
+
+  return result(model, caseDef, run, { id: `${variant.id}:${mode}` }, started, checks, notes, {
+    failures: assistantFailures(checks),
     stages,
   })
 }
@@ -1327,6 +1921,284 @@ function composerInput(overrides: Partial<ComposerInputs>): ComposerInputs {
   }
 }
 
+function assistantCompany(input: AssistantCompanyFixture): AssistantCompanyFixture {
+  return input
+}
+
+async function resolveAssistantAtoms(
+  provider: ModelProvider,
+  fixture: AssistantFixture,
+  mode: AssistantEvalMode,
+  stages: Record<string, unknown>,
+  notes: string[],
+): Promise<string[]> {
+  if (mode === 'oracle-context') {
+    return [
+      ...fixture.oracleAtoms.vertical,
+      ...fixture.oracleAtoms.modifiers,
+    ]
+  }
+
+  try {
+    const raw = await generateRawAtomSelection(fixture.company.composerInputs, provider)
+    const final = finalizeAtomSelection(raw, fixture.company.composerInputs)
+    stages.composer_raw_model_output = raw
+    stages.composer_final_output = final
+    const parsed = AtomSelectionSchema.safeParse(final)
+    if (!parsed.success) {
+      notes.push(`composer_final_error=${parsed.error.message}`)
+      return [
+        ...fixture.oracleAtoms.vertical,
+        ...fixture.oracleAtoms.modifiers,
+      ]
+    }
+    return [
+      ...parsed.data.vertical_atoms,
+      ...parsed.data.modifier_atoms,
+    ]
+  } catch (err) {
+    notes.push(`composer_error=${errorMessage(err)}`)
+    return [
+      ...fixture.oracleAtoms.vertical,
+      ...fixture.oracleAtoms.modifiers,
+    ]
+  }
+}
+
+function fixtureAssistantTools(intent: AgentIntent, overrides: Record<string, unknown> | undefined): AgentTool[] {
+  const selected = new Set(intent.tools)
+  return ASSISTANT_TOOL_NAMES
+    .filter((name) => selected.has(name))
+    .map((name) => fixtureTool(name, overrides?.[name] ?? DEFAULT_ASSISTANT_TOOL_RESULTS[name] ?? { ok: true }))
+}
+
+function fixtureTool(name: string, result: unknown): AgentTool {
+  return {
+    name,
+    description: `Fixture-backed deterministic ${name} tool for assistant evals.`,
+    inputSchema: toolInputSchema(name),
+    annotations: { readOnlyHint: !name.includes('remember') && !name.includes('forget') },
+    execute: async (args) => {
+      if (name === 'gnubok_load_skill') {
+        const id = typeof args.skill_id === 'string'
+          ? args.skill_id
+          : typeof args.id === 'string'
+            ? args.id
+            : 'horizontal/swedish-vat'
+        return { id, body: ASSISTANT_ATOM_BODIES[id] ?? String((result as { body?: unknown })?.body ?? '') }
+      }
+      if (name === 'gnubok_remember_fact') {
+        return { id: `mem_eval_${sha256Hex(JSON.stringify(args)).slice(0, 8)}`, ...args }
+      }
+      if (name === 'gnubok_forget_fact') {
+        return { id: typeof args.id === 'string' ? args.id : 'mem_eval_forget' }
+      }
+      return result
+    },
+  }
+}
+
+function toolInputSchema(name: string): Record<string, unknown> {
+  if (name === 'gnubok_load_skill') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: { skill_id: { type: 'string' } },
+      required: ['skill_id'],
+    }
+  }
+  if (name === 'gnubok_query_journal') {
+    return {
+      type: 'object',
+      additionalProperties: true,
+      properties: { text: { type: 'string' }, limit: { type: 'number' } },
+      required: ['text'],
+    }
+  }
+  if (name === 'gnubok_get_vat_report') {
+    return {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        period_type: { type: 'string' },
+        year: { type: 'number' },
+        period: { type: 'number' },
+      },
+    }
+  }
+  if (name === 'gnubok_get_document_content') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: { document_id: { type: 'string' } },
+      required: ['document_id'],
+    }
+  }
+  return {
+    type: 'object',
+    additionalProperties: true,
+    properties: {},
+  }
+}
+
+class FixtureSupabase {
+  private messages = new Map<string, { role: string; content: unknown; hidden?: boolean; created_at: string }[]>()
+
+  constructor(
+    private readonly fixture: AssistantFixture,
+    private readonly selectedAtoms: string[],
+  ) {}
+
+  from(table: string): FixtureQuery {
+    return new FixtureQuery(this, table)
+  }
+
+  seedConversation(conversationId: string, messages: ModelMessage[]): void {
+    const rows = this.messages.get(conversationId) ?? []
+    for (const message of messages) {
+      rows.push({
+        role: message.role,
+        content: message.content,
+        created_at: new Date().toISOString(),
+      })
+    }
+    this.messages.set(conversationId, rows)
+  }
+
+  conversationMessages(conversationId: string): { role: string; content: unknown; hidden?: boolean; created_at: string }[] {
+    return [...(this.messages.get(conversationId) ?? [])]
+  }
+
+  async select(table: string, filters: FixtureFilter[]): Promise<unknown[]> {
+    const company = this.fixture.company
+    if (table === 'agent_profiles') {
+      if (!matchesCompany(filters, company.companyId)) return []
+      return [{
+        profile_summary: company.profileSummary,
+        vertical_atoms: this.selectedAtoms.filter((id) => id.startsWith('vertical/')),
+        modifier_atoms: this.selectedAtoms.filter((id) => id.startsWith('modifier/')),
+      }]
+    }
+    if (table === 'company_settings') {
+      if (!matchesCompany(filters, company.companyId)) return []
+      return [{
+        vat_registered: company.vatStatus.vat_registered,
+        vat_number: company.vatStatus.vat_number,
+        moms_period: company.composerInputs.companySettings?.moms_period ?? 'quarterly',
+      }]
+    }
+    if (table === 'agent_memory') {
+      if (!matchesCompany(filters, company.companyId)) return []
+      return company.memory.map((m) => ({
+        ...m,
+        is_active: true,
+        is_pinned: false,
+        relevance_score: 1,
+        last_accessed_at: '2026-07-01T00:00:00.000Z',
+      }))
+    }
+    if (table === 'agent_atom_registry') {
+      const inIds = filters.find((f) => f.op === 'in' && f.column === 'id')?.value as string[] | undefined
+      let rows = ATOM_INDEX.map((a) => ({
+        ...a,
+        body: ASSISTANT_ATOM_BODIES[a.id] ?? '',
+        body_path: `.agents/eval/${a.id}/SKILL.md`,
+        is_active: true,
+        parent_atom_id: null,
+      }))
+      if (inIds) rows = rows.filter((r) => inIds.includes(r.id))
+      if (filters.some((f) => f.op === 'is' && f.column === 'parent_atom_id' && f.value === null)) {
+        rows = rows.filter((r) => r.parent_atom_id === null)
+      }
+      return rows
+    }
+    if (table === 'agent_messages') {
+      const conversationId = filters.find((f) => f.op === 'eq' && f.column === 'conversation_id')?.value
+      return typeof conversationId === 'string' ? this.conversationMessages(conversationId) : []
+    }
+    if (table === 'supplier_invoices') return []
+    return []
+  }
+
+  async insert(table: string, value: unknown): Promise<{ data: unknown; error: null }> {
+    if (table === 'agent_messages') {
+      const row = value as { conversation_id?: string; role?: string; content?: unknown; hidden?: boolean }
+      if (row.conversation_id && row.role) {
+        const rows = this.messages.get(row.conversation_id) ?? []
+        rows.push({
+          role: row.role,
+          content: row.content,
+          hidden: row.hidden,
+          created_at: new Date().toISOString(),
+        })
+        this.messages.set(row.conversation_id, rows)
+      }
+    }
+    return { data: value, error: null }
+  }
+}
+
+interface FixtureFilter {
+  op: 'eq' | 'in' | 'is'
+  column: string
+  value: unknown
+}
+
+class FixtureQuery implements PromiseLike<{ data: unknown[]; error: null }> {
+  private filters: FixtureFilter[] = []
+  private limitCount: number | null = null
+
+  constructor(
+    private readonly db: FixtureSupabase,
+    private readonly table: string,
+  ) {}
+
+  select(): this { return this }
+  order(): this { return this }
+  limit(count: number): this {
+    this.limitCount = count
+    return this
+  }
+  eq(column: string, value: unknown): this {
+    this.filters.push({ op: 'eq', column, value })
+    return this
+  }
+  in(column: string, value: unknown[]): this {
+    this.filters.push({ op: 'in', column, value })
+    return this
+  }
+  is(column: string, value: unknown): this {
+    this.filters.push({ op: 'is', column, value })
+    return this
+  }
+  async maybeSingle(): Promise<{ data: unknown | null; error: null }> {
+    const data = await this.rows()
+    return { data: data[0] ?? null, error: null }
+  }
+  update(): this { return this }
+  async insert(value: unknown): Promise<{ data: unknown; error: null }> {
+    return this.db.insert(this.table, value)
+  }
+  then<TResult1 = { data: unknown[]; error: null }, TResult2 = never>(
+    onfulfilled?: ((value: { data: unknown[]; error: null }) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): PromiseLike<TResult1 | TResult2> {
+    return this.result().then(onfulfilled, onrejected)
+  }
+  private async result(): Promise<{ data: unknown[]; error: null }> {
+    return { data: await this.rows(), error: null }
+  }
+  private async rows(): Promise<unknown[]> {
+    const rows = await this.db.select(this.table, this.filters)
+    return this.limitCount == null ? rows : rows.slice(0, this.limitCount)
+  }
+}
+
+function matchesCompany(filters: FixtureFilter[], companyId: string): boolean {
+  const filter = filters.find((f) => f.op === 'eq' && f.column === 'company_id')
+  return !filter || filter.value === companyId
+}
+
 function atom(
   id: string,
   tier: AtomRegistryIndexRow['tier'],
@@ -1385,6 +2257,175 @@ function perturbClassificationPrompt(prompt: string, variant: EvalVariant): stri
 function perturbTransactionMessages(messages: ModelMessage[], variant: EvalVariant): ModelMessage[] {
   if (!variant.transactionReminder) return messages
   return [...messages, textMessage('user', variant.transactionReminder)]
+}
+
+function normalizeSystemBlocks(blocks: ModelSystemBlock[]): Record<string, unknown>[] {
+  return blocks.map((block) => ({
+    kind: block.kind,
+    text: block.text,
+    cache: block.cache,
+  }))
+}
+
+function latestAssistantText(
+  persisted: { role: string; content: unknown }[],
+  events: StreamEvent[],
+): string {
+  const fromPersisted = [...persisted].reverse().find((row) => row.role === 'assistant')
+  const text = fromPersisted ? responseText(normalizePersistedContent(fromPersisted.content)) : ''
+  if (text) return text
+  const complete = [...events].reverse().find((event): event is Extract<StreamEvent, { kind: 'turn_complete' }> => event.kind === 'turn_complete')
+  return complete?.assistant_text ?? ''
+}
+
+function normalizePersistedContent(content: unknown): ModelContentBlock[] {
+  if (!Array.isArray(content)) return []
+  return content.flatMap<ModelContentBlock>((block) => {
+    const b = block as Record<string, unknown> | null
+    if (!b || typeof b !== 'object') return []
+    if (b.kind === 'text' && typeof b.text === 'string') return [{ kind: 'text' as const, text: b.text }]
+    if (b.kind === 'tool_call' && typeof b.id === 'string' && typeof b.name === 'string') {
+      return [{
+        kind: 'tool_call' as const,
+        id: b.id,
+        name: b.name,
+        input: isRecord(b.input) ? b.input : {},
+      }]
+    }
+    return []
+  })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function gradeAssistantTurn(
+  fixture: AssistantTurnFixture,
+  finalResponse: string,
+  toolCalls: Extract<StreamEvent, { kind: 'tool_use' }>[],
+  staged: StreamEvent[],
+): { checks: Record<string, boolean>; notes: string[] } {
+  const notes: string[] = []
+  const text = finalResponse.toLowerCase()
+  const toolNames = toolCalls.map((call) => call.name)
+  const allowed = fixture.allowedTools ? new Set(fixture.allowedTools) : null
+  const forbidden = new Set(fixture.forbiddenTools ?? [])
+  const checks: Record<string, boolean> = {
+    allowed_tool_calls: allowed
+      ? toolNames.every((name) => allowed.has(name))
+      : toolNames.every((name) => !forbidden.has(name)),
+    required_tool_calls: (fixture.requiredTools ?? []).every((name) => toolNames.includes(name)),
+    correct_tool_args: true,
+    forbidden_actions_absent: true,
+    clarification_behavior: true,
+    later_turn_incorporated: true,
+    required_facts_present: true,
+    forbidden_claims_absent: true,
+    grounded_in_atoms: true,
+    manual_review_payload_emitted: true,
+  }
+
+  for (const [toolName, expected] of Object.entries(fixture.requiredToolArgs ?? {})) {
+    const call = toolCalls.find((candidate) => candidate.name === toolName)
+    if (!call || !objectContains(call.input, expected)) checks.correct_tool_args = false
+  }
+
+  if ((fixture.forbiddenActions ?? []).includes('staged_operation') && staged.length > 0) {
+    checks.forbidden_actions_absent = false
+  }
+
+  if (fixture.clarificationRequired === true) {
+    checks.clarification_behavior = textLooksLikeFollowUpQuestion(finalResponse) ||
+      ['behöver', 'saknas', 'räcker inte', 'kan inte'].some((term) => text.includes(term))
+  } else if (fixture.clarificationRequired === false) {
+    checks.clarification_behavior = !textLooksLikeFollowUpQuestion(finalResponse)
+  }
+
+  for (const required of fixture.shouldIncorporate ?? []) {
+    if (!text.includes(required.toLowerCase())) checks.later_turn_incorporated = false
+  }
+
+  for (const concept of fixture.requiredConcepts ?? []) {
+    if (!concept.anyOf.some((term) => text.includes(term.toLowerCase()))) {
+      checks.required_facts_present = false
+      notes.push(`missing_concept=${concept.id}`)
+    }
+  }
+
+  for (const claim of fixture.forbiddenClaims ?? []) {
+    if (text.includes(claim.toLowerCase())) {
+      checks.forbidden_claims_absent = false
+      notes.push(`forbidden_claim=${claim}`)
+    }
+  }
+
+  checks.grounded_in_atoms = (fixture.requiredConcepts ?? []).length === 0 || checks.required_facts_present
+
+  if (!checks.allowed_tool_calls) notes.push(`tool_calls=${toolNames.join(', ') || '(none)'}`)
+  if (!checks.correct_tool_args) notes.push(`tool_args=${JSON.stringify(toolCalls)}`)
+  if (!finalResponse.trim()) notes.push('empty_final_response')
+
+  return { checks, notes }
+}
+
+function mergeAssistantChecks(target: Record<string, boolean>, next: Record<string, boolean>): void {
+  for (const [key, value] of Object.entries(next)) {
+    target[key] = target[key] !== false && value
+  }
+}
+
+function objectContains(actual: Record<string, unknown>, expected: Record<string, unknown>): boolean {
+  return Object.entries(expected).every(([key, value]) => actual[key] === value)
+}
+
+function manualReviewRubric(
+  fixture: AssistantFixture,
+  turn: AssistantTurnFixture,
+  finalResponse: string,
+  toolCalls: Extract<StreamEvent, { kind: 'tool_use' }>[],
+): Record<string, unknown> {
+  return {
+    fixture_id: fixture.id,
+    review_if_deterministic_checks_fail: true,
+    transcript_answer: finalResponse,
+    tool_calls: toolCalls,
+    rubric: [
+      'Does the answer use only facts present in the resolved production context, fixture tools, or user turns?',
+      'Does it avoid staging or implying an accounting write when no write tool is available or requested?',
+      'If information is missing, is the clarification focused on the single missing decision fact?',
+      'If a later user turn corrects or completes facts, does the answer revise the earlier premise?',
+      'Are hard safety failures such as fabricated transaction/entity IDs, forbidden tool calls, or definite unsupported treatments absent?',
+    ],
+    acceptable_outcomes: turn.acceptableOutcomes ?? [],
+  }
+}
+
+function assistantFailures(checks: Record<string, boolean>): EvalFailure[] {
+  const failures: EvalFailure[] = []
+  const hard = new Set([
+    'assistant_context_built',
+    'allowed_tool_calls',
+    'correct_tool_args',
+    'forbidden_actions_absent',
+    'forbidden_claims_absent',
+  ])
+  const severe = new Set([
+    'required_tool_calls',
+    'clarification_behavior',
+    'later_turn_incorporated',
+    'required_facts_present',
+    'grounded_in_atoms',
+  ])
+  for (const [code, ok] of Object.entries(checks)) {
+    if (ok) continue
+    failures.push({
+      code,
+      severity: hard.has(code) ? 'hard' : severe.has(code) ? 'severe' : 'mild',
+      detail: `Assistant scenario check failed: ${code}`,
+    })
+  }
+  return failures
 }
 
 function genericFailures(checks: Record<string, boolean>): EvalFailure[] {
@@ -1794,6 +2835,13 @@ function summarize(results: EvalResult[]): ModelSummary[] {
         hardFailures.length === 0
           ? 'eligible'
           : 'blocked',
+      eligibility: {
+        assistantOracleContext: eligibilityFor(rows.filter((r) => r.group === 'assistant' && r.variant.endsWith(':oracle-context'))),
+        assistantEndToEnd: eligibilityFor(rows.filter((r) => r.group === 'assistant' && r.variant.endsWith(':end-to-end'))),
+        transactionCategorization: eligibilityFor(rows.filter((r) => r.group === 'transaction')),
+        queuedClassification: eligibilityFor(rows.filter((r) => r.group === 'classification')),
+        composer: eligibilityFor(rows.filter((r) => r.group === 'composer')),
+      },
       latencyMs: {
         min: latencies[0] ?? 0,
         median: latencies[Math.floor(latencies.length / 2)] ?? 0,
@@ -1801,6 +2849,11 @@ function summarize(results: EvalResult[]): ModelSummary[] {
       },
     }
   })
+}
+
+function eligibilityFor(rows: EvalResult[]): 'eligible' | 'blocked' {
+  if (rows.length === 0) return 'blocked'
+  return rows.some((r) => r.failures.some((failure) => failure.severity === 'hard')) ? 'blocked' : 'eligible'
 }
 
 function printHumanSummary(results: EvalResult[]) {
@@ -1819,6 +2872,11 @@ function printHumanSummary(results: EvalResult[]) {
       `  failures: hard ${summary.failures.hard}, severe ${summary.failures.severe}, mild ${summary.failures.mild}`,
     )
     console.log(`  transaction routing: ${summary.transactionRouting}`)
+    console.log(`  eligibility assistant/oracle-context: ${summary.eligibility.assistantOracleContext}`)
+    console.log(`  eligibility assistant/end-to-end: ${summary.eligibility.assistantEndToEnd}`)
+    console.log(`  eligibility transaction categorization: ${summary.eligibility.transactionCategorization}`)
+    console.log(`  eligibility queued classification: ${summary.eligibility.queuedClassification}`)
+    console.log(`  eligibility composer: ${summary.eligibility.composer}`)
     console.log(
       `  latency ms: min ${summary.latencyMs.min}, median ${summary.latencyMs.median}, max ${summary.latencyMs.max}`,
     )
@@ -1842,7 +2900,7 @@ function printHumanSummary(results: EvalResult[]) {
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const groups = new Set<EvalGroup>(['smoke', 'composer', 'transaction', 'classification'])
+  const groups = new Set<EvalGroup>(['smoke', 'composer', 'assistant', 'transaction', 'classification'])
   const models: string[] = []
   let json = false
   let runs = 3
@@ -1902,12 +2960,13 @@ function parseGroup(value: string): EvalGroup {
   if (
     value === 'smoke' ||
     value === 'composer' ||
+    value === 'assistant' ||
     value === 'transaction' ||
     value === 'classification'
   ) {
     return value
   }
-  throw new Error(`Unknown group "${value}". Expected smoke, composer, transaction, or classification.`)
+  throw new Error(`Unknown group "${value}". Expected smoke, composer, assistant, transaction, or classification.`)
 }
 
 function parsePositiveInteger(value: string, flag: string): number {
@@ -1920,7 +2979,7 @@ function parsePositiveInteger(value: string, flag: string): number {
 
 function printHelp() {
   console.log([
-    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,transaction,classification] [--runs n] [--results-dir path] [--no-persist] [--json]',
+    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,assistant,transaction,classification] [--runs n] [--results-dir path] [--no-persist] [--json]',
     '',
     'Environment:',
     '  LOCAL_AI_BASE_URL   OpenAI-compatible /v1 base URL or /chat/completions URL',

@@ -3,10 +3,12 @@
 This eval checks whether local OpenAI-compatible models are good enough for the
 Accounted model-provider contract.
 
-It exercises three fixture groups:
+It exercises five fixture groups:
 
 - `smoke`: strict JSON and tool-call contract checks.
 - `composer`: real onboarding atom-selection prompt and schema validation.
+- `assistant`: scenario-based multi-turn chat assistant checks, run in both
+  `oracle-context` and `end-to-end` modes.
 - `transaction`: real transaction-categorization prompt with local tool schemas.
 - `classification`: queued strict-JSON transaction classification decisions.
 
@@ -20,6 +22,12 @@ AI surfaces we care about before doing more integration work:
 - **Composer/onboarding:** can the model follow the real atom-selection prompt,
   choose known atom IDs, avoid forbidden atoms, and avoid re-asking questions
   already answered by company settings or TIC data?
+- **Assistant with oracle context:** can the full interactive assistant reason
+  from known-correct company context, memories, atom bodies, prompt blocks, tool
+  definitions, and tool-result continuations without relying on the composer?
+- **End-to-end assistant:** can the complete production pipeline start from the
+  user/company fixture, run atom selection, resolve selected atoms through the
+  production context builder, and then complete the assistant turn safely?
 - **Transaction assistant:** can the model use the real transaction
   categorization prompt, preserve the exact `transaction_id`, call only allowed
   tools, choose allowed category enums, and avoid staging when the case requires
@@ -37,9 +45,24 @@ The most important failure signals are invalid structured output, malformed tool
 arguments, hallucinated tool names, wrong transaction IDs, unsafe categorization
 of ambiguous cases, wrong VAT treatment, and redundant onboarding questions.
 
-The `transaction` group checks assistant/tool behavior. The `classification`
-group is the better signal for non-interactive queued classification because
-`needs_review` is treated as a valid outcome for ambiguous inputs.
+The `assistant` group is the full interactive chat surface. It uses
+`runChatTurn`, `buildSystemPrompt`, production intent definitions, production
+tool-loop continuation, fixture-backed atom registry/company context/memories,
+and deterministic fixture tools. Each assistant fixture is evaluated twice:
+
+- `oracle-context`: injects the known-correct vertical/modifier atoms into the
+  production context builder. This isolates whether the assistant can follow the
+  supplied accounting context.
+- `end-to-end`: runs the real composer/atom-selection path first, stores the
+  selected atoms in the fixture-backed profile, resolves them through the same
+  production context builder, then runs the assistant.
+
+The `transaction` group is narrower: it evaluates the transaction-categorization
+intent and its local tool boundaries. The `classification` group is separate
+again: it evaluates queued noninteractive strict-JSON classification, where
+`needs_review` is a valid deterministic outcome for ambiguous inputs. Composer
+eligibility is reported on its own because it feeds the end-to-end assistant
+path but is also a distinct onboarding surface.
 
 ## Nix Setup
 
@@ -100,6 +123,7 @@ Useful options:
 
 ```bash
 npm run eval:local-ai -- --models qwen3:32b,gpt-oss:20b
+npm run eval:local-ai -- --groups assistant
 npm run eval:local-ai -- --groups smoke,transaction
 npm run eval:local-ai -- --groups classification
 npm run eval:local-ai -- --runs 5
@@ -117,11 +141,15 @@ attempts and the exact case definitions already seen. By default it writes to
 - `attempt-results-<run_id>.jsonl`: one row per completed model attempt.
 
 Each case hash is computed from a canonical preimage containing the effective
-prompt/messages, tool or structured-output schema, fixture expectations, variant
-wording, and scoring-policy version. If a fixture name stays the same but the
-prompt or expected behavior changes, the hash changes. The manifest stores the
-preimage the first time the hash is encountered so old results remain auditable
-after the TypeScript fixtures evolve.
+prompt/messages, resolved assistant context, selected atoms, tool or
+structured-output schema, fixture expectations, variant wording, and
+scoring-policy version. For assistant cases, every attempt persists the full
+turn transcript, resolved context, selected atoms, tool calls, tool results,
+final response, latency, scoring result, and a structured manual-review rubric.
+If a fixture name stays the same but the prompt, resolved context, atom
+selection, or expected behavior changes, the hash changes. The manifest stores
+the preimage the first time the hash is encountered so old results remain
+auditable after the TypeScript fixtures evolve.
 
 Use `--no-persist` for stdout-only probing.
 
