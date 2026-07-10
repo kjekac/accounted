@@ -150,8 +150,9 @@ interface PlannedCase {
   id: string
   run: number
   variant: string
-  logicalCaseHash: string
-  resumeKey: string
+  logicalCaseHash?: string
+  resumeKey?: string
+  resumeDeferredReason?: string
 }
 
 interface ModelSummary {
@@ -1584,6 +1585,8 @@ async function runAssistantFixture(
     supabase: supabase as never,
   })
   const exposedTools = fixtureAssistantTools(intent, fixture.turns[0]?.toolResults)
+  const normalizedSystem = normalizeSystemBlocks(systemPrompt.blocks)
+  const normalizedTools = exposedTools.map(normalizeTool)
   const caseDef = await defineCase(persistence, 'assistant', `${fixture.id}:${mode}`, variant, {
     eval_context: assistantEvalContext(evalToday),
     mode,
@@ -1592,13 +1595,13 @@ async function runAssistantFixture(
       intent_id: intent.id,
       intent_args: fixture.intentArgs,
       captured,
-      system: normalizeSystemBlocks(systemPrompt.blocks),
+      system: normalizedSystem,
       prompt_hash: systemPrompt.promptHash,
       atoms_loaded: systemPrompt.atomsLoaded,
       initial_user_prompt: promptMessage,
       company: fixture.company,
       selected_atoms: selectedAtoms,
-      tools: exposedTools.map(normalizeTool),
+      tools: normalizedTools,
     },
     scenario_turns: fixture.turns,
     expected: {
@@ -1629,8 +1632,13 @@ async function runAssistantFixture(
       requestContext: {
         intent_id: intent.id,
         intent_args: fixture.intentArgs,
+        captured,
+        system: normalizedSystem,
+        atoms_loaded: systemPrompt.atomsLoaded,
+        initial_user_prompt: promptMessage,
         company: fixture.company,
-        tools: exposedTools.map(normalizeTool),
+        selected_atoms: selectedAtoms,
+        tools: normalizedTools,
       },
       scenarioTurns: fixture.turns,
       expected: {
@@ -2802,9 +2810,12 @@ function completedAttemptFromHistoricalRow(
   const run = typeof row.run === 'number' ? row.run : null
   if (!model || !caseHash || !run) return null
 
-  const logicalCaseHash = typeof row.logicalCaseHash === 'string'
-    ? row.logicalCaseHash
-    : logicalCaseHashForHistoricalAttempt(row, manifests.get(caseHash))
+  const logicalCaseHash = logicalCaseHashForHistoricalAttempt(row, manifests.get(caseHash)) ??
+    (typeof row.logicalCaseHash === 'string'
+      ? row.logicalCaseHash
+      : typeof row.logical_case_hash === 'string'
+        ? row.logical_case_hash
+        : null)
   if (!logicalCaseHash) return null
 
   const key = resumeKeyParts(model, logicalCaseHash, run)
@@ -2948,7 +2959,12 @@ function assistantLogicalPreimageFromRendered(input: {
   requestContext: {
     intent_id: unknown
     intent_args: unknown
+    captured: unknown
+    system: unknown
+    atoms_loaded: unknown
+    initial_user_prompt: unknown
     company: unknown
+    selected_atoms: unknown
     tools: unknown
   }
   scenarioTurns: unknown
@@ -2966,8 +2982,13 @@ function assistantLogicalPreimageFromRendered(input: {
     request_context: {
       intent_id: input.requestContext.intent_id,
       intent_args: input.requestContext.intent_args,
+      captured: input.requestContext.captured,
+      system: scrubAssistantTodayFromSystem(input.requestContext.system),
+      atoms_loaded: input.requestContext.atoms_loaded,
+      initial_user_prompt: input.requestContext.initial_user_prompt,
       company: input.requestContext.company,
-      tool_names: toolNames(input.requestContext.tools),
+      selected_atoms: input.requestContext.selected_atoms,
+      tools: input.requestContext.tools,
     },
     scenario_turns: input.scenarioTurns,
     expected: input.expected,
@@ -2978,6 +2999,16 @@ function assistantLogicalPreimageFromHistorical(preimage: Record<string, unknown
   if (!isRecord(preimage.request_context)) return null
   const caseId = typeof preimage.case_id === 'string' ? preimage.case_id : null
   if (!caseId) return null
+  if (
+    !('captured' in preimage.request_context) ||
+    !('system' in preimage.request_context) ||
+    !('atoms_loaded' in preimage.request_context) ||
+    !('initial_user_prompt' in preimage.request_context) ||
+    !('selected_atoms' in preimage.request_context) ||
+    !('tools' in preimage.request_context)
+  ) {
+    return null
+  }
   return assistantLogicalPreimageFromRendered({
     group: 'assistant',
     caseId,
@@ -2986,7 +3017,12 @@ function assistantLogicalPreimageFromHistorical(preimage: Record<string, unknown
     requestContext: {
       intent_id: preimage.request_context.intent_id,
       intent_args: preimage.request_context.intent_args,
+      captured: preimage.request_context.captured,
+      system: preimage.request_context.system,
+      atoms_loaded: preimage.request_context.atoms_loaded,
+      initial_user_prompt: preimage.request_context.initial_user_prompt,
       company: preimage.request_context.company,
+      selected_atoms: preimage.request_context.selected_atoms,
       tools: preimage.request_context.tools,
     },
     scenarioTurns: preimage.scenario_turns,
@@ -2994,12 +3030,23 @@ function assistantLogicalPreimageFromHistorical(preimage: Record<string, unknown
   })
 }
 
-function toolNames(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
+function scrubAssistantTodayFromSystem(value: unknown): unknown {
+  if (typeof value === 'string') return scrubAssistantTodayText(value)
+  if (Array.isArray(value)) return value.map(scrubAssistantTodayFromSystem)
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {}
+    for (const [key, child] of Object.entries(value)) {
+      out[key] = scrubAssistantTodayFromSystem(child)
+    }
+    return out
+  }
   return value
-    .map((tool) => isRecord(tool) && typeof tool.name === 'string' ? tool.name : null)
-    .filter((name): name is string => !!name)
-    .sort()
+}
+
+function scrubAssistantTodayText(text: string): string {
+  return text
+    .replace(/\bIdag är \d{4}-\d{2}-\d{2}(?: \([^)]+\))?/g, 'Idag är <TODAY>')
+    .replace(/\bToday is \d{4}-\d{2}-\d{2}(?: \([^)]+\))?/g, 'Today is <TODAY>')
 }
 
 function hashLogicalPreimage(preimage: Record<string, unknown>): string {
@@ -3073,40 +3120,27 @@ function plannedAssistantCase(
   if (!intent) throw new Error(`Assistant fixture ${fixture.id} references unknown intent ${fixture.intentId}.`)
   const caseId = `${fixture.id}:${mode}`
   const displayVariant = `${variant.id}:${mode}`
-  const exposedTools = fixtureAssistantTools(intent, fixture.turns[0]?.toolResults)
-  const logicalPreimage = assistantLogicalPreimageFromRendered({
-    group: 'assistant',
-    caseId,
-    mode,
-    description: fixture.description,
-    requestContext: {
-      intent_id: intent.id,
-      intent_args: fixture.intentArgs,
-      company: fixture.company,
-      tools: exposedTools.map(normalizeTool),
-    },
-    scenarioTurns: fixture.turns,
-    expected: {
-      selected_atoms: fixture.expectedSelectedAtoms,
-      oracle_atoms: fixture.oracleAtoms,
-    },
-  })
-  const logicalCaseHash = hashLogicalPreimage(logicalPreimage)
   return {
     model,
     group: 'assistant',
     id: caseId,
     run,
     variant: displayVariant,
-    logicalCaseHash,
-    resumeKey: resumeKeyDisplay(resumeKeyParts(model, logicalCaseHash, run)),
+    resumeDeferredReason: 'assistant resume depends on rendered context and selected atoms',
   }
 }
 
 function printDryRunPlan(planned: PlannedCase[], persistence: EvalPersistence | null): void {
   let skipped = 0
   let runnable = 0
+  let deferred = 0
   for (const item of planned) {
+    if (!item.logicalCaseHash) {
+      deferred++
+      console.log(`CHECK ${item.model} ${item.group}/${item.id} run=${item.run} variant=${item.variant}`)
+      console.log(`  reason: ${item.resumeDeferredReason ?? 'resume key is computed at run time'}`)
+      continue
+    }
     const prior = persistence?.completedAttempts.get(resumeKeyParts(item.model, item.logicalCaseHash, item.run))
     if (prior) {
       skipped++
@@ -3118,7 +3152,7 @@ function printDryRunPlan(planned: PlannedCase[], persistence: EvalPersistence | 
       console.log(`  logical: ${item.logicalCaseHash}`)
     }
   }
-  console.log(`\nDry run: ${skipped} skipped, ${runnable} would run, ${planned.length} total.`)
+  console.log(`\nDry run: ${skipped} skipped, ${runnable} would run, ${deferred} checked at run time, ${planned.length} total.`)
 }
 
 function baseLogicalPreimage(
@@ -3299,10 +3333,6 @@ function queuedClassificationLogicalPreimage(
       'conservative_review_boundary',
     ],
   })
-}
-
-function normalizeVariant(variant: EvalVariant): Record<string, unknown> {
-  return normalizeForHash(variant) as Record<string, unknown>
 }
 
 function normalizeTool(tool: AgentTool): Record<string, unknown> {

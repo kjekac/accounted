@@ -155,12 +155,18 @@ completed. The resume key includes the model tag, logical case hash, and run
 number. The model tag is intentionally used as the local eval identity so
 short-lived runs can reuse results already accumulated in `scripts/evals/results`.
 
-Assistant logical hashes use a date-agnostic fixture identity so completed
-assistant attempts can be reused across runs made on different dates, while the
-exact materialized case hash still records the rendered prompt date for audit.
+Assistant logical hashes include the rendered assistant inputs that affect the
+model call: captured facts, date-scrubbed system blocks, loaded atoms, initial
+user prompt, selected atoms, full tool schemas, scenario turns, expectations,
+and scoring policy. This keeps completed assistant attempts reusable across
+runs made on different dates, while rerunning when the effective prompt or tool
+surface changes. The exact materialized case hash still records the rendered
+prompt date for audit.
 
 Use `--dry-run` to print which attempts would run or be skipped without calling
-the model. Use `--no-resume` to ignore prior attempt rows.
+the model. Assistant attempts whose resume key depends on rendered context and
+selected atoms are marked as runtime checks in dry-run output. Use `--no-resume`
+to ignore prior attempt rows.
 
 Use `--no-persist` for stdout-only probing.
 
