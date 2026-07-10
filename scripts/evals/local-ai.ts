@@ -15,6 +15,9 @@
 import { config } from 'dotenv'
 config({ path: '.env.local' })
 
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile, appendFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { z } from 'zod'
 import {
@@ -26,19 +29,30 @@ import {
   type StructuredSchema,
 } from '../../lib/agent/model-provider'
 import { SONNET_MODEL } from '../../lib/agent/composer/client'
-import { finalizeAtomSelection, generateRawAtomSelection } from '../../lib/agent/composer/atom-selection'
-import { AtomSelectionSchema, type AtomSelection } from '../../lib/agent/composer/schemas'
+import {
+  buildAtomSelectionUserPrompt,
+  finalizeAtomSelection,
+  generateRawAtomSelection,
+  ATOM_SELECTION_SYSTEM_PROMPT,
+} from '../../lib/agent/composer/atom-selection'
+import { ATOM_SELECTION_TOOL_SCHEMA, AtomSelectionSchema, type AtomSelection } from '../../lib/agent/composer/schemas'
 import type { ComposerInputs, AtomRegistryIndexRow } from '../../lib/agent/composer/inputs'
 import { transactionCategorization } from '../../lib/agent/intents/transaction-categorization'
 import type { AgentTool } from '../../lib/agent/tools/types'
 
 type EvalGroup = 'smoke' | 'composer' | 'transaction' | 'classification'
 
+const CASE_PREIMAGE_VERSION = 1
+const SCORING_VERSION = 1
+const DEFAULT_RESULTS_DIR = join('scripts', 'evals', 'results')
+
 interface CliOptions {
   models: string[]
   groups: Set<EvalGroup>
   json: boolean
   runs: number
+  resultsDir: string
+  persist: boolean
 }
 
 type FailureSeverity = 'hard' | 'severe' | 'mild'
@@ -50,6 +64,9 @@ interface EvalFailure {
 }
 
 interface EvalResult {
+  runId: string
+  attemptId: string
+  caseHash: string
   model: string
   group: EvalGroup
   id: string
@@ -61,6 +78,23 @@ interface EvalResult {
   failures: EvalFailure[]
   notes: string[]
   stages?: Record<string, unknown>
+}
+
+interface EvalCaseDefinition {
+  caseId: string
+  group: EvalGroup
+  caseHash: string
+  runId: string
+  preimage: Record<string, unknown>
+}
+
+interface EvalPersistence {
+  runId: string
+  startedAt: string
+  resultsDir: string
+  manifestPath: string
+  attemptsPath: string
+  seenCaseHashes: Set<string>
 }
 
 interface ModelSummary {
@@ -464,37 +498,30 @@ const TRANSACTION_FIXTURES = [
     mustCallCategorize: false,
     mustCallQueryJournal: true,
     mustAskOrRetrieve: true,
-    messages: [
-      textMessage(
-        'user',
-        transactionCategorization.promptTemplate({
-          profileSummary: 'Svenskt aktiebolag, kvartalsmoms, konsultverksamhet inom IT.',
-          activeMemory: [],
-          captured: {
-            transaction: {
-              id: 'tx_software_lookup_001',
-              date: '2026-07-02',
-              description: 'OPENAI CHATGPT SUBSCRIPTION 260702',
-              amount: -247.5,
-              currency: 'SEK',
-              counterparty_name: 'OpenAI',
-            },
-            underlag: [{
-              kind: 'receipt',
-              document_id: 'doc_openai_lookup_001',
-              merchant_name: 'OpenAI, LLC',
-              receipt_date: '2026-07-02',
-              total_amount: 247.5,
-              vat_amount: 0,
-              currency: 'SEK',
-              is_restaurant: false,
-              is_systembolaget: false,
-              raw_extraction: { supplier: { country: 'US' }, invoice: { description: 'ChatGPT subscription' } },
-            }],
-          },
-        }),
-      ),
-    ],
+    messages: [transactionPromptMessage({
+      profileSummary: 'Svenskt aktiebolag, kvartalsmoms, konsultverksamhet inom IT.',
+      transaction: {
+        id: 'tx_software_lookup_001',
+        date: '2026-07-02',
+        description: 'OPENAI CHATGPT SUBSCRIPTION 260702',
+        amount: -247.5,
+        currency: 'SEK',
+        counterparty_name: 'OpenAI',
+        direction: 'out',
+      },
+      underlag: [{
+        kind: 'receipt',
+        document_id: 'doc_openai_lookup_001',
+        merchant_name: 'OpenAI, LLC',
+        receipt_date: '2026-07-02',
+        total_amount: 247.5,
+        vat_amount: 0,
+        currency: 'SEK',
+        is_restaurant: false,
+        is_systembolaget: false,
+        raw_extraction: { supplier: { country: 'US' }, invoice: { description: 'ChatGPT subscription' } },
+      }],
+    })],
   },
   {
     id: 'transaction_restaurant_requires_context',
@@ -504,37 +531,30 @@ const TRANSACTION_FIXTURES = [
     mustCallCategorize: false,
     mustCallQueryJournal: false,
     mustAskOrRetrieve: true,
-    messages: [
-      textMessage(
-        'user',
-        transactionCategorization.promptTemplate({
-          profileSummary: 'Litet konsultaktiebolag med svensk moms.',
-          activeMemory: [],
-          captured: {
-            transaction: {
-              id: 'tx_restaurant_001',
-              date: '2026-06-30',
-              description: 'BISTRO SVEA STOCKHOLM',
-              amount: -842,
-              currency: 'SEK',
-              counterparty_name: 'Bistro Svea',
-            },
-            underlag: [{
-              kind: 'receipt',
-              document_id: 'doc_bistro_001',
-              merchant_name: 'Bistro Svea',
-              receipt_date: '2026-06-30',
-              total_amount: 842,
-              vat_amount: 90.21,
-              currency: 'SEK',
-              is_restaurant: true,
-              is_systembolaget: false,
-              raw_extraction: { lineItems: [{ text: 'Lunch och dryck' }] },
-            }],
-          },
-        }),
-      ),
-    ],
+    messages: [transactionPromptMessage({
+      profileSummary: 'Litet konsultaktiebolag med svensk moms.',
+      transaction: {
+        id: 'tx_restaurant_001',
+        date: '2026-06-30',
+        description: 'BISTRO SVEA STOCKHOLM',
+        amount: -842,
+        currency: 'SEK',
+        counterparty_name: 'Bistro Svea',
+        direction: 'out',
+      },
+      underlag: [{
+        kind: 'receipt',
+        document_id: 'doc_bistro_001',
+        merchant_name: 'Bistro Svea',
+        receipt_date: '2026-06-30',
+        total_amount: 842,
+        vat_amount: 90.21,
+        currency: 'SEK',
+        is_restaurant: true,
+        is_systembolaget: false,
+        raw_extraction: { lineItems: [{ text: 'Lunch och dryck' }] },
+      }],
+    })],
   },
 ]
 
@@ -763,7 +783,19 @@ async function main() {
   }
   process.env.AI_PROVIDER = 'local'
 
+  const persistence = options.persist ? await initPersistence(options.resultsDir) : null
+  if (persistence && !options.json) {
+    console.log(`Persisting eval results to ${persistence.attemptsPath}`)
+    console.log(`Case manifest: ${persistence.manifestPath}`)
+  }
+
   const results: EvalResult[] = []
+  const collect = async (promise: Promise<EvalResult>) => {
+    const row = await promise
+    results.push(row)
+    await appendAttemptResult(persistence, row)
+  }
+
   for (const model of options.models) {
     process.env.LOCAL_AI_MODEL = model
     const provider = getModelProvider()
@@ -774,22 +806,22 @@ async function main() {
     for (let run = 1; run <= options.runs; run++) {
       const variant = EVAL_VARIANTS[(run - 1) % EVAL_VARIANTS.length]
       if (options.groups.has('smoke')) {
-        results.push(await runSmokeStructured(provider, model, run, variant))
-        results.push(await runSmokeTool(provider, model, run, variant))
+        await collect(runSmokeStructured(provider, model, run, variant, persistence))
+        await collect(runSmokeTool(provider, model, run, variant, persistence))
       }
       if (options.groups.has('composer')) {
         for (const fixture of COMPOSER_FIXTURES) {
-          results.push(await runComposerFixture(provider, model, fixture, run, variant))
+          await collect(runComposerFixture(provider, model, fixture, run, variant, persistence))
         }
       }
       if (options.groups.has('transaction')) {
         for (const fixture of TRANSACTION_FIXTURES) {
-          results.push(await runTransactionFixture(provider, model, fixture, run, variant))
+          await collect(runTransactionFixture(provider, model, fixture, run, variant, persistence))
         }
       }
       if (options.groups.has('classification')) {
         for (const fixture of QUEUED_CLASSIFICATION_FIXTURES) {
-          results.push(await runQueuedClassificationFixture(provider, model, fixture, run, variant))
+          await collect(runQueuedClassificationFixture(provider, model, fixture, run, variant, persistence))
         }
       }
     }
@@ -808,7 +840,31 @@ async function runSmokeStructured(
   model: string,
   run: number,
   variant: EvalVariant,
+  persistence: EvalPersistence | null,
 ): Promise<EvalResult> {
+  const request = {
+    model: SONNET_MODEL,
+    maxTokens: 256,
+    system: [
+      'You are testing a strict model-provider contract.',
+      'Use the provided tool exactly once. Do not write prose.',
+    ].join('\n'),
+    messages: [
+      textMessage(
+        'user',
+        'Classify transaction tx_smoke_software. Description: "Linear.app subscription". Amount: -120 SEK. Return category expense_software and needs_review false.',
+      ),
+    ],
+  }
+  const caseDef = await defineCase(persistence, 'smoke', 'smoke_generate_structured', variant, {
+    request: withoutModel(request),
+    structured_schema: SMOKE_STRUCTURED_TOOL_SCHEMA,
+    expected: {
+      transaction_id: 'tx_smoke_software',
+      category: 'expense_software',
+    },
+    scoring: ['valid_structured_output', 'correct_transaction_id', 'correct_category'],
+  })
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -818,20 +874,7 @@ async function runSmokeStructured(
   }
 
   try {
-    const output = await provider.generateStructured<unknown>({
-      model: SONNET_MODEL,
-      maxTokens: 256,
-      system: [
-        'You are testing a strict model-provider contract.',
-        'Use the provided tool exactly once. Do not write prose.',
-      ].join('\n'),
-      messages: [
-        textMessage(
-          'user',
-          'Classify transaction tx_smoke_software. Description: "Linear.app subscription". Amount: -120 SEK. Return category expense_software and needs_review false.',
-        ),
-      ],
-    }, SMOKE_STRUCTURED_TOOL_SCHEMA)
+    const output = await provider.generateStructured<unknown>(request, SMOKE_STRUCTURED_TOOL_SCHEMA)
     const parsed = SmokeStructuredSchema.safeParse(output)
     checks.valid_structured_output = parsed.success
     if (!parsed.success) {
@@ -844,7 +887,7 @@ async function runSmokeStructured(
     notes.push(errorMessage(err))
   }
 
-  return result(model, 'smoke', 'smoke_generate_structured', run, variant, started, checks, notes)
+  return result(model, caseDef, run, variant, started, checks, notes)
 }
 
 async function runSmokeTool(
@@ -852,7 +895,32 @@ async function runSmokeTool(
   model: string,
   run: number,
   variant: EvalVariant,
+  persistence: EvalPersistence | null,
 ): Promise<EvalResult> {
+  const request = {
+    model: SONNET_MODEL,
+    maxTokens: 512,
+    system: [{ kind: 'text' as const, text: 'Call gnubok_categorize_transaction exactly once. Do not answer in prose.' }],
+    messages: [
+      textMessage(
+        'user',
+        'Transaction tx_smoke_tool is a -59 SEK bank fee. Stage it as expense_bank_fees.',
+      ),
+    ],
+    tools: [CATEGORIZE_TOOL],
+  }
+  const caseDef = await defineCase(persistence, 'smoke', 'smoke_stream_with_tools', variant, {
+    request: {
+      ...withoutModel(request),
+      tools: request.tools.map(normalizeTool),
+    },
+    expected: {
+      tool_name: 'gnubok_categorize_transaction',
+      transaction_id: 'tx_smoke_tool',
+      category: 'expense_bank_fees',
+    },
+    scoring: ['valid_tool_call', 'allowed_tool_name', 'correct_transaction_id', 'correct_category'],
+  })
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -863,18 +931,7 @@ async function runSmokeTool(
   }
 
   try {
-    const response = await provider.streamWithTools({
-      model: SONNET_MODEL,
-      maxTokens: 512,
-      system: [{ kind: 'text', text: 'Call gnubok_categorize_transaction exactly once. Do not answer in prose.' }],
-      messages: [
-        textMessage(
-          'user',
-          'Transaction tx_smoke_tool is a -59 SEK bank fee. Stage it as expense_bank_fees.',
-        ),
-      ],
-      tools: [CATEGORIZE_TOOL],
-    })
+    const response = await provider.streamWithTools(request)
     const call = firstToolCall(response.content)
     checks.valid_tool_call = !!call
     if (!call) {
@@ -889,7 +946,7 @@ async function runSmokeTool(
     notes.push(errorMessage(err))
   }
 
-  return result(model, 'smoke', 'smoke_stream_with_tools', run, variant, started, checks, notes)
+  return result(model, caseDef, run, variant, started, checks, notes)
 }
 
 async function runComposerFixture(
@@ -898,7 +955,32 @@ async function runComposerFixture(
   fixture: (typeof COMPOSER_FIXTURES)[number],
   run: number,
   variant: EvalVariant,
+  persistence: EvalPersistence | null,
 ): Promise<EvalResult> {
+  const caseDef = await defineCase(persistence, 'composer', fixture.id, variant, {
+    system: ATOM_SELECTION_SYSTEM_PROMPT,
+    user_prompt: buildAtomSelectionUserPrompt(fixture.inputs),
+    structured_schema: {
+      name: 'compose_agent_profile',
+      schema: ATOM_SELECTION_TOOL_SCHEMA,
+    },
+    expected: {
+      required_atoms: fixture.requiredAtoms,
+      forbidden_atoms: fixture.forbiddenAtoms,
+      forbidden_question_words: fixture.forbiddenQuestionWords,
+    },
+    scoring: [
+      'raw_valid_structured_output',
+      'final_valid_structured_output',
+      'raw_required_atoms_present',
+      'final_required_atoms_present',
+      'raw_forbidden_atoms_absent',
+      'final_forbidden_atoms_absent',
+      'no_redundant_questions',
+      'raw_unknown_atoms_absent',
+      'final_unknown_atoms_absent',
+    ],
+  })
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -949,7 +1031,7 @@ async function runComposerFixture(
     notes.push(errorMessage(err))
   }
 
-  return result(model, 'composer', fixture.id, run, variant, started, checks, notes, {
+  return result(model, caseDef, run, variant, started, checks, notes, {
     failures: composerFailures(checks),
     stages,
   })
@@ -961,7 +1043,44 @@ async function runTransactionFixture(
   fixture: (typeof TRANSACTION_FIXTURES)[number],
   run: number,
   variant: EvalVariant,
+  persistence: EvalPersistence | null,
 ): Promise<EvalResult> {
+  const messages = perturbTransactionMessages(fixture.messages, variant)
+  const system = [{
+    kind: 'text' as const,
+    text: [
+      'Du är Accounteds lokala bokföringsassistent.',
+      'Använd bara de verktyg du fått. Hitta inte på verktyg, kategorier, BAS-konton eller transaction_id.',
+      'När information saknas ska du fråga användaren kort i stället för att staga en bokning.',
+    ].join('\n'),
+  }]
+  const caseDef = await defineCase(persistence, 'transaction', fixture.id, variant, {
+    request: {
+      maxTokens: (transactionCategorization.thinking?.budgetTokens ?? 0) + 2048,
+      system,
+      messages,
+      tools: TRANSACTION_TOOLS.map(normalizeTool),
+      thinkingBudgetTokens: transactionCategorization.thinking?.budgetTokens,
+    },
+    expected: {
+      transaction_id: fixture.expectedTransactionId,
+      category: fixture.expectedCategory,
+      vat_treatment: fixture.expectedVatTreatment,
+      must_call_categorize: fixture.mustCallCategorize,
+      must_call_query_journal: fixture.mustCallQueryJournal,
+      must_ask_or_retrieve: fixture.mustAskOrRetrieve,
+    },
+    scoring: [
+      'valid_tool_call',
+      'allowed_tool_name',
+      'correct_transaction_id',
+      'expected_category',
+      'expected_vat_treatment',
+      'respected_review_boundary',
+      'requested_context_or_question',
+      'queried_history_when_required',
+    ],
+  })
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -979,15 +1098,8 @@ async function runTransactionFixture(
     const response = await provider.streamWithTools({
       model: transactionCategorization.model || SONNET_MODEL,
       maxTokens: (transactionCategorization.thinking?.budgetTokens ?? 0) + 2048,
-      system: [{
-        kind: 'text',
-        text: [
-          'Du är Accounteds lokala bokföringsassistent.',
-          'Använd bara de verktyg du fått. Hitta inte på verktyg, kategorier, BAS-konton eller transaction_id.',
-          'När information saknas ska du fråga användaren kort i stället för att staga en bokning.',
-        ].join('\n'),
-      }],
-      messages: perturbTransactionMessages(fixture.messages, variant),
+      system,
+      messages,
       tools: TRANSACTION_TOOLS,
       thinkingBudgetTokens: transactionCategorization.thinking?.budgetTokens,
     })
@@ -1040,7 +1152,7 @@ async function runTransactionFixture(
     checks.allowed_tool_name = false
   }
 
-  return result(model, 'transaction', fixture.id, run, variant, started, checks, notes, {
+  return result(model, caseDef, run, variant, started, checks, notes, {
     failures: transactionFailures(checks, fixture),
   })
 }
@@ -1051,7 +1163,39 @@ async function runQueuedClassificationFixture(
   fixture: (typeof QUEUED_CLASSIFICATION_FIXTURES)[number],
   run: number,
   variant: EvalVariant,
+  persistence: EvalPersistence | null,
 ): Promise<EvalResult> {
+  const system = [
+    'Du klassificerar svenska företagstransaktioner för köad granskning.',
+    'Returnera endast ett strukturerat beslut via verktyget.',
+    'Kategorisera bara när bankrad, underlag och historik räcker för en säker kategori.',
+    'Sätt action=needs_review när syftet saknas eller avgör privat, representation, alkohol, restaurang, resor, gåvor, blandade inköp eller oklar affärsnytta.',
+    'För utländska B2B-mjukvarutjänster till svenskt momsregistrerat bolag används vat_treatment=reverse_charge, inte standard_25.',
+    'När action=needs_review ska category och vat_treatment vara null och review_reason ska kort säga vad som saknas.',
+  ].join('\n')
+  const prompt = perturbClassificationPrompt(fixture.prompt, variant)
+  const caseDef = await defineCase(persistence, 'classification', fixture.id, variant, {
+    request: {
+      maxTokens: 512,
+      system,
+      messages: [textMessage('user', prompt)],
+    },
+    structured_schema: QUEUED_CLASSIFICATION_TOOL_SCHEMA,
+    expected: {
+      transaction_id: fixture.expectedTransactionId,
+      action: fixture.expectedAction,
+      category: fixture.expectedCategory,
+      vat_treatment: fixture.expectedVatTreatment,
+    },
+    scoring: [
+      'valid_structured_output',
+      'correct_transaction_id',
+      'expected_action',
+      'expected_category',
+      'expected_vat_treatment',
+      'conservative_review_boundary',
+    ],
+  })
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -1068,15 +1212,8 @@ async function runQueuedClassificationFixture(
     const output = await provider.generateStructured<unknown>({
       model: SONNET_MODEL,
       maxTokens: 512,
-      system: [
-        'Du klassificerar svenska företagstransaktioner för köad granskning.',
-        'Returnera endast ett strukturerat beslut via verktyget.',
-        'Kategorisera bara när bankrad, underlag och historik räcker för en säker kategori.',
-        'Sätt action=needs_review när syftet saknas eller avgör privat, representation, alkohol, restaurang, resor, gåvor, blandade inköp eller oklar affärsnytta.',
-        'För utländska B2B-mjukvarutjänster till svenskt momsregistrerat bolag används vat_treatment=reverse_charge, inte standard_25.',
-        'När action=needs_review ska category och vat_treatment vara null och review_reason ska kort säga vad som saknas.',
-      ].join('\n'),
-      messages: [textMessage('user', perturbClassificationPrompt(fixture.prompt, variant))],
+      system,
+      messages: [textMessage('user', prompt)],
     }, QUEUED_CLASSIFICATION_TOOL_SCHEMA)
 
     const parsed = QueuedClassificationSchema.safeParse(output)
@@ -1084,7 +1221,7 @@ async function runQueuedClassificationFixture(
     checks.valid_structured_output = parsed.success
     if (!parsed.success) {
       notes.push(parsed.error.message)
-      return result(model, 'classification', fixture.id, run, variant, started, checks, notes, {
+      return result(model, caseDef, run, variant, started, checks, notes, {
         failures: [{
           code: 'invalid_structured_output',
           severity: 'hard',
@@ -1113,7 +1250,7 @@ async function runQueuedClassificationFixture(
     notes.push(errorMessage(err))
   }
 
-  return result(model, 'classification', fixture.id, run, variant, started, checks, notes, {
+  return result(model, caseDef, run, variant, started, checks, notes, {
     failures: queuedClassificationFailures(checks, fixture),
     stages,
   })
@@ -1154,6 +1291,24 @@ function transactionMessages(input: {
       }],
     },
   ]
+}
+
+function transactionPromptMessage(input: {
+  profileSummary: string
+  transaction: EvalTransaction
+  underlag: EvalUnderlag[]
+}): ModelMessage {
+  return textMessage(
+    'user',
+    transactionCategorization.promptTemplate({
+      profileSummary: input.profileSummary,
+      activeMemory: [],
+      captured: {
+        transaction: input.transaction,
+        underlag: input.underlag,
+      },
+    }),
+  )
 }
 
 function composerInput(overrides: Partial<ComposerInputs>): ComposerInputs {
@@ -1405,10 +1560,152 @@ function queuedClassificationFailures(
   return failures
 }
 
+async function initPersistence(resultsDir: string): Promise<EvalPersistence> {
+  const runId = new Date().toISOString().replace(/[:.]/g, '-') + `-${randomUUID().slice(0, 8)}`
+  const manifestPath = join(resultsDir, 'case-manifest.jsonl')
+  const attemptsPath = join(resultsDir, `attempt-results-${runId}.jsonl`)
+  await mkdir(resultsDir, { recursive: true })
+  return {
+    runId,
+    startedAt: new Date().toISOString(),
+    resultsDir,
+    manifestPath,
+    attemptsPath,
+    seenCaseHashes: await readManifestHashes(manifestPath),
+  }
+}
+
+async function readManifestHashes(manifestPath: string): Promise<Set<string>> {
+  try {
+    const text = await readFile(manifestPath, 'utf8')
+    const hashes = new Set<string>()
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const row = JSON.parse(trimmed) as { case_hash?: unknown }
+        if (typeof row.case_hash === 'string') hashes.add(row.case_hash)
+      } catch {
+        // Ignore malformed historical rows. The append path below will still
+        // record any missing hash encountered during this run.
+      }
+    }
+    return hashes
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+      return new Set()
+    }
+    throw err
+  }
+}
+
+async function defineCase(
+  persistence: EvalPersistence | null,
+  group: EvalGroup,
+  caseId: string,
+  variant: EvalVariant,
+  preimage: Record<string, unknown>,
+): Promise<EvalCaseDefinition> {
+  const fullPreimage = {
+    harness: 'local-ai',
+    case_preimage_version: CASE_PREIMAGE_VERSION,
+    scoring_version: SCORING_VERSION,
+    group,
+    case_id: caseId,
+    variant: normalizeVariant(variant),
+    ...preimage,
+  }
+  const caseHash = `sha256:${sha256Hex(canonicalJson(fullPreimage))}`
+  const definition = { caseId, group, caseHash, runId: persistence?.runId ?? 'memory-only', preimage: fullPreimage }
+  await appendCaseManifest(persistence, definition)
+  return definition
+}
+
+async function appendCaseManifest(
+  persistence: EvalPersistence | null,
+  definition: EvalCaseDefinition,
+): Promise<void> {
+  if (!persistence || persistence.seenCaseHashes.has(definition.caseHash)) return
+  const row = {
+    case_hash: definition.caseHash,
+    case_id: definition.caseId,
+    group: definition.group,
+    scoring_version: SCORING_VERSION,
+    preimage: definition.preimage,
+    created_at: new Date().toISOString(),
+  }
+  await appendJsonLine(persistence.manifestPath, row)
+  persistence.seenCaseHashes.add(definition.caseHash)
+}
+
+async function appendAttemptResult(
+  persistence: EvalPersistence | null,
+  result: EvalResult,
+): Promise<void> {
+  if (!persistence) return
+  await appendJsonLine(persistence.attemptsPath, {
+    ...result,
+    completed_at: new Date().toISOString(),
+  })
+}
+
+async function appendJsonLine(path: string, value: unknown): Promise<void> {
+  await appendFile(path, `${JSON.stringify(value)}\n`, 'utf8')
+}
+
+function normalizeVariant(variant: EvalVariant): Record<string, unknown> {
+  return normalizeForHash(variant) as Record<string, unknown>
+}
+
+function normalizeTool(tool: AgentTool): Record<string, unknown> {
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+  }
+}
+
+function withoutModel<T extends { model?: unknown }>(value: T): Omit<T, 'model'> {
+  const { model: _model, ...rest } = value
+  return rest
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(normalizeForHash(value))
+}
+
+function normalizeForHash(value: unknown): unknown {
+  if (value === null) return null
+  if (Array.isArray(value)) return value.map(normalizeForHash)
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const normalized = normalizeForHash((value as Record<string, unknown>)[key])
+      if (normalized !== undefined) out[key] = normalized
+    }
+    return out
+  }
+  if (typeof value === 'function' || typeof value === 'undefined') return undefined
+  return value
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function attemptId(model: string, caseDef: EvalCaseDefinition, run: number, variant: EvalVariant): string {
+  return [
+    `model=${model}`,
+    `case=${caseDef.caseId}`,
+    `hash=${caseDef.caseHash}`,
+    `run=${run}`,
+    `variant=${variant.id}`,
+  ].join(':')
+}
+
 function result(
   model: string,
-  group: EvalGroup,
-  id: string,
+  caseDef: EvalCaseDefinition,
   run: number,
   variant: EvalVariant,
   started: number,
@@ -1421,9 +1718,12 @@ function result(
 ): EvalResult {
   const failures = options.failures ?? genericFailures(checks)
   return {
+    runId: caseDef.runId,
+    attemptId: attemptId(model, caseDef, run, variant),
+    caseHash: caseDef.caseHash,
     model,
-    group,
-    id,
+    group: caseDef.group,
+    id: caseDef.caseId,
     run,
     variant: variant.id,
     ok: failures.length === 0 && Object.values(checks).every(Boolean),
@@ -1527,6 +1827,8 @@ function printHumanSummary(results: EvalResult[]) {
   console.log('\nCases:')
   for (const r of results) {
     console.log(`  ${r.ok ? 'PASS' : 'FAIL'} ${r.model} ${r.group}/${r.id} run=${r.run} variant=${r.variant} ${r.latencyMs}ms`)
+    console.log(`    case: ${r.caseHash}`)
+    console.log(`    attempt: ${r.attemptId}`)
     for (const [name, ok] of Object.entries(r.checks)) {
       console.log(`    ${ok ? 'ok' : 'no'} ${name}`)
     }
@@ -1544,6 +1846,8 @@ function parseArgs(argv: string[]): CliOptions {
   const models: string[] = []
   let json = false
   let runs = 3
+  let resultsDir = DEFAULT_RESULTS_DIR
+  let persist = true
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -1566,6 +1870,12 @@ function parseArgs(argv: string[]): CliOptions {
       runs = parsePositiveInteger(argv[++i] ?? '', '--runs')
     } else if (arg.startsWith('--runs=')) {
       runs = parsePositiveInteger(arg.slice('--runs='.length), '--runs')
+    } else if (arg === '--results-dir') {
+      resultsDir = argv[++i] ?? ''
+    } else if (arg.startsWith('--results-dir=')) {
+      resultsDir = arg.slice('--results-dir='.length)
+    } else if (arg === '--no-persist') {
+      persist = false
     } else if (arg === '--help' || arg === '-h') {
       printHelp()
       process.exit(0)
@@ -1574,7 +1884,11 @@ function parseArgs(argv: string[]): CliOptions {
     }
   }
 
-  return { models, groups, json, runs }
+  if (persist && !resultsDir.trim()) {
+    throw new Error('--results-dir must not be empty when persistence is enabled.')
+  }
+
+  return { models, groups, json, runs, resultsDir, persist }
 }
 
 function splitList(value: string): string[] {
@@ -1606,7 +1920,7 @@ function parsePositiveInteger(value: string, flag: string): number {
 
 function printHelp() {
   console.log([
-    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,transaction,classification] [--runs n] [--json]',
+    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,transaction,classification] [--runs n] [--results-dir path] [--no-persist] [--json]',
     '',
     'Environment:',
     '  LOCAL_AI_BASE_URL   OpenAI-compatible /v1 base URL or /chat/completions URL',
@@ -1616,6 +1930,8 @@ function printHelp() {
     '',
     'Options:',
     '  --runs n           Repeat every selected fixture n times, default 3',
+    `  --results-dir path Write case manifest and attempt JSONL, default ${DEFAULT_RESULTS_DIR}`,
+    '  --no-persist       Disable JSONL persistence and only print stdout output',
   ].join('\n'))
 }
 

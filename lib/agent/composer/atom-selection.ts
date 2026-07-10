@@ -59,7 +59,7 @@ export async function generateRawAtomSelection(
   inputs: ComposerInputs,
   provider: ModelProvider = getModelProvider(),
 ): Promise<unknown> {
-  const userPrompt = buildUserPrompt(inputs)
+  const userPrompt = buildAtomSelectionUserPrompt(inputs)
 
   return provider.generateStructured<unknown>({
     model: OPUS_MODEL,
@@ -208,7 +208,7 @@ export function filterRedundantQuestions(
   })
 }
 
-function buildUserPrompt(inputs: ComposerInputs): string {
+export function buildAtomSelectionUserPrompt(inputs: ComposerInputs): string {
   const lines: string[] = []
   lines.push(`# Företag`)
   lines.push(`Namn: ${inputs.companyName}`)

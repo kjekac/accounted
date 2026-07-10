@@ -102,8 +102,28 @@ Useful options:
 npm run eval:local-ai -- --models qwen3:32b,gpt-oss:20b
 npm run eval:local-ai -- --groups smoke,transaction
 npm run eval:local-ai -- --groups classification
+npm run eval:local-ai -- --runs 5
+npm run eval:local-ai -- --results-dir /tmp/accounted-local-ai-results
 npm run eval:local-ai -- --json
 ```
+
+## Persisted Results
+
+The harness persists JSONL while it runs, so a killed session keeps completed
+attempts and the exact case definitions already seen. By default it writes to
+`scripts/evals/results/`, which is gitignored:
+
+- `case-manifest.jsonl`: one row per unique content-addressed case definition.
+- `attempt-results-<run_id>.jsonl`: one row per completed model attempt.
+
+Each case hash is computed from a canonical preimage containing the effective
+prompt/messages, tool or structured-output schema, fixture expectations, variant
+wording, and scoring-policy version. If a fixture name stays the same but the
+prompt or expected behavior changes, the hash changes. The manifest stores the
+preimage the first time the hash is encountered so old results remain auditable
+after the TypeScript fixtures evolve.
+
+Use `--no-persist` for stdout-only probing.
 
 The script reports model-quality failures as case failures instead of aborting,
 so weak models can still be compared in one run. It exits nonzero for
