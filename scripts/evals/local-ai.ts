@@ -26,8 +26,8 @@ import {
   type StructuredSchema,
 } from '../../lib/agent/model-provider'
 import { SONNET_MODEL } from '../../lib/agent/composer/client'
-import { selectAtoms } from '../../lib/agent/composer/atom-selection'
-import { AtomSelectionSchema } from '../../lib/agent/composer/schemas'
+import { finalizeAtomSelection, generateRawAtomSelection } from '../../lib/agent/composer/atom-selection'
+import { AtomSelectionSchema, type AtomSelection } from '../../lib/agent/composer/schemas'
 import type { ComposerInputs, AtomRegistryIndexRow } from '../../lib/agent/composer/inputs'
 import { transactionCategorization } from '../../lib/agent/intents/transaction-categorization'
 import type { AgentTool } from '../../lib/agent/tools/types'
@@ -38,16 +38,29 @@ interface CliOptions {
   models: string[]
   groups: Set<EvalGroup>
   json: boolean
+  runs: number
+}
+
+type FailureSeverity = 'hard' | 'severe' | 'mild'
+
+interface EvalFailure {
+  code: string
+  severity: FailureSeverity
+  detail: string
 }
 
 interface EvalResult {
   model: string
   group: EvalGroup
   id: string
+  run: number
+  variant: string
   ok: boolean
   latencyMs: number
   checks: Record<string, boolean>
+  failures: EvalFailure[]
   notes: string[]
+  stages?: Record<string, unknown>
 }
 
 interface ModelSummary {
@@ -58,6 +71,11 @@ interface ModelSummary {
   validToolCall: number
   hallucinatedTool: number
   wrongTransactionId: number
+  unsafeCategorization: number
+  wrongVatTreatment: number
+  unnecessaryClarification: number
+  failures: Record<FailureSeverity, number>
+  transactionRouting: 'eligible' | 'blocked'
   latencyMs: {
     min: number
     median: number
@@ -86,6 +104,13 @@ interface EvalUnderlag {
   is_restaurant: boolean | null
   is_systembolaget: boolean | null
   raw_extraction: Record<string, unknown> | null
+}
+
+interface EvalVariant {
+  id: string
+  classificationPrefix?: string
+  classificationSuffix?: string
+  transactionReminder?: string
 }
 
 const TRANSACTION_CATEGORIES = [
@@ -271,6 +296,22 @@ const TRANSACTION_TOOLS = [
 
 const ALLOWED_TRANSACTION_TOOLS = new Set(TRANSACTION_TOOLS.map((t) => t.name))
 
+const EVAL_VARIANTS: EvalVariant[] = [
+  { id: 'baseline' },
+  {
+    id: 'terse-bank-export',
+    classificationPrefix: 'Kort bankexport. Beslut konservativt och följ schemat.',
+    classificationSuffix: 'Returnera beslutet utan extra text.',
+    transactionReminder: 'Kort bankexportvariant: följ verktygsreglerna konservativt.',
+  },
+  {
+    id: 'review-biased',
+    classificationPrefix: 'Var särskilt uppmärksam på om syfte, momsland eller affärsnytta saknas.',
+    classificationSuffix: 'Om fakta saknas ska action vara needs_review, annars kategorisera.',
+    transactionReminder: 'Var särskilt uppmärksam på om syfte, momsland eller affärsnytta saknas.',
+  },
+]
+
 const ATOM_INDEX: AtomRegistryIndexRow[] = [
   atom('horizontal/swedish-vat', 'horizontal', 'Svensk moms', 'Momsregler, avdragsrätt, omvänd skattskyldighet och momssatser.'),
   atom('horizontal/swedish-invoice-compliance', 'horizontal', 'Fakturakrav', 'Svenska faktura- och underlagskrav.'),
@@ -376,6 +417,8 @@ const TRANSACTION_FIXTURES = [
     expectedCategory: 'expense_software',
     expectedVatTreatment: 'reverse_charge',
     mustCallCategorize: true,
+    mustCallQueryJournal: false,
+    mustAskOrRetrieve: false,
     messages: transactionMessages({
       transaction: {
         id: 'tx_software_001',
@@ -414,11 +457,53 @@ const TRANSACTION_FIXTURES = [
     }),
   },
   {
+    id: 'transaction_known_software_must_retrieve_history',
+    expectedTransactionId: 'tx_software_lookup_001',
+    expectedCategory: null,
+    expectedVatTreatment: null,
+    mustCallCategorize: false,
+    mustCallQueryJournal: true,
+    mustAskOrRetrieve: true,
+    messages: [
+      textMessage(
+        'user',
+        transactionCategorization.promptTemplate({
+          profileSummary: 'Svenskt aktiebolag, kvartalsmoms, konsultverksamhet inom IT.',
+          activeMemory: [],
+          captured: {
+            transaction: {
+              id: 'tx_software_lookup_001',
+              date: '2026-07-02',
+              description: 'OPENAI CHATGPT SUBSCRIPTION 260702',
+              amount: -247.5,
+              currency: 'SEK',
+              counterparty_name: 'OpenAI',
+            },
+            underlag: [{
+              kind: 'receipt',
+              document_id: 'doc_openai_lookup_001',
+              merchant_name: 'OpenAI, LLC',
+              receipt_date: '2026-07-02',
+              total_amount: 247.5,
+              vat_amount: 0,
+              currency: 'SEK',
+              is_restaurant: false,
+              is_systembolaget: false,
+              raw_extraction: { supplier: { country: 'US' }, invoice: { description: 'ChatGPT subscription' } },
+            }],
+          },
+        }),
+      ),
+    ],
+  },
+  {
     id: 'transaction_restaurant_requires_context',
     expectedTransactionId: 'tx_restaurant_001',
     expectedCategory: null,
     expectedVatTreatment: null,
     mustCallCategorize: false,
+    mustCallQueryJournal: false,
+    mustAskOrRetrieve: true,
     messages: [
       textMessage(
         'user',
@@ -433,7 +518,6 @@ const TRANSACTION_FIXTURES = [
               amount: -842,
               currency: 'SEK',
               counterparty_name: 'Bistro Svea',
-              direction: 'out',
             },
             underlag: [{
               kind: 'receipt',
@@ -456,6 +540,35 @@ const TRANSACTION_FIXTURES = [
 
 const QUEUED_CLASSIFICATION_FIXTURES = [
   {
+    id: 'classification_domestic_office_supplies_standard_vat',
+    expectedTransactionId: 'txq_office_001',
+    expectedAction: 'categorize',
+    expectedCategory: 'expense_office',
+    expectedVatTreatment: 'standard_25',
+    prompt: [
+      'Transaction txq_office_001',
+      'Company: Swedish VAT-registered IT consultancy AB.',
+      'Bank row: KONTORSGIGANTEN AB, amount -625 SEK, counterparty Kontorsgiganten.',
+      'Receipt: printer paper, envelopes and pens for the office, Swedish supplier, total 625 SEK, VAT amount 125 SEK.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_eu_reverse_charge_software',
+    expectedTransactionId: 'txq_figma_001',
+    expectedAction: 'categorize',
+    expectedCategory: 'expense_software',
+    expectedVatTreatment: 'reverse_charge',
+    prompt: [
+      'Transaction txq_figma_001',
+      'Company: Swedish VAT-registered IT consultancy AB with valid SE VAT number.',
+      'Bank row: FIGMA IRELAND LIMITED, amount -189 EUR, counterparty Figma.',
+      'Invoice: Figma Ireland Limited, supplier country IE, B2B SaaS subscription, reverse charge stated, VAT amount 0.',
+      'History: previous Figma invoices were booked as software subscriptions with reverse charge.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
     id: 'classification_known_software_subscription_reverse_charge',
     expectedTransactionId: 'txq_software_001',
     expectedAction: 'categorize',
@@ -467,6 +580,21 @@ const QUEUED_CLASSIFICATION_FIXTURES = [
       'Bank row: OPENAI CHATGPT SUBSCRIPTION, amount -247.50 SEK, counterparty OpenAI.',
       'Receipt: OpenAI, LLC, supplier country US, digital software subscription, total 247.50 SEK, VAT amount 0 SEK.',
       'History: previous OpenAI subscriptions were booked as software subscriptions.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_domestic_telecom_standard_vat',
+    expectedTransactionId: 'txq_tele2_001',
+    expectedAction: 'categorize',
+    expectedCategory: 'expense_telecom',
+    expectedVatTreatment: 'standard_25',
+    prompt: [
+      'Transaction txq_tele2_001',
+      'Company: Swedish VAT-registered AB.',
+      'Bank row: TELE2 SVERIGE AB, amount -399 SEK.',
+      'Invoice: mobile broadband subscription used by the company, Swedish VAT 79.80 SEK on total 399 SEK.',
+      'History: previous Tele2 invoices were telecom costs.',
       'Classify for queued staging.',
     ].join('\n'),
   },
@@ -486,6 +614,21 @@ const QUEUED_CLASSIFICATION_FIXTURES = [
     ].join('\n'),
   },
   {
+    id: 'classification_representation_with_required_context',
+    expectedTransactionId: 'txq_representation_001',
+    expectedAction: 'categorize',
+    expectedCategory: 'expense_representation',
+    expectedVatTreatment: 'reduced_12',
+    prompt: [
+      'Transaction txq_representation_001',
+      'Company: Swedish VAT-registered IT consultancy AB.',
+      'Bank row: RESTAURANG PRINSEN, amount -1280 SEK.',
+      'Receipt: business lunch, food only, total 1280 SEK, VAT amount 137.14 SEK, restaurant=true.',
+      'Context captured from user: 4 attendees, 2 from the company and 2 from customer ACME AB, purpose was project kickoff for signed implementation contract.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
     id: 'classification_restaurant_requires_review',
     expectedTransactionId: 'txq_restaurant_001',
     expectedAction: 'needs_review',
@@ -497,6 +640,95 @@ const QUEUED_CLASSIFICATION_FIXTURES = [
       'Bank row: BISTRO SVEA STOCKHOLM, amount -842 SEK.',
       'Receipt: Bistro Svea, lunch and drinks, total 842 SEK, VAT amount 90.21 SEK, restaurant=true.',
       'No attendee, customer, staff, travel, or business purpose is visible.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_mixed_private_business_requires_review',
+    expectedTransactionId: 'txq_mixed_001',
+    expectedAction: 'needs_review',
+    expectedCategory: null,
+    expectedVatTreatment: null,
+    prompt: [
+      'Transaction txq_mixed_001',
+      'Company: Swedish VAT-registered consultant AB.',
+      'Bank row: APPLE STORE TÄBY, amount -14990 SEK.',
+      'Receipt: iPhone and AirPods, Swedish VAT shown.',
+      'No note says whether the phone is company equipment, private use, mixed use, or a benefit.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_equipment_near_capitalization_boundary_requires_review',
+    expectedTransactionId: 'txq_laptop_cap_001',
+    expectedAction: 'needs_review',
+    expectedCategory: null,
+    expectedVatTreatment: null,
+    prompt: [
+      'Transaction txq_laptop_cap_001',
+      'Company: Swedish VAT-registered AB.',
+      'Bank row: DUSTIN AB, amount -29875 SEK.',
+      'Invoice: laptop workstation, Swedish VAT amount 5975 SEK, expected useful life more than 3 years.',
+      'No accounting policy threshold or decision is visible for immediate expense versus capitalization.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_low_value_equipment_standard_vat',
+    expectedTransactionId: 'txq_keyboard_001',
+    expectedAction: 'categorize',
+    expectedCategory: 'expense_equipment',
+    expectedVatTreatment: 'standard_25',
+    prompt: [
+      'Transaction txq_keyboard_001',
+      'Company: Swedish VAT-registered AB.',
+      'Bank row: WEBBHALLEN SVERIGE, amount -990 SEK.',
+      'Receipt: keyboard for office workstation, Swedish VAT amount 198 SEK, no private-use indication.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_ambiguous_merchant_requires_review',
+    expectedTransactionId: 'txq_amazon_001',
+    expectedAction: 'needs_review',
+    expectedCategory: null,
+    expectedVatTreatment: null,
+    prompt: [
+      'Transaction txq_amazon_001',
+      'Company: Swedish VAT-registered AB.',
+      'Bank row: AMAZON MKTPL*Z92LP, amount -1437 SEK.',
+      'No receipt lines, supplier country, product type, VAT amount, or business purpose are visible.',
+      'History contains mixed Amazon purchases: office supplies, private reimbursements, and computer accessories.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_misleading_history_receipt_wins',
+    expectedTransactionId: 'txq_history_mislead_001',
+    expectedAction: 'categorize',
+    expectedCategory: 'expense_education',
+    expectedVatTreatment: 'standard_25',
+    prompt: [
+      'Transaction txq_history_mislead_001',
+      'Company: Swedish VAT-registered IT consultancy AB.',
+      'Bank row: BREAKIT AB, amount -3490 SEK.',
+      'Receipt: ticket to professional developer conference in Stockholm, Swedish VAT amount 698 SEK.',
+      'History: older Breakit payments were marketing ads, but this invoice line is explicitly a conference ticket.',
+      'Classify for queued staging.',
+    ].join('\n'),
+  },
+  {
+    id: 'classification_duplicate_looking_requires_review',
+    expectedTransactionId: 'txq_duplicate_001',
+    expectedAction: 'needs_review',
+    expectedCategory: null,
+    expectedVatTreatment: null,
+    prompt: [
+      'Transaction txq_duplicate_001',
+      'Company: Swedish VAT-registered AB.',
+      'Bank row: ADOBE SYSTEMS, amount -240 SEK, date 2026-06-30.',
+      'Receipt: Adobe subscription, total 240 SEK, VAT amount 0, supplier country IE.',
+      'System context: another unbooked transaction from ADOBE SYSTEMS for -240 SEK exists on 2026-06-30 with the same receipt number.',
       'Classify for queued staging.',
     ].join('\n'),
   },
@@ -539,23 +771,26 @@ async function main() {
       throw new Error(`Expected local-openai-compatible provider, got ${provider.name}.`)
     }
 
-    if (options.groups.has('smoke')) {
-      results.push(await runSmokeStructured(provider, model))
-      results.push(await runSmokeTool(provider, model))
-    }
-    if (options.groups.has('composer')) {
-      for (const fixture of COMPOSER_FIXTURES) {
-        results.push(await runComposerFixture(model, fixture))
+    for (let run = 1; run <= options.runs; run++) {
+      const variant = EVAL_VARIANTS[(run - 1) % EVAL_VARIANTS.length]
+      if (options.groups.has('smoke')) {
+        results.push(await runSmokeStructured(provider, model, run, variant))
+        results.push(await runSmokeTool(provider, model, run, variant))
       }
-    }
-    if (options.groups.has('transaction')) {
-      for (const fixture of TRANSACTION_FIXTURES) {
-        results.push(await runTransactionFixture(provider, model, fixture))
+      if (options.groups.has('composer')) {
+        for (const fixture of COMPOSER_FIXTURES) {
+          results.push(await runComposerFixture(provider, model, fixture, run, variant))
+        }
       }
-    }
-    if (options.groups.has('classification')) {
-      for (const fixture of QUEUED_CLASSIFICATION_FIXTURES) {
-        results.push(await runQueuedClassificationFixture(provider, model, fixture))
+      if (options.groups.has('transaction')) {
+        for (const fixture of TRANSACTION_FIXTURES) {
+          results.push(await runTransactionFixture(provider, model, fixture, run, variant))
+        }
+      }
+      if (options.groups.has('classification')) {
+        for (const fixture of QUEUED_CLASSIFICATION_FIXTURES) {
+          results.push(await runQueuedClassificationFixture(provider, model, fixture, run, variant))
+        }
       }
     }
   }
@@ -568,7 +803,12 @@ async function main() {
   printHumanSummary(results)
 }
 
-async function runSmokeStructured(provider: ModelProvider, model: string): Promise<EvalResult> {
+async function runSmokeStructured(
+  provider: ModelProvider,
+  model: string,
+  run: number,
+  variant: EvalVariant,
+): Promise<EvalResult> {
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -604,10 +844,15 @@ async function runSmokeStructured(provider: ModelProvider, model: string): Promi
     notes.push(errorMessage(err))
   }
 
-  return result(model, 'smoke', 'smoke_generate_structured', started, checks, notes)
+  return result(model, 'smoke', 'smoke_generate_structured', run, variant, started, checks, notes)
 }
 
-async function runSmokeTool(provider: ModelProvider, model: string): Promise<EvalResult> {
+async function runSmokeTool(
+  provider: ModelProvider,
+  model: string,
+  run: number,
+  variant: EvalVariant,
+): Promise<EvalResult> {
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
@@ -644,55 +889,78 @@ async function runSmokeTool(provider: ModelProvider, model: string): Promise<Eva
     notes.push(errorMessage(err))
   }
 
-  return result(model, 'smoke', 'smoke_stream_with_tools', started, checks, notes)
+  return result(model, 'smoke', 'smoke_stream_with_tools', run, variant, started, checks, notes)
 }
 
 async function runComposerFixture(
+  provider: ModelProvider,
   model: string,
   fixture: (typeof COMPOSER_FIXTURES)[number],
+  run: number,
+  variant: EvalVariant,
 ): Promise<EvalResult> {
   const started = performance.now()
   const notes: string[] = []
   const checks: Record<string, boolean> = {
-    valid_structured_output: false,
-    required_atoms_present: false,
-    forbidden_atoms_absent: false,
+    raw_valid_structured_output: false,
+    final_valid_structured_output: false,
+    raw_required_atoms_present: false,
+    final_required_atoms_present: false,
+    raw_forbidden_atoms_absent: false,
+    final_forbidden_atoms_absent: false,
     no_redundant_questions: false,
-    no_unknown_atoms_after_filter: false,
+    raw_unknown_atoms_absent: false,
+    final_unknown_atoms_absent: false,
   }
+  const stages: Record<string, unknown> = {}
 
   try {
-    const selection = await selectAtoms(fixture.inputs)
-    const parsed = AtomSelectionSchema.safeParse(selection)
-    checks.valid_structured_output = parsed.success
-    if (!parsed.success) {
-      notes.push(parsed.error.message)
+    const raw = await generateRawAtomSelection(fixture.inputs, provider)
+    stages.raw_model_output = raw
+    const rawParsed = AtomSelectionSchema.safeParse(raw)
+    checks.raw_valid_structured_output = rawParsed.success
+    if (!rawParsed.success) {
+      notes.push(`raw_error=${rawParsed.error.message}`)
     } else {
-      const selected = [
-        ...parsed.data.horizontal_atoms,
-        ...parsed.data.vertical_atoms,
-        ...parsed.data.modifier_atoms,
-      ]
-      const known = new Set(fixture.inputs.atomIndex.map((a) => a.id))
-      checks.required_atoms_present = fixture.requiredAtoms.every((id) => selected.includes(id))
-      checks.forbidden_atoms_absent = fixture.forbiddenAtoms.every((id) => !selected.includes(id))
-      checks.no_unknown_atoms_after_filter = selected.every((id) => known.has(id))
-      const questions = parsed.data.verification_questions.join('\n').toLowerCase()
-      checks.no_redundant_questions = fixture.forbiddenQuestionWords.every((word) => !questions.includes(word))
-      notes.push(`atoms=${selected.join(', ') || '(none)'}`)
-      notes.push(`questions=${parsed.data.verification_questions.join(' | ') || '(none)'}`)
+      const rawChecks = gradeAtomSelection(rawParsed.data, fixture)
+      checks.raw_required_atoms_present = rawChecks.requiredAtomsPresent
+      checks.raw_forbidden_atoms_absent = rawChecks.forbiddenAtomsAbsent
+      checks.raw_unknown_atoms_absent = rawChecks.unknownAtomsAbsent
+      stages.validated_model_output = rawParsed.data
+    }
+
+    const final = finalizeAtomSelection(raw, fixture.inputs)
+    stages.final_product_output = final
+    const finalParsed = AtomSelectionSchema.safeParse(final)
+    checks.final_valid_structured_output = finalParsed.success
+    if (!finalParsed.success) {
+      notes.push(`final_error=${finalParsed.error.message}`)
+    } else {
+      const finalChecks = gradeAtomSelection(finalParsed.data, fixture)
+      checks.final_required_atoms_present = finalChecks.requiredAtomsPresent
+      checks.final_forbidden_atoms_absent = finalChecks.forbiddenAtomsAbsent
+      checks.final_unknown_atoms_absent = finalChecks.unknownAtomsAbsent
+      checks.no_redundant_questions = finalChecks.noRedundantQuestions
+      notes.push(`raw_atoms=${rawParsed.success ? selectedAtomIds(rawParsed.data).join(', ') || '(none)' : '(invalid)'}`)
+      notes.push(`final_atoms=${selectedAtomIds(finalParsed.data).join(', ') || '(none)'}`)
+      notes.push(`final_questions=${finalParsed.data.verification_questions.join(' | ') || '(none)'}`)
     }
   } catch (err) {
     notes.push(errorMessage(err))
   }
 
-  return result(model, 'composer', fixture.id, started, checks, notes)
+  return result(model, 'composer', fixture.id, run, variant, started, checks, notes, {
+    failures: composerFailures(checks),
+    stages,
+  })
 }
 
 async function runTransactionFixture(
   provider: ModelProvider,
   model: string,
   fixture: (typeof TRANSACTION_FIXTURES)[number],
+  run: number,
+  variant: EvalVariant,
 ): Promise<EvalResult> {
   const started = performance.now()
   const notes: string[] = []
@@ -703,7 +971,8 @@ async function runTransactionFixture(
     expected_category: true,
     expected_vat_treatment: true,
     respected_review_boundary: true,
-    requested_context_or_question: fixture.mustCallCategorize,
+    requested_context_or_question: !fixture.mustAskOrRetrieve,
+    queried_history_when_required: !fixture.mustCallQueryJournal,
   }
 
   try {
@@ -718,14 +987,16 @@ async function runTransactionFixture(
           'När information saknas ska du fråga användaren kort i stället för att staga en bokning.',
         ].join('\n'),
       }],
-      messages: fixture.messages,
+      messages: perturbTransactionMessages(fixture.messages, variant),
       tools: TRANSACTION_TOOLS,
       thinkingBudgetTokens: transactionCategorization.thinking?.budgetTokens,
     })
     const toolCalls = response.content.filter(isToolCall)
     checks.allowed_tool_name = toolCalls.every((call) => ALLOWED_TRANSACTION_TOOLS.has(call.name))
     const categorizeCalls = toolCalls.filter((call) => call.name === 'gnubok_categorize_transaction')
+    const queryJournalCalls = toolCalls.filter((call) => call.name === 'gnubok_query_journal')
     checks.valid_tool_call = fixture.mustCallCategorize ? categorizeCalls.length > 0 : true
+    checks.queried_history_when_required = fixture.mustCallQueryJournal ? queryJournalCalls.length > 0 : true
     const text = responseText(response.content)
 
     if (fixture.mustCallCategorize && categorizeCalls.length === 0) {
@@ -749,7 +1020,7 @@ async function runTransactionFixture(
       }
     }
 
-    if (!fixture.mustCallCategorize) {
+    if (fixture.mustAskOrRetrieve) {
       checks.requested_context_or_question =
         categorizeCalls.length === 0 &&
         (toolCalls.some((call) =>
@@ -769,13 +1040,17 @@ async function runTransactionFixture(
     checks.allowed_tool_name = false
   }
 
-  return result(model, 'transaction', fixture.id, started, checks, notes)
+  return result(model, 'transaction', fixture.id, run, variant, started, checks, notes, {
+    failures: transactionFailures(checks, fixture),
+  })
 }
 
 async function runQueuedClassificationFixture(
   provider: ModelProvider,
   model: string,
   fixture: (typeof QUEUED_CLASSIFICATION_FIXTURES)[number],
+  run: number,
+  variant: EvalVariant,
 ): Promise<EvalResult> {
   const started = performance.now()
   const notes: string[] = []
@@ -787,6 +1062,7 @@ async function runQueuedClassificationFixture(
     expected_vat_treatment: false,
     conservative_review_boundary: false,
   }
+  const stages: Record<string, unknown> = {}
 
   try {
     const output = await provider.generateStructured<unknown>({
@@ -800,13 +1076,22 @@ async function runQueuedClassificationFixture(
         'För utländska B2B-mjukvarutjänster till svenskt momsregistrerat bolag används vat_treatment=reverse_charge, inte standard_25.',
         'När action=needs_review ska category och vat_treatment vara null och review_reason ska kort säga vad som saknas.',
       ].join('\n'),
-      messages: [textMessage('user', fixture.prompt)],
+      messages: [textMessage('user', perturbClassificationPrompt(fixture.prompt, variant))],
     }, QUEUED_CLASSIFICATION_TOOL_SCHEMA)
 
     const parsed = QueuedClassificationSchema.safeParse(output)
+    stages.raw_model_output = output
     checks.valid_structured_output = parsed.success
     if (!parsed.success) {
       notes.push(parsed.error.message)
+      return result(model, 'classification', fixture.id, run, variant, started, checks, notes, {
+        failures: [{
+          code: 'invalid_structured_output',
+          severity: 'hard',
+          detail: 'Model did not return the queued classification schema.',
+        }],
+        stages,
+      })
     } else {
       checks.correct_transaction_id = parsed.data.transaction_id === fixture.expectedTransactionId
       checks.expected_action = parsed.data.action === fixture.expectedAction
@@ -828,7 +1113,10 @@ async function runQueuedClassificationFixture(
     notes.push(errorMessage(err))
   }
 
-  return result(model, 'classification', fixture.id, started, checks, notes)
+  return result(model, 'classification', fixture.id, run, variant, started, checks, notes, {
+    failures: queuedClassificationFailures(checks, fixture),
+    stages,
+  })
 }
 
 function transactionMessages(input: {
@@ -903,22 +1191,247 @@ function atom(
   }
 }
 
+function selectedAtomIds(selection: AtomSelection): string[] {
+  return [
+    ...selection.horizontal_atoms,
+    ...selection.vertical_atoms,
+    ...selection.modifier_atoms,
+  ]
+}
+
+function gradeAtomSelection(
+  selection: AtomSelection,
+  fixture: (typeof COMPOSER_FIXTURES)[number],
+): {
+  requiredAtomsPresent: boolean
+  forbiddenAtomsAbsent: boolean
+  unknownAtomsAbsent: boolean
+  noRedundantQuestions: boolean
+} {
+  const selected = selectedAtomIds(selection)
+  const known = new Set(fixture.inputs.atomIndex.map((a) => a.id))
+  const questions = selection.verification_questions.join('\n').toLowerCase()
+  return {
+    requiredAtomsPresent: fixture.requiredAtoms.every((id) => selected.includes(id)),
+    forbiddenAtomsAbsent: fixture.forbiddenAtoms.every((id) => !selected.includes(id)),
+    unknownAtomsAbsent: selected.every((id) => known.has(id)),
+    noRedundantQuestions: fixture.forbiddenQuestionWords.every((word) => !questions.includes(word)),
+  }
+}
+
+function perturbClassificationPrompt(prompt: string, variant: EvalVariant): string {
+  return [
+    variant.classificationPrefix,
+    prompt,
+    variant.classificationSuffix,
+  ].filter(Boolean).join('\n\n')
+}
+
+function perturbTransactionMessages(messages: ModelMessage[], variant: EvalVariant): ModelMessage[] {
+  if (!variant.transactionReminder) return messages
+  return [...messages, textMessage('user', variant.transactionReminder)]
+}
+
+function genericFailures(checks: Record<string, boolean>): EvalFailure[] {
+  return Object.entries(checks)
+    .filter(([, ok]) => !ok)
+    .map(([code]) => ({
+      code,
+      severity: 'severe' as const,
+      detail: `Check failed: ${code}`,
+    }))
+}
+
+function composerFailures(checks: Record<string, boolean>): EvalFailure[] {
+  const failures: EvalFailure[] = []
+  if (!checks.raw_valid_structured_output || !checks.final_valid_structured_output) {
+    failures.push({
+      code: 'invalid_structured_output',
+      severity: 'hard',
+      detail: 'Composer output failed schema validation before or after finalization.',
+    })
+  }
+  if (!checks.raw_unknown_atoms_absent) {
+    failures.push({
+      code: 'raw_unknown_atom_ids',
+      severity: 'severe',
+      detail: 'Raw model output selected atom IDs not present in the registry.',
+    })
+  }
+  if (!checks.final_unknown_atoms_absent) {
+    failures.push({
+      code: 'final_unknown_atom_ids',
+      severity: 'hard',
+      detail: 'Final composer output still contains atom IDs not present in the registry.',
+    })
+  }
+  if (!checks.final_required_atoms_present || !checks.final_forbidden_atoms_absent) {
+    failures.push({
+      code: 'wrong_atom_selection',
+      severity: 'severe',
+      detail: 'Final composer output missed required atoms or included forbidden atoms.',
+    })
+  }
+  if (!checks.no_redundant_questions) {
+    failures.push({
+      code: 'redundant_composer_question',
+      severity: 'mild',
+      detail: 'Composer asked about facts already present in company/TIC inputs.',
+    })
+  }
+  return failures
+}
+
+function transactionFailures(
+  checks: Record<string, boolean>,
+  fixture: (typeof TRANSACTION_FIXTURES)[number],
+): EvalFailure[] {
+  const failures: EvalFailure[] = []
+  if (!checks.allowed_tool_name) {
+    failures.push({
+      code: 'hallucinated_tools',
+      severity: 'hard',
+      detail: 'Assistant called a tool outside the allowed transaction tool set.',
+    })
+  }
+  if (!checks.correct_transaction_id) {
+    failures.push({
+      code: 'wrong_transaction_id',
+      severity: 'hard',
+      detail: 'Assistant attempted to act on a transaction other than the captured transaction.',
+    })
+  }
+  if (!checks.respected_review_boundary) {
+    failures.push({
+      code: 'unsafe_categorization',
+      severity: 'hard',
+      detail: 'Assistant categorized when the fixture required retrieval or a user clarification first.',
+    })
+  }
+  if (!checks.queried_history_when_required) {
+    failures.push({
+      code: 'missing_required_history_lookup',
+      severity: 'hard',
+      detail: 'Assistant did not retrieve journal history in a first-turn case that requires it.',
+    })
+  }
+  if (!checks.expected_vat_treatment) {
+    failures.push({
+      code: 'wrong_vat_treatment',
+      severity: 'severe',
+      detail: 'Assistant selected the wrong VAT treatment.',
+    })
+  }
+  if (!checks.expected_category) {
+    failures.push({
+      code: 'wrong_category',
+      severity: fixture.mustCallCategorize ? 'severe' : 'hard',
+      detail: 'Assistant selected the wrong semantic transaction category.',
+    })
+  }
+  if (!checks.valid_tool_call) {
+    failures.push({
+      code: fixture.mustCallCategorize ? 'missing_categorize_tool_call' : 'invalid_tool_call',
+      severity: fixture.mustCallCategorize ? 'mild' : 'severe',
+      detail: fixture.mustCallCategorize
+        ? 'Assistant asked or answered instead of staging when the fixture had enough context.'
+        : 'Assistant tool-call behavior did not match the fixture.',
+    })
+  }
+  if (!checks.requested_context_or_question) {
+    failures.push({
+      code: 'missing_clarification_or_context_lookup',
+      severity: 'hard',
+      detail: 'Assistant neither asked a follow-up question nor retrieved context when required.',
+    })
+  }
+  return failures
+}
+
+function queuedClassificationFailures(
+  checks: Record<string, boolean>,
+  fixture: (typeof QUEUED_CLASSIFICATION_FIXTURES)[number],
+): EvalFailure[] {
+  const failures: EvalFailure[] = []
+  if (!checks.valid_structured_output) {
+    failures.push({
+      code: 'invalid_structured_output',
+      severity: 'hard',
+      detail: 'Model did not return the queued classification schema.',
+    })
+  }
+  if (!checks.correct_transaction_id) {
+    failures.push({
+      code: 'wrong_transaction_id',
+      severity: 'hard',
+      detail: 'Classifier returned a transaction_id other than the fixture transaction.',
+    })
+  }
+  if (fixture.expectedAction === 'needs_review' && !checks.expected_action) {
+    failures.push({
+      code: 'unsafe_categorization',
+      severity: 'hard',
+      detail: 'Classifier categorized despite missing mandatory facts.',
+    })
+  }
+  if (fixture.expectedAction === 'categorize' && !checks.expected_action) {
+    failures.push({
+      code: 'unnecessary_clarification',
+      severity: 'mild',
+      detail: 'Classifier sent a clear case to review instead of categorizing.',
+    })
+  }
+  if (!checks.expected_category) {
+    failures.push({
+      code: 'wrong_category',
+      severity: fixture.expectedAction === 'categorize' ? 'severe' : 'hard',
+      detail: 'Classifier selected a wrong or non-null category for the expected action.',
+    })
+  }
+  if (!checks.expected_vat_treatment) {
+    failures.push({
+      code: 'wrong_vat_treatment',
+      severity: fixture.expectedAction === 'categorize' ? 'severe' : 'hard',
+      detail: 'Classifier selected a wrong or non-null VAT treatment for the expected action.',
+    })
+  }
+  if (!checks.conservative_review_boundary) {
+    failures.push({
+      code: 'review_boundary_violation',
+      severity: fixture.expectedAction === 'needs_review' ? 'hard' : 'severe',
+      detail: 'Classifier did not preserve the required categorize/review boundary.',
+    })
+  }
+  return failures
+}
+
 function result(
   model: string,
   group: EvalGroup,
   id: string,
+  run: number,
+  variant: EvalVariant,
   started: number,
   checks: Record<string, boolean>,
   notes: string[],
+  options: {
+    failures?: EvalFailure[]
+    stages?: Record<string, unknown>
+  } = {},
 ): EvalResult {
+  const failures = options.failures ?? genericFailures(checks)
   return {
     model,
     group,
     id,
-    ok: Object.values(checks).every(Boolean),
+    run,
+    variant: variant.id,
+    ok: failures.length === 0 && Object.values(checks).every(Boolean),
     latencyMs: Math.round(performance.now() - started),
     checks,
+    failures,
     notes,
+    ...(options.stages ? { stages: options.stages } : {}),
   }
 }
 
@@ -953,14 +1466,34 @@ function summarize(results: EvalResult[]): ModelSummary[] {
   }
   return [...byModel.entries()].map(([model, rows]) => {
     const latencies = rows.map((r) => r.latencyMs).sort((a, b) => a - b)
+    const failures = rows.flatMap((r) => r.failures)
+    const hardFailures = failures.filter((failure) => failure.severity === 'hard')
+    const unsafeCategorization = failures.filter((failure) => failure.code === 'unsafe_categorization').length
+    const hallucinatedTool = rows.filter((r) => r.checks.allowed_tool_name === false).length
+    const wrongTransactionId = rows.filter((r) => r.checks.correct_transaction_id === false).length
     return {
       model,
       total: rows.length,
       passed: rows.filter((r) => r.ok).length,
       validStructured: rows.filter((r) => r.checks.valid_structured_output === true).length,
       validToolCall: rows.filter((r) => r.checks.valid_tool_call === true).length,
-      hallucinatedTool: rows.filter((r) => r.checks.allowed_tool_name === false).length,
-      wrongTransactionId: rows.filter((r) => r.checks.correct_transaction_id === false).length,
+      hallucinatedTool,
+      wrongTransactionId,
+      unsafeCategorization,
+      wrongVatTreatment: failures.filter((failure) => failure.code === 'wrong_vat_treatment').length,
+      unnecessaryClarification: failures.filter((failure) => failure.code === 'unnecessary_clarification').length,
+      failures: {
+        hard: hardFailures.length,
+        severe: failures.filter((failure) => failure.severity === 'severe').length,
+        mild: failures.filter((failure) => failure.severity === 'mild').length,
+      },
+      transactionRouting:
+        wrongTransactionId === 0 &&
+        hallucinatedTool === 0 &&
+        unsafeCategorization === 0 &&
+        hardFailures.length === 0
+          ? 'eligible'
+          : 'blocked',
       latencyMs: {
         min: latencies[0] ?? 0,
         median: latencies[Math.floor(latencies.length / 2)] ?? 0,
@@ -979,6 +1512,13 @@ function printHumanSummary(results: EvalResult[]) {
     console.log(`  valid tool-call cases: ${summary.validToolCall}`)
     console.log(`  hallucinated tool cases: ${summary.hallucinatedTool}`)
     console.log(`  wrong transaction id cases: ${summary.wrongTransactionId}`)
+    console.log(`  unsafe categorization cases: ${summary.unsafeCategorization}`)
+    console.log(`  wrong VAT treatment cases: ${summary.wrongVatTreatment}`)
+    console.log(`  unnecessary clarification cases: ${summary.unnecessaryClarification}`)
+    console.log(
+      `  failures: hard ${summary.failures.hard}, severe ${summary.failures.severe}, mild ${summary.failures.mild}`,
+    )
+    console.log(`  transaction routing: ${summary.transactionRouting}`)
     console.log(
       `  latency ms: min ${summary.latencyMs.min}, median ${summary.latencyMs.median}, max ${summary.latencyMs.max}`,
     )
@@ -986,9 +1526,12 @@ function printHumanSummary(results: EvalResult[]) {
 
   console.log('\nCases:')
   for (const r of results) {
-    console.log(`  ${r.ok ? 'PASS' : 'FAIL'} ${r.model} ${r.group}/${r.id} ${r.latencyMs}ms`)
+    console.log(`  ${r.ok ? 'PASS' : 'FAIL'} ${r.model} ${r.group}/${r.id} run=${r.run} variant=${r.variant} ${r.latencyMs}ms`)
     for (const [name, ok] of Object.entries(r.checks)) {
       console.log(`    ${ok ? 'ok' : 'no'} ${name}`)
+    }
+    for (const failure of r.failures) {
+      console.log(`    failure[${failure.severity}]: ${failure.code} - ${failure.detail}`)
     }
     for (const note of r.notes) {
       console.log(`    note: ${note}`)
@@ -1000,6 +1543,7 @@ function parseArgs(argv: string[]): CliOptions {
   const groups = new Set<EvalGroup>(['smoke', 'composer', 'transaction', 'classification'])
   const models: string[] = []
   let json = false
+  let runs = 3
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -1018,6 +1562,10 @@ function parseArgs(argv: string[]): CliOptions {
     } else if (arg.startsWith('--groups=')) {
       groups.clear()
       for (const group of splitList(arg.slice('--groups='.length))) groups.add(parseGroup(group))
+    } else if (arg === '--runs') {
+      runs = parsePositiveInteger(argv[++i] ?? '', '--runs')
+    } else if (arg.startsWith('--runs=')) {
+      runs = parsePositiveInteger(arg.slice('--runs='.length), '--runs')
     } else if (arg === '--help' || arg === '-h') {
       printHelp()
       process.exit(0)
@@ -1026,7 +1574,7 @@ function parseArgs(argv: string[]): CliOptions {
     }
   }
 
-  return { models, groups, json }
+  return { models, groups, json, runs }
 }
 
 function splitList(value: string): string[] {
@@ -1048,15 +1596,26 @@ function parseGroup(value: string): EvalGroup {
   throw new Error(`Unknown group "${value}". Expected smoke, composer, transaction, or classification.`)
 }
 
+function parsePositiveInteger(value: string, flag: string): number {
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${flag} must be a positive integer.`)
+  }
+  return parsed
+}
+
 function printHelp() {
   console.log([
-    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,transaction,classification] [--json]',
+    'Usage: npm run eval:local-ai -- [--models a,b] [--groups smoke,composer,transaction,classification] [--runs n] [--json]',
     '',
     'Environment:',
     '  LOCAL_AI_BASE_URL   OpenAI-compatible /v1 base URL or /chat/completions URL',
     '  LOCAL_AI_MODEL      Default model when --models is omitted',
     '  LOCAL_AI_TIMEOUT_MS Optional per-request timeout, default from provider',
     '  LOCAL_AI_API_KEY    Optional bearer token for local endpoint',
+    '',
+    'Options:',
+    '  --runs n           Repeat every selected fixture n times, default 3',
   ].join('\n'))
 }
 

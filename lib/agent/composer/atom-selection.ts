@@ -1,9 +1,9 @@
-import { getModelProvider, textMessage } from '@/lib/agent/model-provider'
+import { getModelProvider, textMessage, type ModelProvider } from '@/lib/agent/model-provider'
 import { OPUS_MODEL } from './client'
 import { AtomSelectionSchema, ATOM_SELECTION_TOOL_SCHEMA, type AtomSelection } from './schemas'
 import type { ComposerInputs } from './inputs'
 
-const SYSTEM_PROMPT = `Du komponerar en specialiserad svensk bokföringsassistent åt ett företag.
+export const ATOM_SELECTION_SYSTEM_PROMPT = `Du komponerar en specialiserad svensk bokföringsassistent åt ett företag.
 
 Du får:
 - Företagets TIC-snapshot från Bolagsverket / Lens API. Inkluderar utöver grundfält (org-nummer, juridisk form, SNI, F-skatt/moms/arbetsgivarregistrering, anställdaintervall, omsättningsintervall, verksamhetsbeskrivning, senaste finansiella rapporter):
@@ -51,19 +51,29 @@ Stil i all text du skriver (verifieringsfrågor och notes): använd ALDRIG tanks
 Använd verktyget compose_agent_profile för att svara. Använd aldrig fritext.`
 
 export async function selectAtoms(inputs: ComposerInputs): Promise<AtomSelection> {
+  const structured = await generateRawAtomSelection(inputs)
+  return finalizeAtomSelection(structured, inputs)
+}
+
+export async function generateRawAtomSelection(
+  inputs: ComposerInputs,
+  provider: ModelProvider = getModelProvider(),
+): Promise<unknown> {
   const userPrompt = buildUserPrompt(inputs)
 
-  const structured = await getModelProvider().generateStructured<unknown>({
+  return provider.generateStructured<unknown>({
     model: OPUS_MODEL,
     maxTokens: 2048,
-    system: SYSTEM_PROMPT,
+    system: ATOM_SELECTION_SYSTEM_PROMPT,
     messages: [textMessage('user', userPrompt)],
   }, {
     name: 'compose_agent_profile',
     description: 'Spara den valda atomuppsättningen för företaget.',
     schema: ATOM_SELECTION_TOOL_SCHEMA,
   })
+}
 
+export function finalizeAtomSelection(structured: unknown, inputs: ComposerInputs): AtomSelection {
   const parsed = AtomSelectionSchema.safeParse(structured)
   if (!parsed.success) {
     throw new Error(`Atom selection failed Zod validation: ${parsed.error.message}`)
