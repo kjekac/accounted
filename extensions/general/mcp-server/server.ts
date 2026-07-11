@@ -3618,6 +3618,10 @@ export const tools: McpTool[] = [
         our_reference: { type: 'string' },
         your_reference: { type: 'string' },
         notes: { type: 'string' },
+        payment_link_url: {
+          type: 'string',
+          description: 'Optional https pay link for THIS invoice (e.g. Stripe); rendered in the invoice email and PDF.',
+        },
       },
       required: ['customer_id', 'items'],
     },
@@ -3666,6 +3670,21 @@ export const tools: McpTool[] = [
         const bag = resolvedDimBags[i + 1]
         return bag && Object.keys(bag).length > 0 ? { ...rest, dimensions: bag } : rest
       })
+
+      // Same https-only gate as the web API (CreateInvoiceSchema): the link is
+      // rendered in customer-facing emails/PDFs under the company's name.
+      const paymentLinkUrl = (args.payment_link_url as string | undefined)?.trim() || null
+      if (paymentLinkUrl) {
+        let isHttps = false
+        try {
+          isHttps = new URL(paymentLinkUrl).protocol === 'https:'
+        } catch {
+          isHttps = false
+        }
+        if (!isHttps || paymentLinkUrl.length > 2048) {
+          throw new Error('payment_link_url must be a valid https URL (max 2048 chars).')
+        }
+      }
 
       const today = new Date().toISOString().split('T')[0]
       const currency = ((args.currency as string) || 'SEK') as Currency
@@ -3727,6 +3746,7 @@ export const tools: McpTool[] = [
           our_reference: (args.our_reference as string) || null,
           your_reference: (args.your_reference as string) || null,
           notes: (args.notes as string) || null,
+          payment_link_url: paymentLinkUrl,
         },
         {
           customer_name: customer.name,

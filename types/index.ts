@@ -871,6 +871,13 @@ export interface Invoice {
   your_reference: string | null
   our_reference: string | null
 
+  // Optional online payment link (pasted by the user, e.g. a Stripe Payment
+  // Link). Rendered as a "Betala online" button in the invoice email and as a
+  // QR code + link on the PDF. Never copied to derived documents (credit
+  // notes, conversions, recurring invoices). Optional in TS for pre-migration
+  // fixtures.
+  payment_link_url?: string | null
+
   // Notes
   notes: string | null
 
@@ -1215,6 +1222,8 @@ export interface CreateInvoiceInput {
   your_reference?: string
   our_reference?: string
   notes?: string
+  /** Optional https link where the customer can pay online (e.g. a Stripe Payment Link). */
+  payment_link_url?: string
   /** Plaintext personnummer: encrypted server-side before storage. */
   deduction_personnummer?: string
   /** Fastighetsbeteckning. Required when any item carries deduction_type === 'rot'. */
