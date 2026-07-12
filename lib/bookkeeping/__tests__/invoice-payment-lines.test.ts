@@ -261,4 +261,61 @@ describe('buildInvoicePaymentClearingLines', () => {
       expect(result.fxDiffSek).toBe(0)
     })
   })
+
+  describe('paymentAccount parameter (settlement-account resolution)', () => {
+    it('defaults the bank leg to 1930 when paymentAccount is not passed (backward compat)', () => {
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1250, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1250, total: 1250, paid_amount: 0 },
+        'Inbetalning kundfaktura',
+      )
+      expect(result.lines[0]).toMatchObject({ account_number: '1930', debit_amount: 1250 })
+    })
+
+    it('books the bank leg to the resolved account when paymentAccount is passed', () => {
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1250, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1250, total: 1250, paid_amount: 0 },
+        'Inbetalning kundfaktura',
+        undefined,
+        '1940',
+      )
+      expect(result.lines[0]).toMatchObject({ account_number: '1940', debit_amount: 1250 })
+      // The AR leg (1510) is untouched by the payment-account override.
+      expect(result.lines[1]).toMatchObject({ account_number: '1510', credit_amount: 1250 })
+    })
+
+    it('a non-1930 paymentAccount does not affect the FX-diff line', () => {
+      // Cross-currency full clear: bank received more SEK than booked → 3960 gain.
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1100, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'USD', exchange_rate: 10, remaining_amount: 100, total: 100, paid_amount: 0 },
+        'desc',
+        100,
+        '1940',
+      )
+      expect(result.lines[0]).toMatchObject({ account_number: '1940', debit_amount: 1100 })
+      const fxLine = result.lines.find((l) => l.account_number === '3960')
+      expect(fxLine).toMatchObject({ credit_amount: 100 })
+    })
+
+    it('a non-1930 paymentAccount does not affect the öresavrundning (3740) line', () => {
+      // Pure-SEK sub-krona short, same shape as the öresavrundning describe
+      // block above, but resolved to a non-primary bank account.
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1000, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1000.25, total: 1000.25, paid_amount: 0 },
+        'Inbetalning kundfaktura',
+        undefined,
+        '1940',
+      )
+      expect(result.lines.find((l) => l.account_number === '1940')?.debit_amount).toBe(1000)
+      expect(result.lines.find((l) => l.account_number === '1930')).toBeUndefined()
+      expect(result.lines.find((l) => l.account_number === '1510')?.credit_amount).toBe(1000.25)
+      expect(result.lines.find((l) => l.account_number === '3740')?.debit_amount).toBe(0.25)
+      const debit = result.lines.reduce((s, l) => s + l.debit_amount, 0)
+      const credit = result.lines.reduce((s, l) => s + l.credit_amount, 0)
+      expect(Math.round((debit - credit) * 100)).toBe(0)
+    })
+  })
 })

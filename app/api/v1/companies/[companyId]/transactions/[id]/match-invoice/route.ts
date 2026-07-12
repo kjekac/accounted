@@ -4,8 +4,11 @@
  * Match a positive (income) transaction to an open customer invoice. The
  * full flow:
  *   1. Storno any conflicting auto-categorization JE.
- *   2. Create the payment journal entry (1930 debit / 1510 credit under
- *      accrual; cash-method path delegates to createInvoiceCashEntry).
+ *   2. Create the payment journal entry (resolved bank account debit / 1510
+ *      credit under accrual; cash-method path delegates to
+ *      createInvoiceCashEntry). The debited account is resolved from this
+ *      transaction's own cash_account_id via resolveSettlementAccount, never
+ *      hardcoded to 1930 (mirrors the fix on the supplier-invoice side).
  *   3. Re-attach the invoice PDF to the new payment JE (BFL 7 kap underlag).
  *   4. Update invoice status (paid / partially_paid) with optimistic lock.
  *   5. Insert invoice_payments row; link transaction to invoice.
@@ -26,6 +29,8 @@ import {
   createInvoicePaymentJournalEntry,
   createInvoiceCashEntry,
 } from '@/lib/bookkeeping/invoice-entries'
+import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
+import { findUnresolvableAccounts } from '@/lib/bookkeeping/account-validation'
 import { reverseEntry, createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
 import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
@@ -315,6 +320,17 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     const entityType: EntityType =
       (settings?.entity_type as EntityType) || 'enskild_firma'
 
+    // Debit the cash account THIS transaction actually belongs to, never a
+    // hardcoded 1930: cash_account_id -> cash_accounts.ledger_account is the
+    // only source of truth for which bank/cash account a real, matched
+    // transaction settled into.
+    const paymentAccount = await resolveSettlementAccount(
+      ctx.supabase,
+      ctx.companyId!,
+      transaction.cash_account_id,
+      txLog,
+    )
+
     // The JE shape is driven by the INVOICE'S booking state, not the
     // company's current setting. If the invoice already has a JE (Dr 1510
     // posted at send), the match must clear 1510: otherwise the receivable
@@ -344,6 +360,24 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
           invoice_total: invoice.total,
         },
       })
+    }
+
+    // Guard the resolved account against the chart (mirrors the categorize
+    // routes and the same fix on match-supplier-invoice): an inactive
+    // cash_accounts.ledger_account would otherwise reach the engine as a
+    // generic INVOICE_PAID_BOOK_FAILED instead of ACCOUNTS_NOT_IN_CHART.
+    // Only reachable where the account is actually used: customLines specify
+    // their own accounts directly and never consume paymentAccount.
+    if (!customLines) {
+      const missingAccounts = await findUnresolvableAccounts(ctx.supabase, ctx.companyId!, [
+        paymentAccount,
+      ])
+      if (missingAccounts.length > 0) {
+        txLog.warn('resolved settlement account is inactive/unknown', { missingAccounts })
+        return v1ErrorResponse(new AccountsNotInChartError(missingAccounts), txLog, {
+          requestId: ctx.requestId,
+        })
+      }
     }
 
     // Strict-mode for the public API: if the payment JE can't be created we
@@ -392,6 +426,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
           transaction.date,
           entityType,
           invoice.customer?.name,
+          paymentAccount,
         )
         journalEntryId = je?.id ?? null
       } else {
@@ -404,6 +439,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
           undefined,
           invoice.customer?.name,
           paidAmount,
+          paymentAccount,
         )
         journalEntryId = je?.id ?? null
       }
