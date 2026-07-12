@@ -16,8 +16,10 @@ import {
   createSupplierInvoicePaymentEntry,
   createSupplierInvoiceCashEntry,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
+import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { reverseEntry, createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
-import { isBookkeepingError } from '@/lib/bookkeeping/errors'
+import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
+import { findUnresolvableAccounts } from '@/lib/bookkeeping/account-validation'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { logMatchEvent } from '@/lib/invoices/match-log'
 import { eventBus } from '@/lib/events/bus'
@@ -41,9 +43,9 @@ registerEndpoint({
   useWhen:
     'You have a bank payment and a known open supplier invoice. The transaction must be negative (expense) and unlinked.',
   doNotUseFor:
-    'Categorizing a direct supplier expense without an invoice — use `:categorize`. Matching to a customer invoice — use `:match-invoice`. Bulk auto-match — `POST /reconciliation/bank/run`.',
+    'Categorizing a direct supplier expense without an invoice: use `:categorize`. Matching to a customer invoice: use `:match-invoice`. Bulk auto-match: `POST /reconciliation/bank/run`.',
   pitfalls: [
-    'Cash-method companies can settle a foreign invoice in full (booked at the payment-date rate); only a PARTIAL cash-method payment across currencies is rejected (MATCH_SI_CASH_FX_UNSUPPORTED) — pay in full, switch to accrual, or book manually.',
+    'Cash-method companies can settle a foreign invoice in full (booked at the payment-date rate); only a PARTIAL cash-method payment across currencies is rejected (MATCH_SI_CASH_FX_UNSUPPORTED): pay in full, switch to accrual, or book manually.',
     'Transaction must be negative (amount < 0). Positive returns MATCH_SI_NOT_EXPENSE.',
     'Supplier invoice must NOT be paid/credited already. paid/credited returns MATCH_SI_ALREADY_PAID; registered/approved/partially_paid/overdue are matchable.',
     'Idempotency-Key is mandatory.',
@@ -153,7 +155,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     // payment. Mirrors the match-invoice path. Without this, an earlier
     // :categorize of the same transaction (e.g. as expense_office with a
     // 5460/1930 entry) would leave its JE posted alongside the new
-    // 2440/1930 supplier-invoice payment entry — two verifikationer for
+    // 2440/1930 supplier-invoice payment entry: two verifikationer for
     // one affärshändelse violates BFL 5 kap 6 §. If storno fails, abort
     // before any further state change.
     if (transaction.journal_entry_id) {
@@ -184,7 +186,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     const paymentAmountInvoiceCurrency =
       transaction.currency === invoice.currency ? txAmountAbs : invoice.remaining_amount
     // SEK that actually left the bank, when known. A foreign transaction with
-    // no stored amount_sek is `null` here — the raw foreign amount must never
+    // no stored amount_sek is `null` here: the raw foreign amount must never
     // stand in (treating 19 USD as 19 SEK books "19 kr" on a ~175 kr payment).
     const bankSekStored =
       transaction.currency === 'SEK'
@@ -219,11 +221,47 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       .single()
     const accountingMethod = settings?.accounting_method || 'accrual'
 
+    // Credit the cash account THIS transaction actually belongs to, never a
+    // hardcoded 1930: cash_account_id -> cash_accounts.ledger_account is the
+    // only source of truth for which bank account a matched transaction
+    // settled from (mirrors the dashboard route's #985 fix). Only applied to
+    // the pure-SEK accrual path below; the FX path keeps its pre-existing
+    // internal 1930 default, matching that fix's scope.
+    const paymentAccount = await resolveSettlementAccount(
+      ctx.supabase,
+      ctx.companyId!,
+      transaction.cash_account_id,
+      txLog,
+    )
+
     // Route on the supplier invoice's actual booking state. An invoice
     // booked at receipt (registration_journal_entry_id set) must clear
     // 2440 regardless of the company's current setting.
     const siAlreadyBooked = !!(invoice as { registration_journal_entry_id?: string | null }).registration_journal_entry_id
     const useCashEntry = !siAlreadyBooked && accountingMethod === 'cash'
+
+    // Pure SEK: both legs of the match are SEK, so the payment account
+    // resolved above can safely replace the 1930 default. Kept out of scope
+    // for foreign-currency matches, same as the dashboard route.
+    const isPureSek = transaction.currency === 'SEK' && invoice.currency === 'SEK'
+
+    // Guard the resolved account against the chart (mirrors the categorize
+    // routes): an inactive cash_accounts.ledger_account would otherwise reach
+    // the engine as a generic MATCH_SI_RECORD_PAYMENT_FAILED instead of
+    // ACCOUNTS_NOT_IN_CHART. Only reachable where the account is actually used.
+    if (isPureSek && !useCashEntry && !customLines) {
+      const missingAccounts = await findUnresolvableAccounts(
+        ctx.supabase,
+        ctx.companyId!,
+        [paymentAccount],
+      )
+      if (missingAccounts.length > 0) {
+        txLog.warn('resolved settlement account is inactive/unknown', { missingAccounts })
+        return v1ErrorResponse(new AccountsNotInChartError(missingAccounts), txLog, {
+          requestId: ctx.requestId,
+        })
+      }
+    }
 
     // Full settlement = the bank amount pays off the whole remaining balance.
     // Cross-currency always settles the remaining (paymentAmountInvoiceCurrency
@@ -233,7 +271,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       txAmountAbs >= invoice.remaining_amount - 0.005
 
     // Under kontantmetoden the expense is recognised AT PAYMENT (payment-date
-    // rate), so a full foreign-currency settlement has no kursdifferens — the
+    // rate), so a full foreign-currency settlement has no kursdifferens: the
     // builder translates the whole entry to the actual bank SEK (settledBankSek)
     // below, leaving 1930 equal to the bank line. Only a PARTIAL cash-method
     // payment across rates can't be modelled cleanly (the builder books the
@@ -307,11 +345,23 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
           paymentAmountSek,
           transaction.date,
           exchangeRateDifference !== 0 ? exchangeRateDifference : undefined,
+          undefined, // supplierName (unchanged default)
+          // Resolved settlement account, pure-SEK matches only: the FX
+          // branch keeps defaulting internally to 1930, out of scope here
+          // just as it was for the dashboard route's #985 fix.
+          isPureSek ? paymentAccount : undefined,
         )
         if (je) journalEntryId = je.id
       }
     } catch (err) {
-      txLog.error('match-supplier-invoice: payment JE creation failed — aborting before state mutation', err as Error)
+      txLog.error('match-supplier-invoice: payment JE creation failed: aborting before state mutation', err as Error)
+      // AccountsNotInChartError means the account was deactivated between our
+      // pre-validation above and the engine call (race): return the same
+      // structured error rather than falling through to the generic
+      // MATCH_SI_RECORD_PAYMENT_FAILED, mirroring the categorize routes.
+      if (err instanceof AccountsNotInChartError) {
+        return v1ErrorResponse(err, txLog, { requestId: ctx.requestId })
+      }
       const message = isBookkeepingError(err)
         ? getErrorMessage(err, { context: 'supplier_invoice' })
         : err instanceof Error
@@ -344,7 +394,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       })
       .eq('id', supplier_invoice_id)
       .eq('company_id', ctx.companyId!)
-      // 'overdue' must appear here — the early status guard accepts it as
+      // 'overdue' must appear here: the early status guard accepts it as
       // matchable, so excluding it here would return MATCH_SI_NOT_OPEN
       // for a legitimately payable invoice.
       .in('status', ['registered', 'approved', 'partially_paid', 'overdue'])
@@ -353,7 +403,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     if (!updatedRows || updatedRows.length === 0) {
       // CAS guard: the invoice was settled by a concurrent request between
       // our read and write. The payment voucher we just posted belongs to no
-      // payment — cancel it and document the gap (mirrors mark-paid).
+      // payment: cancel it and document the gap (mirrors mark-paid).
       if (journalEntryId) {
         await cancelOrphanedPaymentEntry(
           ctx.supabase, ctx.companyId!, ctx.userId, journalEntryId,

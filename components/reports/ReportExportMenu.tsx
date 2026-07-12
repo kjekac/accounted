@@ -1,6 +1,6 @@
 'use client'
 
-import { Download, FileSpreadsheet, FileText, Table } from 'lucide-react'
+import { Download, FileCode, FileSpreadsheet, FileText, Table } from 'lucide-react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import {
@@ -10,8 +10,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
-/** pdf/xlsx for reports; csv is additionally used by register exports. */
-export type ExportMenuFormat = 'pdf' | 'xlsx' | 'csv'
+/**
+ * pdf/xlsx for reports; csv is additionally used by register exports; xml is the
+ * Skatteverket eSKD momsdeklaration file.
+ */
+export type ExportMenuFormat = 'pdf' | 'xlsx' | 'csv' | 'xml'
 
 export interface ReportExportItem {
   format: ExportMenuFormat
@@ -56,6 +59,8 @@ export function ReportExportMenu({
                   <FileText className="h-4 w-4 mr-2" />
                 ) : item.format === 'csv' ? (
                   <Table className="h-4 w-4 mr-2" />
+                ) : item.format === 'xml' ? (
+                  <FileCode className="h-4 w-4 mr-2" />
                 ) : (
                   <FileSpreadsheet className="h-4 w-4 mr-2" />
                 )}
@@ -63,7 +68,9 @@ export function ReportExportMenu({
                   ? t('download_pdf')
                   : item.format === 'csv'
                     ? t('download_csv')
-                    : t('download_excel')}
+                    : item.format === 'xml'
+                      ? t('download_xml')
+                      : t('download_excel')}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>

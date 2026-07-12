@@ -77,7 +77,7 @@ export function AccountDangerZone() {
 
       if (response.status === 409) {
         const body = await response.json()
-        // Precondition tripped mid-flow — refresh the list and show inline.
+        // Precondition tripped mid-flow: refresh the list and show inline.
         setBlockers(body.blockers ?? [])
         setError(body.error || t('delete_failed_blockers'))
         setIsDeleting(false)
@@ -103,7 +103,7 @@ export function AccountDangerZone() {
   return (
     <>
       <section className="space-y-4 border-t border-border pt-8">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-destructive/80">
+        <h2 className="text-sm font-medium uppercase tracking-wider text-destructive">
           {t('heading')}
         </h2>
 

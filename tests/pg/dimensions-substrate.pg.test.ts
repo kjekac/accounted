@@ -5,7 +5,7 @@ import { seedCompany, insertDraftJournalEntry } from './fixtures'
 
 // PR1 dimensions substrate (20260702084500_dimensions_substrate.sql):
 // registry tables + RLS, ensure_company_dimensions RPC, registry guard
-// triggers, jel.dimensions column + CHECK, and — the load-bearing property —
+// triggers, jel.dimensions column + CHECK, and: the load-bearing property:
 // that the dimensions map on a POSTED line is frozen by the existing
 // line-immutability trigger with zero new triggers.
 
@@ -47,16 +47,14 @@ async function insertDimensionedLines(
   const lineId = randomUUID()
   await getPool().query(
     `INSERT INTO public.journal_entry_lines
-       (id, journal_entry_id, account_number, debit_amount, credit_amount, dimensions, cost_center, project)
-     VALUES ($1, $2, '4010', $3, 0, $4, $5, $6),
-            (gen_random_uuid(), $2, '1930', 0, $3, '{}', NULL, NULL)`,
+       (id, journal_entry_id, account_number, debit_amount, credit_amount, dimensions)
+     VALUES ($1, $2, '4010', $3, 0, $4),
+            (gen_random_uuid(), $2, '1930', 0, $3, '{}')`,
     [
       lineId,
       journalEntryId,
       amount,
       JSON.stringify(dimensions),
-      dimensions['1'] ?? null,
-      dimensions['6'] ?? null,
     ],
   )
   return lineId
@@ -267,9 +265,9 @@ describe('journal_entry_lines.dimensions', () => {
     const entryId = await insertDraftJournalEntry({ userId, companyId, fiscalPeriodId })
     const lineId = await insertDimensionedLines(entryId, { '6': 'P001' })
 
-    // Draft: retagging is allowed
+    // Draft: retagging is allowed (PR9: the bag alone: mirrors generate)
     await getPool().query(
-      `UPDATE public.journal_entry_lines SET dimensions = '{"6":"P002"}', project = 'P002' WHERE id = $1`,
+      `UPDATE public.journal_entry_lines SET dimensions = '{"6":"P002"}' WHERE id = $1`,
       [lineId],
     )
 

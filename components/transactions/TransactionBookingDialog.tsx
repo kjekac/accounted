@@ -28,6 +28,9 @@ interface TransactionBookingDialogProps {
     transactionId: string,
     journalEntryId: string,
     attachedDocumentId?: string | null,
+    /** True when the transaction was LINKED to an existing voucher via the
+     *  duplicate guard's match action: no new verifikat was created. */
+    matched?: boolean,
   ) => void
   preselectedTemplate?: BookingTemplateLibrary | null
 }
@@ -117,10 +120,12 @@ export default function TransactionBookingDialog({
   const [pickedInboxDocs, setPickedInboxDocs] = useState<AvailableInboxDoc[]>([])
   const [inboxPickerOpen, setInboxPickerOpen] = useState(false)
   const [bankAccount, setBankAccount] = useState<string | null>(null)
+  const [bankAccountName, setBankAccountName] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open || !transaction) return
     setBankAccount(null)
+    setBankAccountName(null)
     let cancelled = false
     fetch('/api/cash-accounts')
       .then((r) => {
@@ -135,7 +140,12 @@ export default function TransactionBookingDialog({
           transaction.cash_account_id ?? null,
           transaction.currency ?? 'SEK',
         )
+        // Use the matched account's own name instead of a generic label.
+        const matched =
+          accounts.find((a) => a.id === transaction.cash_account_id) ??
+          accounts.find((a) => a.ledger_account === account)
         setBankAccount(account)
+        setBankAccountName(matched?.name ?? null)
       })
       .catch(() => {
         if (!cancelled) setBankAccount('1930')
@@ -147,11 +157,11 @@ export default function TransactionBookingDialog({
 
   const isIncome = transaction.amount > 0
 
-  const handleBooked = async (transactionId: string, journalEntryId: string) => {
+  const handleBooked = async (transactionId: string, journalEntryId: string, matched = false) => {
     // Link any attached documents to the new journal entry: freshly uploaded
     // files, and existing inbox documents picked via InboxDocumentPicker. For
     // picked docs, inbox_item_id stamps the inbox item as consumed so it drops
-    // out of the active inbox — see app/api/documents/[id]/link/route.ts.
+    // out of the active inbox: see app/api/documents/[id]/link/route.ts.
     // transaction_id additionally pins the doc to the transaction row so the
     // /transactions list shows the underlag indicator (first linked doc wins).
     const filesToLink = uploadedFiles.filter((f) => f.status === 'uploaded' && f.id)
@@ -199,11 +209,11 @@ export default function TransactionBookingDialog({
     }
 
     // The server pins only when the tx has no document_id yet (first linked
-    // doc wins) — mirror that here so the optimistic state never claims a
+    // doc wins): mirror that here so the optimistic state never claims a
     // pin the server refused to swap.
     const pinnedDocId = transaction.document_id ? null : firstLinkedDocId
     if (pinnedDocId) {
-      // Same event AgentChat dispatches after uploads — flips the inbox card's
+      // Same event AgentChat dispatches after uploads: flips the inbox card's
       // paperclip optimistically without a refetch.
       window.dispatchEvent(
         new CustomEvent('Accounted:transaction-document-linked', {
@@ -214,7 +224,7 @@ export default function TransactionBookingDialog({
 
     setUploadedFiles([])
     setPickedInboxDocs([])
-    onBooked(transactionId, journalEntryId, pinnedDocId)
+    onBooked(transactionId, journalEntryId, pinnedDocId, matched)
   }
 
   // The receipt to show beside the form. A transaction may arrive with a
@@ -242,7 +252,7 @@ export default function TransactionBookingDialog({
       <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t('title')}</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="sr-only">
             {t('description')}
           </DialogDescription>
         </DialogHeader>
@@ -273,7 +283,7 @@ export default function TransactionBookingDialog({
         </div>
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,520px)]">
-          {/* Document column — sticky on desktop so the receipt stays visible
+          {/* Document column: sticky on desktop so the receipt stays visible
               while the form scrolls; stacks above the form on smaller screens. */}
           <div className="flex h-[45vh] flex-col gap-3 lg:sticky lg:top-0 lg:h-[72vh] lg:self-start">
             {currentDocId ? (
@@ -292,7 +302,7 @@ export default function TransactionBookingDialog({
               </div>
             )}
 
-            {/* Attach controls — only when the transaction has no pre-linked
+            {/* Attach controls: only when the transaction has no pre-linked
                 document (a pre-linked one is already the verifikat's underlag). */}
             {!preexistingDocId && (
               <div className="shrink-0 space-y-2">
@@ -362,7 +372,7 @@ export default function TransactionBookingDialog({
                 initialLines={
                   preselectedTemplate
                     ? buildInitialLinesFromTemplate(transaction, preselectedTemplate, bankAccount)
-                    : buildInitialLines(transaction, t('bank_line_description'), bankAccount)
+                    : buildInitialLines(transaction, bankAccountName ?? t('bank_line_description'), bankAccount)
                 }
                 initialDate={transaction.date}
                 initialDescription={transaction.description}
@@ -370,6 +380,15 @@ export default function TransactionBookingDialog({
                 sourceType="bank_transaction"
                 sourceId={transaction.id}
                 onEntryCreated={(entryId) => handleBooked(transaction.id, entryId)}
+                duplicateMatchTransaction={{
+                  id: transaction.id,
+                  cash_account_id: transaction.cash_account_id ?? null,
+                  currency: transaction.currency ?? 'SEK',
+                }}
+                // Duplicate guard match: the bank line was linked to an existing
+                // voucher (no new entry). Reuse the booked flow so attached
+                // documents land on that verifikat and the row leaves the list.
+                onDuplicateMatched={(journalEntryId) => handleBooked(transaction.id, journalEntryId, true)}
               />
             )}
           </div>

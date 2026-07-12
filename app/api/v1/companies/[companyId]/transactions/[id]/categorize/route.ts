@@ -3,7 +3,7 @@
  *
  * Categorize a transaction and create the corresponding journal entry. This
  * is a thin v1 surface over the same orchestration the internal dashboard
- * route uses — same mapping engine, same booking templates, same SI-match
+ * route uses: same mapping engine, same booking templates, same SI-match
  * suggestion intercept, same CAS race guard.
  *
  * Already-categorized fast path: if the transaction already has a journal
@@ -33,7 +33,8 @@ import {
 } from '@/lib/bookkeeping/counterparty-templates'
 import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
 import { reverseEntry } from '@/lib/bookkeeping/engine'
-import { saveUserMappingRule } from '@/lib/bookkeeping/mapping-engine'
+import { saveUserMappingRule, applySettlementAccount } from '@/lib/bookkeeping/mapping-engine'
+import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { collectMappingResultAccounts, findUnresolvableAccounts } from '@/lib/bookkeeping/account-validation'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
@@ -65,9 +66,9 @@ registerEndpoint({
   useWhen:
     'You\'re categorizing a bank transaction. Pass `is_business: true` plus either `category`, `template_id` (booking template), `counterparty_template_id`, or `account_override`. For private transactions, `is_business: false` is enough.',
   doNotUseFor:
-    'Matching a payment to an invoice — use `:match-invoice` or `:match-supplier-invoice`, which storno any conflicting JE first. Uncategorizing — `:uncategorize`.',
+    'Matching a payment to an invoice: use `:match-invoice` or `:match-supplier-invoice`, which storno any conflicting JE first. Uncategorizing: `:uncategorize`.',
   pitfalls: [
-    'A bank payment that looks like an invoice payment will be flagged via TX_CATEGORIZE_SUGGEST_SI_MATCH — pass `confirm_no_match: true` to override and force-categorize as direct expense (e.g. when the supplier invoice was already booked).',
+    'A bank payment that looks like an invoice payment will be flagged via TX_CATEGORIZE_SUGGEST_SI_MATCH: pass `confirm_no_match: true` to override and force-categorize as direct expense (e.g. when the supplier invoice was already booked).',
     'Already-categorized fast path: if the transaction already has a journal_entry_id, only flags get updated. The JE is immutable post-commit.',
     'account_override must exist in the chart of accounts; an unknown account returns TX_CATEGORIZE_INVALID_ACCOUNT.',
   ],
@@ -240,6 +241,22 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       )
     }
 
+    // Book the bank leg against the transaction's ACTUAL settlement account
+    // rather than the hardcoded 1930 in the templates. Without this, interest
+    // or fees that landed on a savings/EUR account mis-book to 1930 and the
+    // real bank line never reconciles. applySettlementAccount only rewrites a
+    // 1930 leg and is a no-op when the settlement account is 1930, so legacy
+    // rows with no cash_account_id behave exactly as before. Mirrors the
+    // internal dashboard route (app/api/transactions/[id]/categorize); this
+    // v1 surface previously never called applySettlementAccount at all.
+    const settlementAccount = await resolveSettlementAccount(
+      ctx.supabase,
+      ctx.companyId!,
+      transaction.cash_account_id,
+      txLog,
+    )
+    mappingResult = applySettlementAccount(mappingResult, settlementAccount)
+
     if (
       is_business &&
       body.account_override &&
@@ -262,11 +279,11 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       if (transaction.amount < 0) mappingResult.debit_account = body.account_override
       else mappingResult.credit_account = body.account_override
       // Drop auto-VAT lines when the override targets a balance-sheet
-      // (class 2) account — but NOT when it targets a moms-line account
+      // (class 2) account, but NOT when it targets a moms-line account
       // directly. BAS class 2 covers both equity/liabilities (where VAT
       // shouldn't be auto-posted) and the specific VAT accounts themselves
       // (2611/2621/2631 utgående moms, 2641/2645 ingående moms, etc.).
-      // Narrow the exception to the 2610–2649 range — 2650
+      // Narrow the exception to the 2610-2649 range: 2650
       // (momsredovisningskonto) and 2690 (diverse) are class-2 but NOT
       // moms-line accounts, so writing the auto-VAT pair there would
       // double-post on the momsredovisningskonto.
@@ -294,7 +311,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     // leaving the legacy partial-success branch to silently mark the row as
     // bokförd with no verifikation. We validate in both live AND dry-run
     // paths so previews surface the same actionable error. Standard BAS
-    // accounts merely absent from the chart pass — the engine seeds them.
+    // accounts merely absent from the chart pass: the engine seeds them.
     const missingAccounts = await findUnresolvableAccounts(
       ctx.supabase,
       ctx.companyId!,
@@ -307,7 +324,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       })
     }
 
-    // Dry-run stops here — caller sees the resolved mapping without burning
+    // Dry-run stops here: caller sees the resolved mapping without burning
     // a voucher number or mutating any state.
     if (ctx.dryRun) {
       return dryRunPreview(
@@ -366,7 +383,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       // AccountsNotInChartError means an account was deactivated between our
       // pre-validation and the engine call (race). Don't fall through to the
       // partial-success path that would mark the row bokförd with no
-      // verifikation — return a structured 400 so the row stays in the
+      // verifikation: return a structured 400 so the row stays in the
       // categorization queue and the caller can retry after re-activating.
       if (err instanceof AccountsNotInChartError) {
         return v1ErrorResponse(err, txLog, { requestId: ctx.requestId })
@@ -380,8 +397,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
 
     // Best-effort: save mapping rule + upsert counterparty template. These
     // are user-experience polish (faster future categorization) and never
-    // fail the request.
-    if (is_business && transaction.merchant_name) {
+    // fail the request. direction_mismatch = a mirrored refund/repayment
+    // booking; learning it as a rule would store backwards accounts.
+    if (is_business && transaction.merchant_name && !mappingResult.direction_mismatch) {
       try {
         await saveUserMappingRule(
           ctx.supabase,
@@ -400,7 +418,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     try {
       await upsertCounterpartyTemplate(
         ctx.supabase,
-        ctx.userId,
+        ctx.companyId!,
         transaction as Transaction,
         mappingResult,
         'user_approved',
@@ -429,7 +447,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       // Lost the race. The orphan JE was created with status='posted' by the
       // engine, so the immutability trigger blocks a direct status flip to
       // 'cancelled'. BFL 5 kap 5 § requires corrections via a reversing
-      // entry (storno) — issue one. The pair (orphan + storno) keeps the
+      // entry (storno): issue one. The pair (orphan + storno) keeps the
       // verifikationsnummer series unbroken; no voucher_gap_explanations row
       // is needed because there's no gap.
       try {

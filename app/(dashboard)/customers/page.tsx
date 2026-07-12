@@ -372,7 +372,7 @@ function CustomersPageInner() {
                         </TableCell>
                         <TableCell className="tabular-nums text-muted-foreground">
                           <div className="flex items-center gap-2">
-                            <span>{identifier || '—'}</span>
+                            <span>{identifier || '-'}</span>
                             {customer.org_number && customer.vat_number_validated && (
                               <Badge variant="success" className="text-xs">
                                 {t('verified')}
@@ -381,10 +381,10 @@ function CustomersPageInner() {
                           </div>
                         </TableCell>
                         <TableCell className="text-muted-foreground truncate max-w-[220px]">
-                          {customer.email || '—'}
+                          {customer.email || '-'}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
-                          {customer.city || '—'}
+                          {customer.city || '-'}
                         </TableCell>
                         <TableCell className="text-right tabular-nums text-muted-foreground">
                           {formatDate(customer.created_at)}
@@ -449,7 +449,21 @@ function CustomersPageInner() {
 
 export default function CustomersPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense
+      fallback={
+        <div className="space-y-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <Skeleton className="h-9 w-40" />
+            <Skeleton className="h-10 w-32" />
+          </div>
+          <div className="space-y-3">
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
+          </div>
+        </div>
+      }
+    >
       <CustomersPageInner />
     </Suspense>
   )

@@ -17,7 +17,7 @@ import type { BookingTemplateLibrary, BookingTemplateCategory, EntityType } from
 import type { FormLine } from '@/components/bookkeeping/JournalEntryForm'
 
 interface Props {
-  onApply: (lines: FormLine[], description: string) => void
+  onApply: (lines: FormLine[], description: string, category?: BookingTemplateCategory) => void
   entityType?: EntityType
   /** Prefill the "total amount" field when the caller already knows it (e.g.
    *  booking from an underlag with a known total). The user can still edit it. */
@@ -41,7 +41,7 @@ export default function BookingTemplatePicker({ onApply, entityType, defaultAmou
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   // Prefill the amount from the caller's known total each time the picker
-  // opens. Only when provided — callers without a known amount (e.g. the
+  // opens. Only when provided: callers without a known amount (e.g. the
   // journal-entry form) keep the blank-then-type behaviour.
   useEffect(() => {
     if (open && defaultAmount != null && defaultAmount > 0) {
@@ -114,7 +114,7 @@ export default function BookingTemplatePicker({ onApply, entityType, defaultAmou
     const lines = applyTemplate(selected.lines, totalAmount)
     // Fire-and-forget MRU bump so this template surfaces at the top next time.
     fetch(`/api/settings/booking-templates/${selected.id}/touch`, { method: 'POST' }).catch(() => {})
-    onApply(lines, selected.name)
+    onApply(lines, selected.name, selected.category)
     setOpen(false)
     setSelectedId(null)
     setAmount('')
@@ -135,14 +135,15 @@ export default function BookingTemplatePicker({ onApply, entityType, defaultAmou
         </DialogHeader>
 
         {/* Search + category filter */}
-        <div className="flex flex-col sm:flex-row gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+        <div className="flex flex-col gap-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Sök mall..."
               className="pl-9"
+              autoFocus
             />
           </div>
           <div className="flex gap-1 flex-wrap">

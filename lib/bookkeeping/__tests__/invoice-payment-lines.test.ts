@@ -71,9 +71,9 @@ describe('buildInvoicePaymentClearingLines', () => {
       expect(Math.round((debit - credit) * 100)).toBe(0)
     })
 
-    it('ambiguous loss scenario (bank < SEK booked) is treated as partial — defers FX', () => {
+    it('ambiguous loss scenario (bank < SEK booked) is treated as partial: defers FX', () => {
       // Invoice 100 USD booked at 10.50 (1050 SEK on 1510)
-      // Bank receives 1000 SEK — could be (a) partial payment that didn't
+      // Bank receives 1000 SEK: could be (a) partial payment that didn't
       // cover the full USD amount, or (b) full payment at a worse FX rate.
       // From a SEK-only bank tx we can't distinguish; defaulting to "partial"
       // is the safer choice (no premature 1510 zeroing). If the user knows
@@ -122,7 +122,7 @@ describe('buildInvoicePaymentClearingLines', () => {
     })
 
     it('cross-currency WITH paidInInvoiceCurrency, bank < booked: loss to 7960', () => {
-      // Mirror of the gain case above with the opposite sign — guards the
+      // Mirror of the gain case above with the opposite sign: guards the
       // kursförlust branch the route's gain-only assertion never reaches
       // (Swedish compliance review, PR #615). Invoice 100 USD booked at 9.30
       // (930 SEK on 1510); the 100 USD settlement only fetched 900 SEK at the
@@ -153,9 +153,9 @@ describe('buildInvoicePaymentClearingLines', () => {
 
     it('partial cross-currency payment defers FX: bank-leg = AR-leg = bankSek, no 3960/7960 line', () => {
       // Invoice 140 USD @ 15.30 (2142 SEK booked on 1510)
-      // Bank receives 230 SEK — way below the 2142 remaining. If we credited
+      // Bank receives 230 SEK: way below the 2142 remaining. If we credited
       // the full 2142 to 1510 we'd zero the GL balance while the invoice row
-      // stayed partially_paid (BFL 5 kap 4–5§ violation). Defer FX to the
+      // stayed partially_paid (BFL 5 kap 4-5§ violation). Defer FX to the
       // final settlement that closes the invoice.
       const result = buildInvoicePaymentClearingLines(
         { amount: 230, amount_sek: null, currency: 'SEK', exchange_rate: null },
@@ -247,7 +247,7 @@ describe('buildInvoicePaymentClearingLines', () => {
 
   describe('cross currency (USD invoice + USD tx)', () => {
     it('uses tx amount_sek for the bank-leg when populated', () => {
-      // USD-denominated bank account paying a USD invoice — ingest converts
+      // USD-denominated bank account paying a USD invoice: ingest converts
       // tx → SEK using the bank-date rate.
       const result = buildInvoicePaymentClearingLines(
         { amount: 100, amount_sek: 1100, currency: 'USD', exchange_rate: 11 },
@@ -259,6 +259,63 @@ describe('buildInvoicePaymentClearingLines', () => {
       expect(result.bankSek).toBe(1100)
       expect(result.arSek).toBe(1100)
       expect(result.fxDiffSek).toBe(0)
+    })
+  })
+
+  describe('paymentAccount parameter (settlement-account resolution)', () => {
+    it('defaults the bank leg to 1930 when paymentAccount is not passed (backward compat)', () => {
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1250, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1250, total: 1250, paid_amount: 0 },
+        'Inbetalning kundfaktura',
+      )
+      expect(result.lines[0]).toMatchObject({ account_number: '1930', debit_amount: 1250 })
+    })
+
+    it('books the bank leg to the resolved account when paymentAccount is passed', () => {
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1250, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1250, total: 1250, paid_amount: 0 },
+        'Inbetalning kundfaktura',
+        undefined,
+        '1940',
+      )
+      expect(result.lines[0]).toMatchObject({ account_number: '1940', debit_amount: 1250 })
+      // The AR leg (1510) is untouched by the payment-account override.
+      expect(result.lines[1]).toMatchObject({ account_number: '1510', credit_amount: 1250 })
+    })
+
+    it('a non-1930 paymentAccount does not affect the FX-diff line', () => {
+      // Cross-currency full clear: bank received more SEK than booked → 3960 gain.
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1100, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'USD', exchange_rate: 10, remaining_amount: 100, total: 100, paid_amount: 0 },
+        'desc',
+        100,
+        '1940',
+      )
+      expect(result.lines[0]).toMatchObject({ account_number: '1940', debit_amount: 1100 })
+      const fxLine = result.lines.find((l) => l.account_number === '3960')
+      expect(fxLine).toMatchObject({ credit_amount: 100 })
+    })
+
+    it('a non-1930 paymentAccount does not affect the öresavrundning (3740) line', () => {
+      // Pure-SEK sub-krona short, same shape as the öresavrundning describe
+      // block above, but resolved to a non-primary bank account.
+      const result = buildInvoicePaymentClearingLines(
+        { amount: 1000, amount_sek: null, currency: 'SEK', exchange_rate: null },
+        { currency: 'SEK', exchange_rate: null, remaining_amount: 1000.25, total: 1000.25, paid_amount: 0 },
+        'Inbetalning kundfaktura',
+        undefined,
+        '1940',
+      )
+      expect(result.lines.find((l) => l.account_number === '1940')?.debit_amount).toBe(1000)
+      expect(result.lines.find((l) => l.account_number === '1930')).toBeUndefined()
+      expect(result.lines.find((l) => l.account_number === '1510')?.credit_amount).toBe(1000.25)
+      expect(result.lines.find((l) => l.account_number === '3740')?.debit_amount).toBe(0.25)
+      const debit = result.lines.reduce((s, l) => s + l.debit_amount, 0)
+      const credit = result.lines.reduce((s, l) => s + l.credit_amount, 0)
+      expect(Math.round((debit - credit) * 100)).toBe(0)
     })
   })
 })

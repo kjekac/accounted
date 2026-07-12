@@ -25,12 +25,12 @@ ensureInitialized()
  * Because getOpeningBalances reads the linked entry directly and the
  * trial-balance / general-ledger movement queries include both `posted` and
  * `reversed` lines (excluding only the linked OB entry), the stornoed old IB
- * and its storno mirror cancel out in period movement — so the Balansrapport
+ * and its storno mirror cancel out in period movement, so the Balansrapport
  * IB column shows the corrected figures and UB stays correct.
  *
  * Gated to the safe case only: the period must be open, unlocked, already have
  * opening balances, and have no year-end close on top. Locked/closed periods or
- * periods with a bokslut must be unwound first (assisted) — we refuse here.
+ * periods with a bokslut must be unwound first (assisted): we refuse here.
  */
 export const POST = withRouteContext(
   'opening_balance.correct',
@@ -51,7 +51,7 @@ export const POST = withRouteContext(
       //    Write-role (non-viewer) + company membership are already enforced by
       //    withRouteContext({ requireWrite: true }) before this handler runs
       //    (requireWritePermission + getActiveCompanyId), and this fetch is scoped
-      //    by that verified companyId — no redundant authz here (ASVS V8.2.1).
+      //    by that verified companyId: no redundant authz here (ASVS V8.2.1).
       //    The embedded opening_balance_entry pulls the original IB verifikat's
       //    voucher label so the corrected entry can reference it (BFL 5 kap 5§).
       const { data: period, error: periodError } = await supabase
@@ -75,11 +75,31 @@ export const POST = withRouteContext(
         return errorResponseFromCode('OB_PERIOD_LOCKED', opLog, { requestId })
       }
 
+      // Company-wide lock date pre-flight. The enforce_company_lock_date
+      // trigger blocks BOTH the corrected IB and the storno of the old one
+      // (each books at period_start), and a trigger rejection surfaces as a
+      // retryable-500 BOOKKEEPING_DATABASE_ERROR with a generic message —
+      // which invites blind retries (prod incident: 3× against a covering
+      // lock date). Pre-flight it and return an actionable 409 instead.
+      const { data: settings } = await supabase
+        .from('company_settings')
+        .select('bookkeeping_locked_through')
+        .eq('company_id', companyId)
+        .maybeSingle()
+
+      const lockDate = settings?.bookkeeping_locked_through as string | null
+      if (lockDate && period.period_start <= lockDate) {
+        return errorResponseFromCode('OB_COMPANY_LOCK_DATE', opLog, {
+          requestId,
+          details: { lockDate, entryDate: period.period_start },
+        })
+      }
+
       if (!period.opening_balances_set || !period.opening_balance_entry_id) {
         return errorResponseFromCode('OB_CORRECT_NO_EXISTING', opLog, { requestId })
       }
 
-      // Refuse if a year-end close was built on top — correcting the IB without
+      // Refuse if a year-end close was built on top: correcting the IB without
       // unwinding the bokslut would leave the period (and the next period's
       // carried-forward IB) internally inconsistent.
       const { count: yearEndCount } = await supabase
@@ -122,7 +142,7 @@ export const POST = withRouteContext(
         })
       }
 
-      // BFL 5 kap 5§ — reference the original verifikat so the correction is
+      // BFL 5 kap 5§: reference the original verifikat so the correction is
       // traceable to the entry it rättar. The embed above gave us the old IB's
       // voucher label (e.g. "A123"). CreateJournalEntryInput exposes no dedicated
       // correction-linkage field (corrects_entry_id / correction_of / metadata),
@@ -156,7 +176,7 @@ export const POST = withRouteContext(
         lines: buildOpeningBalanceEntryLines(validLines),
       })
 
-      // ASVS V16 — durable audit sink for a failed correction. The core event bus
+      // ASVS V16: durable audit sink for a failed correction. The core event bus
       // has no opening_balance.* correction event type and lib/events/types.ts is
       // outside the scope of this change, so the failure is recorded via the
       // structured logger: it lands in the JSON log sink (Vercel/Sentry), tagged
@@ -175,7 +195,7 @@ export const POST = withRouteContext(
         })
       }
 
-      // FIX (ASVS V2.3 — atomicity via compensation): steps B (storno old) and
+      // FIX (ASVS V2.3: atomicity via compensation): steps B (storno old) and
       // C (relink) are NOT atomic with A (create new). A already produced a second
       // posted opening_balance entry for the period; if B or C fails, that entry is
       // orphaned and the Balansrapport would show two OB entries. Wrap B+C so that
@@ -209,7 +229,7 @@ export const POST = withRouteContext(
         auditCorrectionFailure({ phase: 'sequence_failed', reason })
 
         // Compensating rollback. This may itself throw (e.g. the period was locked
-        // between A and here) — catch + audit and never let it propagate past the
+        // between A and here): catch + audit and never let it propagate past the
         // handler, so the caller always gets the OB_CORRECT_FAILED envelope.
         try {
           await reverseEntry(supabase, companyId!, user.id, newEntry.id)
@@ -240,6 +260,16 @@ export const POST = withRouteContext(
         },
       })
     } catch (err) {
+      // Belt-and-braces: if the lock-date trigger fired anyway (lock date set
+      // between the pre-flight and the write), return the same actionable
+      // envelope instead of the generic retryable BOOKKEEPING_DATABASE_ERROR.
+      const message = err instanceof Error ? err.message : ''
+      if (/Bokföringen är låst/i.test(message)) {
+        return errorResponseFromCode('OB_COMPANY_LOCK_DATE', opLog, {
+          requestId,
+          details: { reason: message },
+        })
+      }
       if (isBookkeepingError(err)) {
         return errorResponse(err, opLog, { requestId })
       }

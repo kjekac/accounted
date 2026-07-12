@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // ============================================================
-// Mock — sequential result queue
+// Mock: sequential result queue
 // ============================================================
 
 let resultIdx: number
 let results: Array<{ data?: unknown; error?: unknown }>
 // `.eq()` args recorded per table so tests can assert on query shape (e.g.
-// that the dimension registry fetch does NOT filter is_active — the latent
+// that the dimension registry fetch does NOT filter is_active: the latent
 // undeclared-#OBJEKT bug was exactly such a filter).
 let eqCallsByTable: Record<string, Array<[string, unknown]>>
 
@@ -60,10 +60,12 @@ const baseOptions = {
 //   1: previous fiscal period .single() (#RAR -1)
 //   2: chart_of_accounts        (fetchAllRows)
 //   3: journal_entries          (fetchAllRows)
-//   4: journal_entry_lines      (fetchAllRows)   ← split out from the entries query
+//   4: journal_entry_lines      (fetchLinesByEntryIds; SKIPPED when slot 3
+//      returned no entries, so empty-period tests queue nothing here)
 //   5: dimensions               (registry #DIM/#UNDERDIM rows)
 //   6: dimension_values         (registry #OBJEKT rows)
-//   7: opening balances (RPC fallback or journal_entry_lines page)
+//   7: opening balances (RPC fallback, or the OB entry ownership check +
+//      its lines when opening_balance_entry_id is set: two slots)
 
 // Registry fixtures for the system dims (seeded by ensure_company_dimensions).
 const dimKostnadsstalle = { id: 'dim-1', sie_dim_no: 1, parent_sie_dim_no: null, name: 'Kostnadsställe' }
@@ -85,8 +87,7 @@ describe('generateSIEExport', () => {
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // opening balances RPC
@@ -110,8 +111,7 @@ describe('generateSIEExport', () => {
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // RPC fallback
@@ -136,8 +136,7 @@ describe('generateSIEExport', () => {
         ],
         error: null,
       },
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // RPC fallback
@@ -158,14 +157,14 @@ describe('generateSIEExport', () => {
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
       {
-        // journal_entries (no embedded lines — those come from the next slot)
+        // journal_entries (no embedded lines: those come from the next slot)
         data: [
           { id: 'e1', entry_date: '2024-03-15', voucher_number: 1, voucher_series: 'A', description: 'Sale invoice', status: 'posted' },
         ],
         error: null,
       },
       {
-        // journal_entry_lines — each carries journal_entry_id for grouping
+        // journal_entry_lines: each carries journal_entry_id for grouping
         data: [
           { journal_entry_id: 'e1', account_number: '1510', debit_amount: 1250, credit_amount: 0, line_description: null, dimensions: {} },
           { journal_entry_id: 'e1', account_number: '3001', debit_amount: 0, credit_amount: 1000, line_description: 'Revenue', dimensions: {} },
@@ -193,8 +192,7 @@ describe('generateSIEExport', () => {
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       { data: [dimKostnadsstalle, dimProjekt], error: null }, // dimensions
       {
         data: [
@@ -252,7 +250,7 @@ describe('generateSIEExport', () => {
   it('declares INACTIVE registry values as #OBJEKT (undeclared-object regression)', async () => {
     // Latent bug in the legacy read path: the registry fetch filtered
     // is_active=true, so a line referencing an archived code serialized into
-    // #TRANS while its #OBJEKT declaration was missing — Visma rejects such
+    // #TRANS while its #OBJEKT declaration was missing: Visma rejects such
     // files. The registry fetch must NOT filter on is_active.
     results = [
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
@@ -284,7 +282,7 @@ describe('generateSIEExport', () => {
     expect(output).toContain('#DIM 1 "Kostnadsställe"')
     expect(output).toContain('#OBJEKT 1 "CC9" "Nedlagd avdelning"')
     expect(output).toContain('\t#TRANS 5010 {1 "CC9"} 500.00 20240502')
-    // Query-shape guard: neither registry fetch may filter on is_active —
+    // Query-shape guard: neither registry fetch may filter on is_active:
     // that is the exact filter that caused the undeclared-#OBJEKT bug.
     expect(eqCallsByTable['dimensions'] ?? []).not.toContainEqual(['is_active', true])
     expect(eqCallsByTable['dimension_values'] ?? []).not.toContainEqual(['is_active', true])
@@ -292,7 +290,7 @@ describe('generateSIEExport', () => {
 
   it('synthesizes #DIM and #OBJEKT for orphan line codes with no registry rows', async () => {
     // Free-text writers can still mint dimension numbers/codes until the
-    // write-path PR — every referenced (dimNo, code) pair must be declared,
+    // write-path PR: every referenced (dimNo, code) pair must be declared,
     // never silently dropped. Dim 6 resolves from the SIE reserved-number
     // seed; dim 13 falls back to "Dimension n"; both codes get name = code.
     results = [
@@ -312,7 +310,7 @@ describe('generateSIEExport', () => {
         ],
         error: null,
       },
-      { data: [], error: null }, // dimensions — registry is empty
+      { data: [], error: null }, // dimensions: registry is empty
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // RPC fallback
     ]
@@ -338,7 +336,7 @@ describe('generateSIEExport', () => {
         error: null,
       },
       {
-        // Keys deliberately out of order — output must sort 1 < 6 < 7
+        // Keys deliberately out of order: output must sort 1 < 6 < 7
         data: [
           { journal_entry_id: 'e1', account_number: '7010', debit_amount: 30000, credit_amount: 0, line_description: null, dimensions: { '7': 'EMP1', '1': 'KS01', '6': 'P001' } },
           { journal_entry_id: 'e1', account_number: '1930', debit_amount: 0, credit_amount: 30000, line_description: null, dimensions: {} },
@@ -370,11 +368,10 @@ describe('generateSIEExport', () => {
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       {
         // Kostnadsbärare (2) is a sub-dimension of Kostnadsställe (1); the
-        // parent has NO values of its own — it must still be declared because
+        // parent has NO values of its own: it must still be declared because
         // an #UNDERDIM referencing an undeclared parent is invalid.
         data: [
           dimKostnadsstalle,
@@ -391,7 +388,7 @@ describe('generateSIEExport', () => {
     expect(output).toContain('#DIM 1 "Kostnadsställe"')
     expect(output).toContain('#UNDERDIM 2 "Kostnadsbärare" 1')
     expect(output).toContain('#OBJEKT 2 "KB1" "Bärare 1"')
-    // The parent was pulled in as a declaration only — no #UNDERDIM for it
+    // The parent was pulled in as a declaration only, no #UNDERDIM for it
     expect(output).not.toContain('#UNDERDIM 1')
   })
 
@@ -399,7 +396,7 @@ describe('generateSIEExport', () => {
     // SIE4 requires the parent to be declared before any #UNDERDIM that
     // references it. A registry can hold a child whose sie_dim_no is LOWER
     // than its parent's (dim 3 under dim 7 here), so a single numeric sort
-    // would emit the #UNDERDIM first — the two-pass emit (#DIM roots first,
+    // would emit the #UNDERDIM first: the two-pass emit (#DIM roots first,
     // then #UNDERDIM) must keep the parent ahead.
     results = [
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
@@ -419,7 +416,7 @@ describe('generateSIEExport', () => {
         error: null,
       },
       {
-        // dim 3 is a child of dim 7 — numerically BEFORE its parent.
+        // dim 3 is a child of dim 7, numerically BEFORE its parent.
         data: [
           { id: 'dim-3', sie_dim_no: 3, parent_sie_dim_no: 7, name: 'Underavdelning' },
           { id: 'dim-7', sie_dim_no: 7, parent_sie_dim_no: null, name: 'Anställd' },
@@ -513,8 +510,7 @@ describe('generateSIEExport', () => {
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // RPC fallback
@@ -538,8 +534,7 @@ describe('generateSIEExport', () => {
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // RPC fallback
@@ -556,8 +551,7 @@ describe('generateSIEExport', () => {
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // RPC fallback
@@ -571,15 +565,14 @@ describe('generateSIEExport', () => {
 
   it('keeps seeded-but-unused system dimensions silent (no #DIM without values or tagged lines)', async () => {
     // ensure_company_dimensions lazily seeds dims 1/6 for any company that
-    // touches the dimensions UI — a company that merely visited the register
+    // touches the dimensions UI: a company that merely visited the register
     // page must still get a dimension-free file.
     results = [
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
-      { data: [dimKostnadsstalle, dimProjekt], error: null }, // dimensions — seeded, valueless
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
+      { data: [dimKostnadsstalle, dimProjekt], error: null }, // dimensions: seeded, valueless
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // RPC fallback
     ]
@@ -590,7 +583,7 @@ describe('generateSIEExport', () => {
     expect(output).not.toContain('#OBJEKT')
   })
 
-  it('does not truncate large periods — every voucher and its lines are exported', async () => {
+  it('does not truncate large periods: every voucher and its lines are exported', async () => {
     // Regression test for the user-reported bug: the previous nested
     // `select('*, lines:journal_entry_lines(*)')` query hit PostgREST's
     // embedded-resource row ceiling and silently truncated to ~30 vouchers.
@@ -630,8 +623,8 @@ describe('generateSIEExport', () => {
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      ...paginate(entries), // journal_entries — 3 pages (1000 + 1000 + 500)
-      ...paginate(lines), // journal_entry_lines — 5000 rows → 5 pages
+      ...paginate(entries), // journal_entries: 3 pages (1000 + 1000 + 500)
+      ...paginate(lines), // journal_entry_lines: 5000 rows → 5 pages
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
       { data: [], error: null }, // RPC fallback
@@ -639,7 +632,7 @@ describe('generateSIEExport', () => {
 
     const output = await generateSIEExport(supabase, 'company-1', baseOptions)
 
-    // Every voucher present — including the first, last, and a middle one
+    // Every voucher present: including the first, last, and a middle one
     // that the old ~30-row cap would have dropped.
     const verCount = (output.match(/#VER /g) || []).length
     expect(verCount).toBe(ENTRY_COUNT)
@@ -659,13 +652,12 @@ describe('generateSIEExport', () => {
     // collapsing #UB to current-period movements only. The fix wires SIE
     // export to getOpeningBalances() so the RPC backs up the missing link.
     results = [
-      // period — note: no opening_balance_entry_id, so getOpeningBalances
+      // period: note: no opening_balance_entry_id, so getOpeningBalances
       // falls through to the RPC path
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31', opening_balance_entry_id: null }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries (no movements this period)
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no movements -> line fetch skipped)
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
       // RPC fallback returns prior IBs derived from historical journal lines
@@ -689,17 +681,18 @@ describe('generateSIEExport', () => {
 
   it('reads #IB from explicit opening_balance_entry_id when set', async () => {
     // When opening_balance_entry_id is set, getOpeningBalances uses the
-    // journal_entry_lines path (fetchAllRows) instead of the RPC, so the
-    // queue here serves the line rows rather than RPC rows.
+    // two-step entry-lines path (entry ownership check, then its lines)
+    // instead of the RPC, so the queue serves those rows rather than RPC rows.
     results = [
       { data: { id: 'period-1', period_start: '2024-01-01', period_end: '2024-12-31', opening_balance_entry_id: 'ob-entry-1' }, error: null },
       { data: null, error: null }, // prevPeriod
       { data: [], error: null }, // accounts
-      { data: [], error: null }, // journal_entries
-      { data: [], error: null }, // journal_entry_lines
+      { data: [], error: null }, // journal_entries (no entries -> line fetch skipped)
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
-      // fetchAllRows page 1 — explicit OB entry lines
+      // getOpeningBalances step 1: the OB entry itself (ownership check)
+      { data: [{ id: 'ob-entry-1' }], error: null },
+      // getOpeningBalances step 2: the explicit OB entry lines
       {
         data: [
           { account_number: '1930', debit_amount: 12000, credit_amount: 0 },
@@ -730,9 +723,9 @@ describe('generateSIEExport', () => {
       { data: null, error: null }, // prevPeriod
       { data: [], error: null },   // accounts
       {
-        // journal_entries (fetchAllRows) — no embedded lines; stitched below
+        // journal_entries (fetchAllRows): no embedded lines; stitched below
         data: [
-          // The OB entry itself — must be excluded from movement/VER output
+          // The OB entry itself: must be excluded from movement/VER output
           {
             id: 'ob-entry-1',
             entry_date: '2024-01-01',
@@ -753,10 +746,10 @@ describe('generateSIEExport', () => {
         ],
         error: null,
       },
-      // journal_entry_lines (allLines) — #824 moved per-entry lines into a single
-      // paged join query; lines map back to entries by journal_entry_id (the inline
-      // entry.lines above are overwritten). The OB entry's lines (excluded from
-      // movement via obEntryId) and the real transfer's lines both flow through here.
+      // journal_entry_lines (allLines): fetched by entry id via
+      // fetchLinesByEntryIds; lines map back to entries by journal_entry_id.
+      // The OB entry's lines (excluded from movement via obEntryId) and the
+      // real transfer's lines both flow through here.
       {
         data: [
           { id: 'l1', journal_entry_id: 'ob-entry-1', account_number: '1933', debit_amount: 96466.59, credit_amount: 0, line_description: 'IB 1933', dimensions: {} },
@@ -768,7 +761,9 @@ describe('generateSIEExport', () => {
       },
       { data: [], error: null }, // dimensions
       { data: [], error: null }, // dimension_values
-      // fetchAllRows for OB entry lines (opening_balance_entry_id is set)
+      // getOpeningBalances step 1: the OB entry itself (ownership check)
+      { data: [{ id: 'ob-entry-1' }], error: null },
+      // getOpeningBalances step 2: the explicit OB entry lines
       {
         data: [
           { account_number: '1933', debit_amount: 96466.59, credit_amount: 0 },
