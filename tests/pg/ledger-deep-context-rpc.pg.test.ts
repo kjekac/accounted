@@ -69,6 +69,8 @@ type DeepEntity = {
   cadence_days: number | null
   dominant_account_number: string | null
   dominant_account_share: number | null
+  dominant_account_count: number | null
+  dominant_account_total: number | null
   dominant_vat?: string | null
 }
 type Deep = { counterparty_entities: DeepEntity[]; supplier_entities: DeepEntity[] }
@@ -129,7 +131,10 @@ describe('get_ledger_deep_context', () => {
     expect(klarna!.variant_count).toBe(3)
     expect(klarna!.variants.length).toBeGreaterThanOrEqual(3)
     expect(klarna!.dominant_account_number).toBe('5420')
-    expect(klarna!.dominant_account_share).toBe(1)
+    // Laplace-smoothed (3+1)/(3+2): consistent history, but n=3 is not certainty.
+    expect(klarna!.dominant_account_share).toBe(0.8)
+    expect(klarna!.dominant_account_count).toBe(3)
+    expect(klarna!.dominant_account_total).toBe(3)
     expect(klarna!.total_amount).toBe(300)
     expect(klarna!.first_seen).toBe('2026-04-01')
     expect(klarna!.last_seen).toBe('2026-06-01')
@@ -145,6 +150,11 @@ describe('get_ledger_deep_context', () => {
     expect(sl!.variant_count).toBe(1)
     expect(sl!.cadence_days).toBeNull()
     expect(sl!.dominant_account_number).toBe('5810')
+    // The P3 bug this guards: a single booking must NOT read as 100%.
+    // Laplace (1+1)/(1+2) = 0.67, with the raw 1-of-1 evidence exposed.
+    expect(sl!.dominant_account_share).toBe(0.67)
+    expect(sl!.dominant_account_count).toBe(1)
+    expect(sl!.dominant_account_total).toBe(1)
   })
 
   it('aggregates supplier entities with spend and dominant account', async () => {
@@ -154,6 +164,10 @@ describe('get_ledger_deep_context', () => {
     expect(telia!.occurrences).toBe(2)
     expect(telia!.total_amount).toBe(1000)
     expect(telia!.dominant_account_number).toBe('6212')
+    // Laplace-smoothed (2+1)/(2+2).
+    expect(telia!.dominant_account_share).toBe(0.75)
+    expect(telia!.dominant_account_count).toBe(2)
+    expect(telia!.dominant_account_total).toBe(2)
     expect(telia!.dominant_vat).toBe('standard_25')
     expect(telia!.cadence_days).toBeGreaterThanOrEqual(30)
   })
